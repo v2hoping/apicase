@@ -1,0 +1,36 @@
+# ===== 系统文件 =====
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# ===== 日志 =====
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===== 依赖 =====
+node_modules/
+
+# ===== 前端构建产物 =====
+dist/
+dist-ssr/
+*.local
+
+# ===== Rust / Tauri 构建产物 =====
+target/
+
+# ===== 环境变量 =====
+.env
+.env.local
+.env.*.local
+
+# ===== 编辑器 / IDE =====
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
