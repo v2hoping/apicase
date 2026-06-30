@@ -48,13 +48,12 @@ body,
   padding-left: 86px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
-  /* 退出全屏：下拉平滑回到右侧让位，随后红绿灯才出现 */
-  transition: padding-left 0.25s ease;
+  /* 进入/退出全屏均瞬时切换，下拉直接到位，不做滑动过渡 */
+  transition: none;
 }
-/* 全屏：红绿灯消失，下拉贴左保持 16px；进入全屏瞬时贴左 */
+/* 全屏：红绿灯消失，下拉贴左保持 16px */
 .topbar.is-fullscreen {
   padding-left: 16px;
-  transition: padding-left 0s;
 }
 /* 工作空间选择菜单（Postman 风格自定义下拉） */
 .workspace-menu {
@@ -222,8 +221,8 @@ body,
   flex-shrink: 0;
   width: 12px;
   text-align: center;
-  font-size: 10px;
-  color: var(--muted);
+  font-size: 11px;
+  color: var(--text);
 }
 .tree-caret-empty {
   visibility: hidden;
@@ -263,7 +262,19 @@ body,
   cursor: col-resize;
   background: transparent;
 }
-.sidebar-resizer:hover {
+/* 命中区保持 6px 方便拖拽；hover/拖动时仅在中间显示一条 2px 细线 */
+.sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: transparent;
+}
+.sidebar-resizer:hover::after,
+body.resizing-col .sidebar-resizer::after {
   background: var(--orange);
 }
 /* 拖动调宽过程中：全局禁选 + col-resize 光标 */
@@ -547,4 +558,362 @@ body.resizing-col {
   text-align: center;
   font-size: 13px;
   color: var(--muted);
+}
+
+/* ── case 标题栏（名称 + 未保存圆点 + 保存）── */
+.case-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.case-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dirty-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--orange);
+}
+.save-btn.ghost {
+  margin-left: auto;
+  height: 26px;
+  padding: 0 14px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.save-btn.ghost:hover:not(:disabled) {
+  border-color: var(--orange);
+  color: var(--orange);
+}
+.save-btn.ghost:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+/* ── KVTable 勾选列 ── */
+.kv-table .ck-col {
+  width: 26px;
+  text-align: center;
+}
+.kv-table .ck-col input {
+  width: auto;
+  cursor: pointer;
+}
+
+/* ── Auth / Body 面板 ── */
+.auth-panel,
+.body-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.field-row label {
+  width: 80px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.field-row input,
+.field-row select {
+  flex: 1;
+  height: 30px;
+  padding: 0 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+}
+.field-row input:focus,
+.field-row select:focus {
+  outline: none;
+  border-color: var(--orange);
+}
+.body-type-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.body-type-bar select {
+  height: 30px;
+  padding: 0 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+}
+.ct-input {
+  flex: 1;
+  height: 30px;
+  padding: 0 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.ct-input:focus {
+  outline: none;
+  border-color: var(--orange);
+}
+.panel-hint {
+  padding: 12px 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── 多节点 flow 占位 ── */
+.flow-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--muted);
+}
+.flow-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.flow-sub {
+  font-size: 13px;
+}
+
+/* ── 右键菜单 ── */
+.ctx-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 132px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.14);
+}
+.ctx-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 13px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+}
+.ctx-item:hover {
+  background: rgba(255, 108, 55, 0.12);
+  color: var(--orange-dark);
+}
+.ctx-item.danger {
+  color: var(--red);
+}
+.ctx-item.danger:hover {
+  background: rgba(214, 51, 47, 0.1);
+  color: var(--red);
+}
+
+/* ── 输入对话框 ── */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.28);
+}
+.modal {
+  width: 320px;
+  padding: 16px;
+  background: var(--panel);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+}
+.modal-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+.modal-input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+.modal-input:focus {
+  outline: none;
+  border-color: var(--orange);
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+.btn-ghost,
+.btn-primary {
+  height: 30px;
+  padding: 0 16px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.btn-ghost {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+}
+.btn-ghost:hover {
+  border-color: var(--orange);
+  color: var(--orange);
+}
+.btn-primary {
+  border: 1px solid var(--orange);
+  background: var(--orange);
+  color: #fff;
+}
+.btn-primary:hover {
+  background: var(--orange-dark);
+  border-color: var(--orange-dark);
+}
+
+/* ── 文件树顶部工具栏（搜索 + 新建）── */
+.tree-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.tree-search-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.tree-search-wrap:focus-within {
+  border-color: var(--orange);
+}
+.tree-search-icon {
+  color: var(--muted);
+  font-size: 14px;
+}
+.tree-search {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: none;
+  font-size: 12px;
+  color: var(--text);
+}
+.tree-search-clear {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.tree-search-clear:hover {
+  color: var(--text);
+}
+.tree-add {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.tree-add:hover {
+  border-color: var(--orange);
+  color: var(--orange);
+}
+
+/* ── 搜索结果（扁平列表）── */
+.search-results {
+  flex: 1;
+  overflow: auto;
+  padding: 2px 0;
+}
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.search-row:hover {
+  background: rgba(255, 108, 55, 0.08);
+}
+.search-row.selected {
+  background: rgba(255, 108, 55, 0.14);
+}
+.search-row.is-dir {
+  cursor: default;
+  color: var(--muted);
+}
+.search-name {
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-path {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ── 可视化新建 case 对话框 ── */
+.modal-wide {
+  width: 440px;
+}
+.modal-wide .field-row {
+  margin-bottom: 8px;
+}
+.nc-method {
+  flex: 0 0 auto;
+  width: 96px;
+  font-weight: 700;
+}
+.nc-url {
+  flex: 1;
+  min-width: 0;
 }
