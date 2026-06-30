@@ -1,0 +1,29 @@
+{
+  // 让 VSCode 文件监听器忽略大型编译产物目录。
+  // 这是缓解“IDE 卡顿 / Claude Code 长时间请求中”的关键项：
+  // Rust 的 target/ 与 node_modules 含数万级文件，监听它们会把 CPU 打满。
+  "files.watcherExclude": {
+    "**/target/**": true,
+    "**/node_modules/**": true,
+    "**/dist/**": true,
+    "**/dist-ssr/**": true,
+    "**/.git/**": true
+  },
+
+  // 全局搜索（Cmd+Shift+F）跳过这些目录，加快搜索、减少噪音。
+  "search.exclude": {
+    "**/target": true,
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/dist-ssr": true
+  },
+
+  // 资源管理器中隐藏这些目录（可选，纯视觉清爽）。
+  "files.exclude": {
+    "**/.DS_Store": true,
+    "**/target": true
+  },
+
+  // rust-analyzer 默认会索引 target 的部分内容；显式排除可降低其内存与 CPU。
+  "rust-analyzer.files.excludeDirs": ["target", "dist", "node_modules"]
+}
