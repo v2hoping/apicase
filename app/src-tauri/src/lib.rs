@@ -156,6 +156,113 @@ fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     Ok(entries)
 }
 
+/// Tauri 命令：读取文本文件内容（case 解析用）。
+#[tauri::command]
+fn read_text_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {e}"))
+}
+
+/// Tauri 命令：写入文本文件（保存 case；存在即覆盖）。
+#[tauri::command]
+fn write_text_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content).map_err(|e| format!("写入文件失败: {e}"))
+}
+
+/// Tauri 命令：新建文件（拒绝覆盖已存在，用于新建 case）。
+#[tauri::command]
+fn create_file(path: String, content: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if p.exists() {
+        return Err(format!("已存在: {path}"));
+    }
+    std::fs::write(p, content).map_err(|e| format!("新建文件失败: {e}"))
+}
+
+/// Tauri 命令：新建目录（用于新建 folder；拒绝覆盖已存在）。
+#[tauri::command]
+fn create_dir(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if p.exists() {
+        return Err(format!("已存在: {path}"));
+    }
+    std::fs::create_dir(p).map_err(|e| format!("新建目录失败: {e}"))
+}
+
+/// Tauri 命令：重命名 / 移动路径（文件或目录）。
+#[tauri::command]
+fn rename_path(from: String, to: String) -> Result<(), String> {
+    if !std::path::Path::new(&from).exists() {
+        return Err(format!("源路径不存在: {from}"));
+    }
+    if std::path::Path::new(&to).exists() {
+        return Err(format!("目标已存在: {to}"));
+    }
+    std::fs::rename(&from, &to).map_err(|e| format!("重命名失败: {e}"))
+}
+
+/// Tauri 命令：删除路径（文件用 remove_file，目录递归删除）。
+#[tauri::command]
+fn delete_path(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if p.is_dir() {
+        std::fs::remove_dir_all(p).map_err(|e| format!("删除目录失败: {e}"))
+    } else if p.exists() {
+        std::fs::remove_file(p).map_err(|e| format!("删除文件失败: {e}"))
+    } else {
+        Err(format!("路径不存在: {path}"))
+    }
+}
+
+/// Tauri 命令：在工作空间内递归搜索名称匹配（不区分大小写）的文件/目录（搜索栏用）。
+/// 跳过隐藏项与常见大目录（node_modules/target/dist）；结果数上限 200。
+#[tauri::command]
+fn search_workspace(root: String, query: String) -> Result<Vec<DirEntry>, String> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let root_path = std::path::Path::new(&root);
+    if !root_path.is_dir() {
+        return Err(format!("不是目录: {root}"));
+    }
+    const LIMIT: usize = 200;
+    let mut out: Vec<DirEntry> = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> = vec![root_path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for ent in rd.flatten() {
+            let name = ent.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let p = ent.path();
+            let is_dir = p.is_dir();
+            if is_dir && name != "node_modules" && name != "target" && name != "dist" {
+                stack.push(p.clone());
+            }
+            if name.to_lowercase().contains(&q) {
+                out.push(DirEntry {
+                    name,
+                    path: p.to_string_lossy().to_string(),
+                    is_dir,
+                });
+                if out.len() >= LIMIT {
+                    return Ok(out);
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(out)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -164,7 +271,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             send_request,
             init_workspace,
-            list_dir
+            list_dir,
+            read_text_file,
+            write_text_file,
+            create_file,
+            create_dir,
+            rename_path,
+            delete_path,
+            search_workspace
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
