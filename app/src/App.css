@@ -36,25 +36,133 @@ body,
   background: var(--bg);
 }
 
-/* 顶部品牌栏 */
+/* 顶部栏（兼作 macOS 标题栏拖动区域）；高度贴近标准标题栏，使下拉与红绿灯垂直居中对齐 */
 .topbar {
-  height: 40px;
+  height: 38px;
   display: flex;
+  /* 红绿灯由 trafficLightPosition.y(≈高度-按钮高) 下移到本栏中心，内容整栏居中即对齐 */
   align-items: center;
   gap: 8px;
   padding: 0 14px;
+  /* 左边距16 + 红绿灯组宽(~54) + 与选择栏间距16 */
+  padding-left: 86px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
+  /* 退出全屏：下拉平滑回到右侧让位，随后红绿灯才出现 */
+  transition: padding-left 0.25s ease;
 }
-.brand {
-  font-weight: 700;
-  color: var(--orange);
-  font-size: 15px;
-  letter-spacing: 0.3px;
+/* 全屏：红绿灯消失，下拉贴左保持 16px；进入全屏瞬时贴左 */
+.topbar.is-fullscreen {
+  padding-left: 16px;
+  transition: padding-left 0s;
 }
-.brand-sub {
-  color: var(--muted);
+/* 工作空间选择菜单（Postman 风格自定义下拉） */
+.workspace-menu {
+  position: relative;
+  margin-left: 0;
+}
+/* 触发按钮：初始无边框无阴影、透明背景；悬浮时背景变暗 */
+.workspace-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  max-width: 240px;
+  padding: 0 8px;
   font-size: 12px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  outline: none;
+}
+.workspace-trigger:hover,
+.workspace-trigger.is-open {
+  background: #ededed;
+}
+.workspace-trigger .workspace-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-trigger.is-placeholder .workspace-label {
+  color: var(--muted);
+}
+.workspace-caret {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+/* 下拉面板：白底、圆角、轻阴影 */
+.workspace-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 240px;
+  max-width: 320px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  z-index: 100;
+}
+.ws-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.ws-item:hover {
+  background: #f0f0f0;
+}
+.ws-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 6px 4px;
+}
+.ws-section-title {
+  padding: 4px 10px;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+/* 最近列表：超出可滚动 */
+.ws-recent-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+.ws-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+}
+.ws-recent-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-recent-path {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-empty {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .body-layout {
@@ -63,20 +171,13 @@ body,
   min-height: 0;
 }
 
-/* 左侧栏（文件树占位） */
+/* 左侧栏（文件树占位）；宽度由 JS 控制，可拖动调节 */
 .sidebar {
-  width: 200px;
   flex-shrink: 0;
   background: var(--panel);
   border-right: 1px solid var(--border);
   padding: 10px;
-}
-.sidebar-title {
-  font-weight: 600;
-  font-size: 12px;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin-bottom: 10px;
+  overflow: auto;
 }
 .sidebar-placeholder {
   color: var(--muted);
@@ -86,6 +187,89 @@ body,
   border-radius: 6px;
   padding: 12px;
   text-align: center;
+}
+/* 文件树 */
+.tree {
+  font-size: 13px;
+  user-select: none;
+}
+.tree-root-name {
+  font-weight: 600;
+  padding: 4px 6px 6px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding-right: 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.tree-row:hover {
+  background: #f0f0f0;
+}
+.tree-row.selected {
+  background: rgba(255, 108, 55, 0.14);
+}
+.tree-caret {
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--muted);
+}
+.tree-caret-empty {
+  visibility: hidden;
+}
+.tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 未找到工作空间提示 */
+.sidebar-empty {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.9;
+  padding: 16px 12px;
+  text-align: center;
+}
+/* 文字链接按钮（创建 / 打开） */
+.link-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  color: var(--orange);
+  font: inherit;
+  cursor: pointer;
+}
+.link-btn:hover {
+  text-decoration: underline;
+}
+/* 左侧栏拖动手柄：relative 让 z-index 生效，负 margin 骑在边界上扩大热区，确保可抓取 */
+.sidebar-resizer {
+  position: relative;
+  z-index: 10;
+  width: 6px;
+  flex-shrink: 0;
+  margin: 0 -3px;
+  cursor: col-resize;
+  background: transparent;
+}
+.sidebar-resizer:hover {
+  background: var(--orange);
+}
+/* 拖动调宽过程中：全局禁选 + col-resize 光标 */
+body.resizing-col {
+  cursor: col-resize;
+  user-select: none;
 }
 
 /* 主工作区 */
@@ -104,28 +288,40 @@ body,
   display: flex;
   gap: 8px;
 }
+/* method + url 连体容器：共用一个边框，初始无阴影 */
+.url-group {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.url-group:focus-within {
+  border-color: var(--orange);
+}
 .method-select {
   height: 34px;
   padding: 0 8px;
   font-weight: 700;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
+  border: none;
+  /* 与 URL 之间的分隔线 */
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
   cursor: pointer;
+  outline: none;
 }
 .url-input {
   flex: 1;
   height: 34px;
   padding: 0 10px;
   font-size: 13px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-}
-.url-input:focus,
-.method-select:focus {
+  border: none;
+  border-radius: 0;
+  background: transparent;
   outline: none;
-  border-color: var(--orange);
 }
 .send-btn {
   height: 34px;

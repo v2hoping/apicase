@@ -98,11 +98,74 @@ async fn send_request(request: ApiRequest) -> Result<ApiResponse, String> {
     perform_request(request).await
 }
 
+/// Tauri 命令：把一个目录初始化为 apicase 工作空间。
+/// 工作空间根需有 `application.yml`（工作空间配置文件）；若不存在则写入一份初始模板。
+#[tauri::command]
+fn init_workspace(path: String) -> Result<(), String> {
+    let dir = std::path::Path::new(&path);
+    if !dir.is_dir() {
+        return Err(format!("目录不存在: {path}"));
+    }
+    let cfg = dir.join("application.yml");
+    if !cfg.exists() {
+        let content = "# apicase 工作空间配置\n\
+# environment：支持多套环境，可切换（dev / test / prod…）\n\
+environment:\n  default: {}\n";
+        std::fs::write(&cfg, content).map_err(|e| format!("写入 application.yml 失败: {e}"))?;
+    }
+    Ok(())
+}
+
+/// 目录项（文件树节点）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+}
+
+/// Tauri 命令：列出某目录下的直接子项（文件树懒加载用）。
+/// 跳过隐藏项（`.` 开头，如 .git/.DS_Store）；目录在前，组内按名称（不区分大小写）排序。
+#[tauri::command]
+fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
+    let dir = std::path::Path::new(&path);
+    if !dir.is_dir() {
+        return Err(format!("不是目录: {path}"));
+    }
+    let mut entries: Vec<DirEntry> = Vec::new();
+    for ent in std::fs::read_dir(dir).map_err(|e| format!("读取目录失败: {e}"))? {
+        let ent = ent.map_err(|e| format!("读取目录项失败: {e}"))?;
+        let name = ent.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let p = ent.path();
+        let is_dir = p.is_dir();
+        entries.push(DirEntry {
+            name,
+            path: p.to_string_lossy().to_string(),
+            is_dir,
+        });
+    }
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(entries)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![send_request])
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![
+            send_request,
+            init_workspace,
+            list_dir
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
