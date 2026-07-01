@@ -41,12 +41,44 @@ export interface RequestSpec {
 
 export type CaseKind = "single" | "flow";
 
+/** 一个 step 的输出提取：outputs: { token: $.data.token } → { name:"token", path:"$.data.token" } */
+export interface StepOutput {
+  name: string;
+  path: string;
+}
+
+/** 断言操作符（借 Step CI check / Bruno assert 的收敛形） */
+export type AssertOp = "eq" | "ne" | "contains" | "exists" | "notExists" | "gt" | "lt" | "matches";
+export const ASSERT_OPS: AssertOp[] = ["eq", "ne", "contains", "exists", "notExists", "gt", "lt", "matches"];
+
+/** 单条断言：target 为 `status` | `header.<名>` | JSONPath（如 $.data.token） */
+export interface Assertion {
+  target: string;
+  op: AssertOp;
+  value?: string; // exists/notExists 无需 value
+}
+
+/** flow 中的一个节点（借 Arazzo step / GHA job）；request 结构与单节点完全复用 */
+export interface Step {
+  id: string;
+  request: RequestSpec;
+  dependsOn: string[]; // DAG 依赖指针（借 Arazzo dependsOn / GHA needs）
+  outputs: StepOutput[]; // JSONPath 提取
+  assertions: Assertion[]; // 响应断言
+}
+
+/** 画布坐标（与语义分离，规避 diff 噪声）；缺省时按 dependsOn 自动布局 */
+export type UiNodes = Record<string, { x: number; y: number }>;
+
 export interface Case {
   version: string; // apicase: "0.1"
   name?: string;
   vars?: Record<string, unknown>;
   kind: CaseKind;
   request?: RequestSpec; // kind=single 时存在
+  assertions?: Assertion[]; // kind=single 可选：顶层响应断言
+  steps?: Step[]; // kind=flow 时存在
+  ui?: { nodes: UiNodes }; // kind=flow 可选：画布坐标
 }
 
 // ── 工具 ───────────────────────────────────────────
@@ -110,6 +142,47 @@ function normalizeRequest(r: unknown): RequestSpec {
   };
 }
 
+function normalizeOutputs(o: unknown): StepOutput[] {
+  if (!isPlainObject(o)) return [];
+  return Object.entries(o).map(([name, path]) => ({ name, path: str(path) }));
+}
+
+function normalizeAssertions(list: unknown): Assertion[] {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter(isPlainObject)
+    .map((it) => ({
+      target: str(it.target),
+      op: (ASSERT_OPS.includes(str(it.op) as AssertOp) ? (str(it.op) as AssertOp) : "eq") as AssertOp,
+      value: it.value === undefined || it.value === null ? undefined : str(it.value),
+    }))
+    .filter((a) => a.target !== "");
+}
+
+function normalizeStep(s: unknown, i: number): Step {
+  const o = isPlainObject(s) ? s : {};
+  const id = str(o.id) || `step${i + 1}`;
+  const dependsOn = Array.isArray(o.dependsOn) ? o.dependsOn.map(str).filter(Boolean) : [];
+  return {
+    id,
+    request: normalizeRequest(o.request),
+    dependsOn,
+    outputs: normalizeOutputs(o.outputs),
+    assertions: normalizeAssertions(o.assertions),
+  };
+}
+
+function normalizeUi(u: unknown): { nodes: UiNodes } | undefined {
+  if (!isPlainObject(u) || !isPlainObject(u.nodes)) return undefined;
+  const nodes: UiNodes = {};
+  for (const [k, v] of Object.entries(u.nodes)) {
+    if (isPlainObject(v) && typeof v.x === "number" && typeof v.y === "number") {
+      nodes[k] = { x: v.x, y: v.y };
+    }
+  }
+  return Object.keys(nodes).length ? { nodes } : undefined;
+}
+
 /** 解析 case 文本。判别：有 steps → flow；否则按单节点 request。 */
 export function parseCase(text: string): Case {
   let obj: unknown;
@@ -123,9 +196,47 @@ export function parseCase(text: string): Case {
   const name = typeof o.name === "string" ? o.name : undefined;
   const vars = isPlainObject(o.vars) ? o.vars : undefined;
   if (Array.isArray(o.steps)) {
-    return { version, name, vars, kind: "flow" };
+    return { version, name, vars, kind: "flow", steps: o.steps.map(normalizeStep), ui: normalizeUi(o.ui) };
   }
-  return { version, name, vars, kind: "single", request: normalizeRequest(o.request) };
+  return { version, name, vars, kind: "single", request: normalizeRequest(o.request), assertions: normalizeAssertions(o.assertions) };
+}
+
+/**
+ * 校验并解析 case 文本，用于「内容驱动默认视图 / 文本兜底」。
+ * valid=true 仅当能 parse 成对象且含 `request` 或 `steps`；否则回退纯文本编辑。
+ */
+export function analyzeCase(text: string): { valid: boolean; case?: Case; error?: string } {
+  let obj: unknown;
+  try {
+    obj = load(text) ?? {};
+  } catch (e) {
+    return { valid: false, error: `YAML 解析失败：${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (!isPlainObject(obj)) return { valid: false, error: "顶层不是对象，不是有效的 case" };
+  const hasSteps = Array.isArray(obj.steps);
+  const hasReq = isPlainObject(obj.request);
+  if (!hasSteps && !hasReq) return { valid: false, error: "缺少 request 或 steps 字段" };
+  return { valid: true, case: parseCase(text) };
+}
+
+/** 从 application.yml 文本解析 environment：`{ 环境名: { 变量: 值 } }`（值统一转字符串）。 */
+export function parseEnvironments(text: string): Record<string, Record<string, string>> {
+  let obj: unknown;
+  try {
+    obj = load(text) ?? {};
+  } catch {
+    return {};
+  }
+  if (!isPlainObject(obj) || !isPlainObject(obj.environment)) return {};
+  const out: Record<string, Record<string, string>> = {};
+  for (const [env, vars] of Object.entries(obj.environment)) {
+    const m: Record<string, string> = {};
+    if (isPlainObject(vars)) {
+      for (const [k, v] of Object.entries(vars)) m[k] = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+    }
+    out[env] = m;
+  }
+  return out;
 }
 
 // ── 序列化（内存模型 → YAML，裁剪默认值）──────────────
@@ -188,12 +299,41 @@ function serializeRequest(r: RequestSpec): Record<string, unknown> {
   return out;
 }
 
-/** 把单节点 case 序列化为 YAML 文本。 */
+function serializeAssertions(list: Assertion[]): Array<Record<string, unknown>> {
+  return list
+    .filter((a) => a.target.trim() !== "")
+    .map((a) => {
+      const o: Record<string, unknown> = { target: a.target, op: a.op };
+      if (a.op !== "exists" && a.op !== "notExists" && a.value !== undefined && a.value !== "") o.value = a.value;
+      return o;
+    });
+}
+
+// 顺序对齐文档示例：id → dependsOn → request → outputs → assertions
+function serializeStep(s: Step): Record<string, unknown> {
+  const out: Record<string, unknown> = { id: s.id };
+  if (s.dependsOn.length) out.dependsOn = s.dependsOn;
+  out.request = serializeRequest(s.request);
+  const o: Record<string, string> = {};
+  for (const it of s.outputs) if (it.name.trim()) o[it.name.trim()] = it.path;
+  if (Object.keys(o).length) out.outputs = o;
+  const asserts = serializeAssertions(s.assertions);
+  if (asserts.length) out.assertions = asserts;
+  return out;
+}
+
+/** 把 case 序列化为 YAML 文本（单节点写顶层 request，多节点写 steps + ui）。 */
 export function dumpCase(c: Case): string {
   const out: Record<string, unknown> = { apicase: c.version || "0.1" };
   if (c.name) out.name = c.name;
   if (c.vars && Object.keys(c.vars).length) out.vars = c.vars;
-  if (c.request) out.request = serializeRequest(c.request);
+  if (c.kind === "flow" && c.steps) {
+    out.steps = c.steps.map(serializeStep);
+    if (c.ui && Object.keys(c.ui.nodes).length) out.ui = { nodes: c.ui.nodes };
+  } else if (c.request) {
+    out.request = serializeRequest(c.request);
+    if (c.assertions && c.assertions.length) out.assertions = serializeAssertions(c.assertions);
+  }
   return dump(out, { lineWidth: 100, noRefs: true });
 }
 
