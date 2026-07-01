@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Case, Step, StepOutput, Assertion, UiNodes, analyzeCase, dumpCase, splitQueryFromUrl, parseEnvironments } from "./case";
+import { Case, Step, StepOutput, Assertion, UiNodes, analyzeCase, dumpCase, splitQueryFromUrl, parseEnvironments, dumpApplicationConfig } from "./case";
 import { ReqDraft, requestToDraft, draftToRequest, buildApiRequest, emptyDraft } from "./draft";
-import { RequestEditor, METHODS, methodClass } from "./RequestEditor";
+import { RequestEditor, KVTable, METHODS, methodClass } from "./RequestEditor";
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
 import { RunContext, AssertResult, resolveDraft, extractOutputs, evalAssertions } from "./flow";
 import "./App.css";
@@ -60,6 +60,8 @@ interface TabSnapshot {
   rawText: string;
   caseValid: boolean;
   textError: string | null;
+  binaryFile: boolean;
+  configVisual: boolean;
   runMap: Record<string, RunState>;
   outputsCtx: Record<string, Record<string, unknown>>;
   respTab: "body" | "headers";
@@ -117,6 +119,29 @@ function isAppConfig(path: string): boolean {
   return n === "application.yml" || n === "application.yaml";
 }
 
+// 已知二进制/媒体扩展名：直接短路，不读取整个文件（避免大文件读入内存）
+const BINARY_EXTS = new Set([
+  // 图片
+  "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico", "tif", "tiff", "heic", "avif",
+  // 音频
+  "mp3", "wav", "flac", "aac", "ogg", "m4a", "wma", "opus",
+  // 视频
+  "mp4", "mov", "avi", "mkv", "webm", "flv", "wmv", "m4v",
+  // 压缩包
+  "zip", "tar", "gz", "tgz", "bz2", "xz", "rar", "7z",
+  // 文档/办公
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+  // 字体
+  "ttf", "otf", "woff", "woff2", "eot",
+  // 可执行/库/数据库/其它
+  "exe", "dll", "so", "dylib", "bin", "class", "jar", "wasm", "sqlite", "db",
+]);
+function isBinaryExt(path: string): boolean {
+  const n = baseName(path).toLowerCase();
+  const i = n.lastIndexOf(".");
+  return i > 0 && BINARY_EXTS.has(n.slice(i + 1));
+}
+
 // ── 文件树图标（SVG，currentColor 由 CSS 控色）──
 function FolderIcon() {
   return (
@@ -133,6 +158,22 @@ function FileIcon({ active }: { active?: boolean }) {
     <svg className={`tree-ico ico-file ${active ? "is-case" : ""}`} viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
       <path fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" d="M4.25 2h4.5l3 3v8.75a.25.25 0 0 1-.25.25H4.25a.25.25 0 0 1-.25-.25V2.25A.25.25 0 0 1 4.25 2z" />
       <path fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" d="M8.5 2.25V5h2.75" />
+    </svg>
+  );
+}
+// 展开/折叠 chevron（默认指向右，展开时旋转 90° 指向下，带过渡）
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg className={`chevron ${open ? "is-open" : ""}`} viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+      <path fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" d="M6 3.5 10.5 8 6 12.5" />
+    </svg>
+  );
+}
+// 下拉指示 caret（指向下，展开时旋转 180° 指向上）
+function CaretDown({ open }: { open: boolean }) {
+  return (
+    <svg className={`caret-down ${open ? "is-open" : ""}`} viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+      <path fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" d="M4 6 8 10 12 6" />
     </svg>
   );
 }
@@ -218,8 +259,8 @@ function TreeNode({
         onClick={() => (entry.isDir ? onToggle(entry) : onSelect(entry.path))}
         onContextMenu={(e) => onContext(e, entry)}
       >
-        <span className={`tree-caret ${entry.isDir ? "" : "tree-caret-empty"}`}>{entry.isDir ? (isOpen ? "▾" : "▸") : ""}</span>
-        {entry.isDir ? <FolderIcon /> : <FileIcon active={!isAppConfig(entry.path)} />}
+        <span className={`tree-caret ${entry.isDir ? "" : "tree-caret-empty"}`}>{entry.isDir && <Chevron open={isOpen} />}</span>
+        {entry.isDir ? <FolderIcon /> : <FileIcon active={isYamlFile(entry.path) && !isAppConfig(entry.path)} />}
         <span className="tree-name">{entry.name}</span>
       </div>
       {entry.isDir && isOpen && children && (
@@ -466,6 +507,119 @@ function StepMeta({
   );
 }
 
+// application.yml 的可视化设置页：左导航 + 右配置面板（仿 GitHub 设置页）
+function SettingsPage({
+  environments,
+  onChange,
+  workspacePath,
+  configPath,
+}: {
+  environments: Record<string, Record<string, string>>;
+  onChange: (next: Record<string, Record<string, string>>) => void;
+  workspacePath: string;
+  configPath: string;
+}) {
+  const NAV = ["通用", "主题", "环境"] as const;
+  const [section, setSection] = useState<(typeof NAV)[number]>("环境");
+  const envNames = Object.keys(environments);
+  const [selEnv, setSelEnv] = useState(envNames[0] || "");
+  const cur = envNames.includes(selEnv) ? selEnv : envNames[0] || "";
+
+  function setVars(env: string, rows: { name: string; value: string; enabled?: boolean }[]) {
+    const m: Record<string, string> = {};
+    for (const r of rows) if (r.name.trim()) m[r.name.trim()] = r.value;
+    onChange({ ...environments, [env]: m });
+  }
+  function addEnv() {
+    const name = window.prompt("新环境名称（如 dev / test / prod）", "");
+    if (!name || !name.trim()) return;
+    const n = name.trim();
+    if (environments[n]) {
+      window.alert("环境已存在");
+      return;
+    }
+    onChange({ ...environments, [n]: {} });
+    setSelEnv(n);
+  }
+  function delEnv(env: string) {
+    if (!window.confirm(`删除环境「${env}」？`)) return;
+    const next = { ...environments };
+    delete next[env];
+    onChange(next);
+    setSelEnv(Object.keys(next)[0] || "");
+  }
+
+  return (
+    <div className="settings">
+      <nav className="settings-nav">
+        {NAV.map((s) => (
+          <button key={s} className={`settings-nav-item ${section === s ? "active" : ""}`} onClick={() => setSection(s)}>
+            {s}
+          </button>
+        ))}
+      </nav>
+      <div className="settings-panel">
+        {section === "环境" && (
+          <div className="settings-section">
+            <div className="settings-title">环境</div>
+            <div className="settings-desc">
+              多套环境，运行时用 <code>{"{{变量名}}"}</code> 引用；右上角可切换活动环境。case 级 vars 会覆盖同名环境变量。
+            </div>
+            <div className="env-tabs">
+              {envNames.map((e) => (
+                <button key={e} className={`env-tab ${e === cur ? "active" : ""}`} onClick={() => setSelEnv(e)}>
+                  {e}
+                </button>
+              ))}
+              <button className="env-tab add" onClick={addEnv}>
+                ＋ 添加环境
+              </button>
+            </div>
+            {cur ? (
+              <>
+                <div className="env-head">
+                  <span className="env-cur-name">{cur}</span>
+                  <button className="link-danger" onClick={() => delEnv(cur)}>
+                    删除此环境
+                  </button>
+                </div>
+                <KVTable
+                  rows={Object.entries(environments[cur] || {}).map(([name, value]) => ({ name, value, enabled: true }))}
+                  onChange={(rows) => setVars(cur, rows)}
+                  namePlaceholder="变量名"
+                  valuePlaceholder="值（如 https://api.demo.com）"
+                />
+              </>
+            ) : (
+              <div className="settings-empty">暂无环境，点「添加环境」新建。</div>
+            )}
+          </div>
+        )}
+        {section === "通用" && (
+          <div className="settings-section">
+            <div className="settings-title">通用</div>
+            <div className="settings-desc">工作空间基本信息（只读）。</div>
+            <div className="field-row">
+              <label>工作空间</label>
+              <input readOnly value={workspacePath} />
+            </div>
+            <div className="field-row">
+              <label>配置文件</label>
+              <input readOnly value={configPath} />
+            </div>
+          </div>
+        )}
+        {section === "主题" && (
+          <div className="settings-section">
+            <div className="settings-title">主题</div>
+            <div className="settings-desc">当前为浅色主题；深色主题即将支持。</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // 标签页栏（多文件打开）：中键 / × 关闭，右键弹关闭菜单
 function TabBar({
   tabs,
@@ -568,6 +722,8 @@ function App() {
   const [rawText, setRawText] = useState("");
   const [caseValid, setCaseValid] = useState(false);
   const [textError, setTextError] = useState<string | null>(null);
+  const [binaryFile, setBinaryFile] = useState(false); // 二进制/不支持编码：显示占位提示
+  const [configVisual, setConfigVisual] = useState(false); // application.yml：可视设置页 vs 文本
 
   // 运行态：每步一份（响应区展示当前选中步）
   const [runMap, setRunMap] = useState<Record<string, RunState>>({});
@@ -582,6 +738,9 @@ function App() {
   const selected = steps.find((s) => s.id === selectedStepId) || steps[0];
   const isFlow = steps.length >= 2 || steps.some((s) => s.outputs.length > 0 || s.dependsOn.length > 0);
   const effectiveText = !!currentCasePath && (textMode || steps.length === 0 || (!showFlow && !showRequest));
+  // 仅 .yml/.yaml（非 application.yml）可作为 case：决定是否显示流程/请求视图切换
+  const caseEligible = !!currentCasePath && isYamlFile(currentCasePath) && !isAppConfig(currentCasePath);
+  const isConfig = !!currentCasePath && isAppConfig(currentCasePath);
 
   // 点击菜单外部时关闭工作空间下拉
   useEffect(() => {
@@ -774,6 +933,8 @@ function App() {
     setRawText("");
     setCaseValid(false);
     setTextError(null);
+    setBinaryFile(false);
+    setConfigVisual(false);
     setTextMode(false);
     setRunMap({});
     setOutputsCtx({});
@@ -804,6 +965,8 @@ function App() {
       rawText,
       caseValid,
       textError,
+      binaryFile,
+      configVisual,
       runMap,
       outputsCtx,
       respTab,
@@ -827,6 +990,8 @@ function App() {
     setRawText(s.rawText);
     setCaseValid(s.caseValid);
     setTextError(s.textError);
+    setBinaryFile(s.binaryFile);
+    setConfigVisual(s.configVisual);
     setRunMap(s.runMap);
     setOutputsCtx(s.outputsCtx);
     setRespTab(s.respTab);
@@ -844,8 +1009,7 @@ function App() {
     if (tabOrder.includes(path) && tabCacheRef.current[path]) {
       restoreSnapshot(tabCacheRef.current[path]);
     } else {
-      if (!tabOrder.includes(path)) setTabOrder((prev) => [...prev, path]);
-      openCase(path);
+      openCase(path); // 读取成功后再入标签，避免二进制读取失败留下空标签
     }
   }
 
@@ -900,26 +1064,66 @@ function App() {
 
   function onSelectFile(path: string) {
     setSelectedPath(path);
-    if (isYamlFile(path)) openTab(path);
+    openTab(path); // 任意文件都打开：case 渲染结构、其余落文本、二进制读取失败给提示
+  }
+
+  // 打开一个二进制/不支持编码的文件（像 VSCode 一样开标签 + 占位提示，不渲染编辑器）
+  function openBinaryTab(path: string) {
+    setTabOrder((prev) => (prev.includes(path) ? prev : [...prev, path]));
+    setCurrentCasePath(path);
+    setBinaryFile(true);
+    setConfigVisual(false);
+    setCaseName("");
+    setCaseVars(undefined);
+    setSteps([]);
+    setSelectedStepId("");
+    setUiNodes(undefined);
+    setRawText("");
+    setCaseValid(false);
+    setTextError(null);
+    setTextMode(false);
+    setRunMap({});
+    setOutputsCtx({});
+    setDirty(false);
+    setError(null);
   }
 
   async function openCase(path: string) {
+    // 已知二进制/媒体扩展名：直接占位，连 invoke 都省
+    if (isBinaryExt(path)) {
+      openBinaryTab(path);
+      return;
+    }
     try {
-      const text = await invoke<string>("read_text_file", { path });
+      // 后端判定文本/二进制（NUL 嗅探 + UTF-8 校验），不再靠错误串匹配
+      const fc = await invoke<{ binary: boolean; text: string | null }>("read_file_smart", { path });
+      if (fc.binary || fc.text === null) {
+        openBinaryTab(path);
+        return;
+      }
+      const text = fc.text;
+      setTabOrder((prev) => (prev.includes(path) ? prev : [...prev, path]));
+      setBinaryFile(false);
       setCurrentCasePath(path);
       setDirty(false);
       setError(null);
       setRunMap({});
       setOutputsCtx({});
       setRawText(text);
-      const res = analyzeCase(text);
-      if (!res.valid || !res.case) {
-        // 校验不通过 → 纯文本兜底
+      // application.yml：默认进可视设置页，并按文件内容同步环境
+      setConfigVisual(isAppConfig(path));
+      if (isAppConfig(path)) setEnvironments(parseEnvironments(text));
+      // 仅 .yml/.yaml（非 application.yml）才按 case 解析渲染；其余一律纯文本——
+      // 避免把恰好符合格式的 .txt/.json 误渲染成结构化编辑器（保存会用 YAML 覆盖、丢内容）
+      const canBeCase = isYamlFile(path) && !isAppConfig(path);
+      const res = canBeCase ? analyzeCase(text) : null;
+      if (!res || !res.valid || !res.case) {
+        // 非 case 或校验不通过 → 纯文本兜底（非 .yml 文件不挂"不是有效用例"提示）
         setSteps([]);
         setSelectedStepId("");
         setUiNodes(undefined);
         setCaseValid(false);
-        setTextError(res.error || "不是有效的用例");
+        setTextError(res ? res.error || "不是有效的用例" : null);
         setTextMode(true);
         setShowFlow(false);
         setShowRequest(true);
@@ -934,6 +1138,7 @@ function App() {
         setShowRequest(true);
       }
     } catch (e) {
+      // 到这里都是真实 IO 错误（找不到/无权限）；二进制判定已在后端完成
       setError(typeof e === "string" ? e : String(e));
     }
   }
@@ -982,56 +1187,88 @@ function App() {
     setTextMode(true);
   }
 
-  function commitText(): boolean {
+  function commitText(): Case | null {
     const res = analyzeCase(rawText);
     if (!res.valid || !res.case) {
       window.alert(`YAML 无效，无法切换到结构视图：\n${res.error || "未知错误"}`);
-      return false;
+      return null;
     }
     applyCase(res.case);
     setTextError(null);
-    return true;
+    return res.case;
   }
 
   const onClickText = () => enterText();
 
+  // 流程/请求切换：关掉当前唯一在显的面板 → 切到文本
   function onClickFlow() {
-    if (effectiveText) {
-      // 从文本切回结构：确保显示流程（若在文本模式先把 rawText 提交回结构）
-      if (textMode && !commitText()) return;
-      setTextMode(false);
-      setShowFlow(true);
-      return;
-    }
     if (showFlow && !showRequest) {
-      // 关掉当前唯一在显的「流程」→ 落文本
       setShowFlow(false);
       enterText();
       return;
     }
-    setShowFlow(!showFlow);
+    setShowFlow((v) => !v);
   }
 
   function onClickRequest() {
-    if (effectiveText) {
-      if (textMode && !commitText()) return;
-      setTextMode(false);
-      setShowRequest(true);
-      return;
-    }
     if (showRequest && !showFlow) {
       setShowRequest(false);
       enterText();
       return;
     }
-    setShowRequest(!showRequest);
+    setShowRequest((v) => !v);
+  }
+
+  // 用例：点「可视」进结构视图（文本先提交回结构）；两面板都关时按内容驱动默认
+  function onClickVisual() {
+    if (!effectiveText) return;
+    let multi = isFlow;
+    if (textMode) {
+      const c = commitText();
+      if (!c) return;
+      // 用刚解析的 case 判断多节点，避免 setSteps 异步导致 isFlow 滞后
+      const n = c.steps?.length ?? (c.request ? 1 : 0);
+      multi = n >= 2 || (c.steps || []).some((s) => s.outputs.length > 0 || s.dependsOn.length > 0);
+    }
+    setTextMode(false);
+    if (!showFlow && !showRequest) {
+      // 多节点 → 流程 + 请求；单节点 → 请求
+      setShowRequest(true);
+      if (multi) setShowFlow(true);
+    }
+  }
+
+  // application.yml：文本 ↔ 可视设置页
+  function enterConfigVisual() {
+    if (configVisual) return;
+    setEnvironments(parseEnvironments(rawText)); // 以文本为准同步到可视
+    setConfigVisual(true);
+  }
+  function exitConfigVisual() {
+    if (!configVisual) return;
+    if (dirty) setRawText(dumpApplicationConfig(rawText, environments)); // 有编辑才回写文本（保留原注释除非改过）
+    setConfigVisual(false);
+  }
+  // 可视设置页编辑环境：更新全局 environments + 保持 activeEnv 有效 + 标脏
+  function onEnvChange(next: Record<string, Record<string, string>>) {
+    setEnvironments(next);
+    const names = Object.keys(next);
+    if (activeEnv && !names.includes(activeEnv)) setActiveEnv(names.includes("default") ? "default" : names[0] || "");
+    mark();
   }
 
   // ── 保存 ────────────────────────────────────────
   async function saveCase() {
     if (!currentCasePath) return;
     try {
-      if (effectiveText) {
+      if (isAppConfig(currentCasePath) && configVisual) {
+        // 可视设置页：把 environments 序列化进 application.yml
+        const content = dumpApplicationConfig(rawText, environments);
+        await invoke("write_text_file", { path: currentCasePath, content });
+        setRawText(content);
+        const names = Object.keys(environments);
+        if (!names.includes(activeEnv)) setActiveEnv(names.includes("default") ? "default" : names[0] || "");
+      } else if (effectiveText) {
         await invoke("write_text_file", { path: currentCasePath, content: rawText });
         // application.yml：保存后重载 environment 使切换即时生效
         if (isAppConfig(currentCasePath)) {
@@ -1040,14 +1277,16 @@ function App() {
           const names = Object.keys(envs);
           if (!names.includes(activeEnv)) setActiveEnv(names.includes("default") ? "default" : names[0] || "");
         }
-        // 若文本此时有效，顺带回填结构态，保持两侧一致
-        const res = analyzeCase(rawText);
-        if (res.valid && res.case) {
-          applyCase(res.case);
-          setTextError(null);
-        } else {
-          setCaseValid(false);
-          setTextError(res.error || null);
+        // 仅 .yml/.yaml：文本此时有效则回填结构态；非 case 文件（.txt/.json）不解析、保持纯文本
+        if (isYamlFile(currentCasePath) && !isAppConfig(currentCasePath)) {
+          const res = analyzeCase(rawText);
+          if (res.valid && res.case) {
+            applyCase(res.case);
+            setTextError(null);
+          } else {
+            setCaseValid(false);
+            setTextError(res.error || null);
+          }
         }
       } else {
         const { text, error: err } = currentDump();
@@ -1337,7 +1576,7 @@ function App() {
             <span className="workspace-label" title={workspace || undefined}>
               {workspace ? baseName(workspace) : "选择工作空间"}
             </span>
-            <span className="workspace-caret">▾</span>
+            <CaretDown open={wsMenuOpen} />
           </button>
           {wsMenuOpen && (
             <div className="workspace-dropdown">
@@ -1367,7 +1606,7 @@ function App() {
             <button className={`env-trigger ${envMenuOpen ? "is-open" : ""}`} onClick={() => setEnvMenuOpen((v) => !v)} title="切换环境">
               <span className="env-glyph">◇</span>
               <span className="env-label">{activeEnv || "无环境"}</span>
-              <span className="workspace-caret">▾</span>
+              <CaretDown open={envMenuOpen} />
             </button>
             {envMenuOpen && (
               <div className="workspace-dropdown env-dropdown">
@@ -1463,7 +1702,7 @@ function App() {
                           }}
                           onContextMenu={(e) => openContext(e, r)}
                         >
-                          {r.isDir ? <FolderIcon /> : <FileIcon active={!isAppConfig(r.path)} />}
+                          {r.isDir ? <FolderIcon /> : <FileIcon active={isYamlFile(r.path) && !isAppConfig(r.path)} />}
                           <span className="search-name">{r.name}</span>
                           {rel && rel !== r.name && <span className="search-path">{rel}</span>}
                         </div>
@@ -1532,26 +1771,24 @@ function App() {
           )}
           {!currentCasePath ? (
             <div className="workspace-empty">从左侧选择一个用例，或新建一个开始调试。</div>
-          ) : (
+          ) : binaryFile ? (
+            <div className="binary-view">
+              <svg className="binary-ico" viewBox="0 0 24 24" width="44" height="44" aria-hidden="true">
+                <path fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" d="M6 3h8l4 4v14H6z" />
+                <path fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" d="M14 3v4h4" />
+                <path fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" d="M9.5 12.5 7.5 15l2 2.5M14.5 12.5l2 2.5-2 2.5" />
+              </svg>
+              <div className="binary-msg">此文件是二进制文件或使用了不受支持的文本编码，所以无法在文本编辑器中显示。</div>
+            </div>
+          ) : isConfig ? (
             <>
               <div className="case-head">
                 <div className="view-switch">
-                  <button className={`vs-btn ${effectiveText ? "active" : ""}`} onClick={onClickText} title="原始 YAML（互斥）">
+                  <button className={`vs-btn ${!configVisual ? "active" : ""}`} onClick={exitConfigVisual} title="原始 YAML">
                     文本
                   </button>
-                  <button
-                    className={`vs-btn ${!effectiveText && showFlow ? "active" : ""}`}
-                    onClick={onClickFlow}
-                    title="DAG 流程画布"
-                  >
-                    流程
-                  </button>
-                  <button
-                    className={`vs-btn ${!effectiveText && showRequest ? "active" : ""}`}
-                    onClick={onClickRequest}
-                    title="请求编辑器"
-                  >
-                    请求
+                  <button className={`vs-btn ${configVisual ? "active" : ""}`} onClick={enterConfigVisual} title="可视化设置">
+                    可视
                   </button>
                 </div>
                 <button className="save-btn ghost" onClick={saveCase} disabled={!dirty}>
@@ -1561,14 +1798,62 @@ function App() {
 
               {error && <div className="error-box">⚠ {error}</div>}
 
+              {configVisual ? (
+                <SettingsPage environments={environments} onChange={onEnvChange} workspacePath={workspace} configPath={currentCasePath} />
+              ) : (
+                <div className="text-view">
+                  <div className="text-warn is-config">⚙ 工作空间配置文件（application.yml）——编辑环境后保存即生效。</div>
+                  <textarea
+                    className="raw-editor"
+                    value={rawText}
+                    spellCheck={false}
+                    onChange={(e) => {
+                      setRawText(e.target.value);
+                      mark();
+                    }}
+                  />
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="case-head">
+                {caseEligible && (
+                  <div className="view-switch">
+                    <button className={`vs-btn ${effectiveText ? "active" : ""}`} onClick={onClickText} title="原始 YAML（互斥）">
+                      文本
+                    </button>
+                    {effectiveText ? (
+                      // 文本模式：显示「可视」入口
+                      <button className="vs-btn" onClick={onClickVisual} title="可视化编辑">
+                        可视
+                      </button>
+                    ) : (
+                      // 可视模式：「可视」原地换成 流程 / 请求
+                      <>
+                        <button className={`vs-btn ${showFlow ? "active" : ""}`} onClick={onClickFlow} title="DAG 流程画布">
+                          流程
+                        </button>
+                        <button className={`vs-btn ${showRequest ? "active" : ""}`} onClick={onClickRequest} title="请求编辑器">
+                          请求
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+                <button className="save-btn ghost" onClick={saveCase} disabled={!dirty}>
+                  保存
+                </button>
+              </div>
+
+              {error && <div className="error-box">⚠ {error}</div>}
+
               {effectiveText ? (
                 <div className="text-view">
-                  {!caseValid &&
-                    (isAppConfig(currentCasePath) ? (
-                      <div className="text-warn is-config">⚙ 工作空间配置文件（application.yml）——编辑环境后保存即生效。</div>
-                    ) : (
-                      <div className="text-warn">⚠ 该文件不是有效用例（{textError || "缺少 request/steps"}）；以纯文本显示。</div>
-                    ))}
+                  {!caseValid && caseEligible && (
+                    // 仅 .yml/.yaml 才提示"不是有效用例"；普通 .txt/.json 干净地当文本
+                    <div className="text-warn">⚠ 该文件不是有效用例（{textError || "缺少 request/steps"}）；以纯文本显示。</div>
+                  )}
                   <textarea
                     className="raw-editor"
                     value={rawText}

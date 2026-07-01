@@ -239,6 +239,19 @@ export function parseEnvironments(text: string): Record<string, Record<string, s
   return out;
 }
 
+/** 把可视化编辑的 environment 写回 application.yml（保留其它顶层键，注释不可避免地丢失）。 */
+export function dumpApplicationConfig(baseText: string, environment: Record<string, Record<string, string>>): string {
+  let obj: unknown;
+  try {
+    obj = load(baseText);
+  } catch {
+    obj = {};
+  }
+  const base: Record<string, unknown> = isPlainObject(obj) ? { ...obj } : {};
+  base.environment = environment;
+  return dump(base, { lineWidth: 100, noRefs: true });
+}
+
 // ── 序列化（内存模型 → YAML，裁剪默认值）──────────────
 function serializeKV(list: KV[]): Array<Record<string, unknown>> {
   return (list || [])
