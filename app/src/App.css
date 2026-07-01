@@ -310,13 +310,36 @@ body,
 }
 .tree-caret {
   flex-shrink: 0;
-  width: 11px;
-  text-align: center;
-  font-size: 9px;
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--muted);
+}
+.tree-row:hover .tree-caret {
+  color: var(--text);
 }
 .tree-caret-empty {
   visibility: hidden;
+}
+/* 展开/折叠 chevron 与下拉 caret（SVG，带旋转过渡） */
+.chevron,
+.caret-down {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.chevron.is-open {
+  transform: rotate(90deg);
+}
+.caret-down.is-open {
+  transform: rotate(180deg);
+}
+.workspace-trigger:hover .caret-down,
+.workspace-trigger.is-open .caret-down,
+.env-trigger:hover .caret-down,
+.env-trigger.is-open .caret-down {
+  color: var(--text);
 }
 .tree-name {
   overflow: hidden;
@@ -891,6 +914,27 @@ body.resizing-col {
   font-size: 13px;
 }
 
+/* ── 二进制/不支持编码占位（仿 VSCode）── */
+.binary-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  text-align: center;
+}
+.binary-ico {
+  color: #c2c2c8;
+}
+.binary-msg {
+  max-width: 420px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
 /* ── 视图切换段控件（文本 / 流程 / 请求）── */
 .view-switch {
   margin-left: auto;
@@ -920,8 +964,143 @@ body.resizing-col {
   font-weight: 600;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
+/* 有视图切换时二者一起靠右（gap 提供间距）；无切换时保存单独靠右 */
 .case-head .save-btn.ghost {
-  margin-left: 8px;
+  margin-left: auto;
+}
+
+/* ── application.yml 可视设置页（左导航 + 右配置）── */
+.settings {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.settings-nav {
+  flex: 0 0 172px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+  border-right: 1px solid var(--border);
+  background: #fafafa;
+}
+.settings-nav-item {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.settings-nav-item:hover {
+  background: #f0f0f0;
+}
+.settings-nav-item.active {
+  background: rgba(255, 108, 55, 0.12);
+  color: var(--orange-dark);
+  font-weight: 600;
+}
+.settings-panel {
+  flex: 1;
+  min-width: 0;
+  padding: 20px 24px;
+  overflow: auto;
+}
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 640px;
+}
+.settings-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.settings-desc {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.settings-desc code {
+  padding: 1px 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--orange-dark);
+  background: rgba(255, 108, 55, 0.1);
+  border-radius: 4px;
+}
+.settings-empty {
+  padding: 16px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.settings-section input[readonly] {
+  background: #f7f7f8;
+  color: var(--muted);
+}
+.env-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.env-tab {
+  padding: 5px 12px;
+  font-size: 12.5px;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.env-tab:hover {
+  border-color: var(--orange);
+  color: var(--orange-dark);
+}
+.env-tab.active {
+  color: #fff;
+  background: var(--orange);
+  border-color: var(--orange);
+}
+.env-tab.add {
+  border-style: dashed;
+  color: var(--muted);
+}
+.env-tab.add:hover {
+  color: var(--orange-dark);
+  border-color: var(--orange);
+  background: transparent;
+}
+.env-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+.env-cur-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.link-danger {
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--red);
+  font-size: 12px;
+  cursor: pointer;
+}
+.link-danger:hover {
+  text-decoration: underline;
 }
 
 /* Tab 计数徽章 */

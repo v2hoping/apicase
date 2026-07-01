@@ -162,6 +162,38 @@ fn read_text_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {e}"))
 }
 
+/// 智能读取的结果：要么是文本，要么判定为二进制/不支持编码。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileContent {
+    /// 二进制或不受支持的文本编码 —— 前端应显示占位提示而非编辑器
+    pub binary: bool,
+    /// 文本内容（binary=true 时为 None）
+    pub text: Option<String>,
+}
+
+/// Tauri 命令：读文件并判定文本/二进制（仿 VSCode）。
+/// 规则：前 64KB 含 NUL 字节 → 二进制（提前返回，不读大文件）；否则整体验 UTF-8，失败即"不支持的编码"。
+#[tauri::command]
+fn read_file_smart(path: String) -> Result<FileContent, String> {
+    use std::io::Read;
+    const SNIFF: usize = 64 * 1024;
+    let mut file = std::fs::File::open(&path).map_err(|e| format!("读取文件失败: {e}"))?;
+    let mut buf = vec![0u8; SNIFF];
+    let n = file.read(&mut buf).map_err(|e| format!("读取文件失败: {e}"))?;
+    buf.truncate(n);
+    // NUL 字节是二进制的强特征（UTF-16 文本的 ASCII 区也含 NUL，一并归为不支持编码）
+    if buf.contains(&0) {
+        return Ok(FileContent { binary: true, text: None });
+    }
+    // 无 NUL：读完剩余部分再整体验 UTF-8
+    file.read_to_end(&mut buf).map_err(|e| format!("读取文件失败: {e}"))?;
+    match String::from_utf8(buf) {
+        Ok(text) => Ok(FileContent { binary: false, text: Some(text) }),
+        Err(_) => Ok(FileContent { binary: true, text: None }),
+    }
+}
+
 /// Tauri 命令：写入文本文件（保存 case；存在即覆盖）。
 #[tauri::command]
 fn write_text_file(path: String, content: String) -> Result<(), String> {
@@ -273,6 +305,7 @@ pub fn run() {
             init_workspace,
             list_dir,
             read_text_file,
+            read_file_smart,
             write_text_file,
             create_file,
             create_dir,
