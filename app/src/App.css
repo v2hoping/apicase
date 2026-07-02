@@ -55,6 +55,30 @@ body,
 .topbar.is-fullscreen {
   padding-left: 16px;
 }
+/* 顶栏右上角配置按钮：齿轮与文件树配置图标同色（蓝紫），低调方形图标按钮 */
+.topbar-config {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  padding: 0;
+  color: #5b6ed6;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  outline: none;
+  transition: background 0.12s, color 0.12s;
+}
+.topbar-config:hover {
+  background: #eceef9;
+  color: #4453c4;
+}
+.topbar-config-ico {
+  display: block;
+}
 /* 工作空间选择菜单（Postman 风格自定义下拉） */
 .workspace-menu {
   position: relative;
@@ -363,6 +387,10 @@ body,
 .tree-row.selected .tree-ico.ico-file.is-case {
   opacity: 1;
 }
+/* 工作空间配置文件的齿轮图标：蓝紫色，与普通文件/用例区分开 */
+.tree-ico.ico-config {
+  color: #5b6ed6;
+}
 /* 未找到工作空间提示 */
 .sidebar-empty {
   color: var(--muted);
@@ -413,6 +441,31 @@ body.resizing-col .sidebar-resizer::after {
 body.resizing-col {
   cursor: col-resize;
   user-select: none;
+}
+
+/* 流程/请求分栏之间的拖动分割条（样式参照 sidebar-resizer） */
+.pane-resizer {
+  position: relative;
+  z-index: 10;
+  width: 6px;
+  flex-shrink: 0;
+  margin: 0 -3px;
+  cursor: col-resize;
+  background: transparent;
+}
+.pane-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: transparent;
+}
+.pane-resizer:hover::after,
+body.resizing-col .pane-resizer::after {
+  background: var(--orange);
 }
 
 /* 主工作区 */
@@ -693,15 +746,32 @@ body.resizing-col {
 }
 
 /* ── 标签页栏（多文件打开）── */
-.tab-bar {
+/* Tab 行：左侧可滚动的标签条 + 右侧固定的视图切换/保存控件，占满一行并贴齐工作区边缘 */
+.tab-row {
   display: flex;
-  gap: 3px;
+  align-items: stretch;
   flex-shrink: 0;
   margin: -12px -12px 0;
-  padding: 7px 10px 0;
   border-bottom: 1px solid var(--border);
+}
+.tab-bar {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 3px;
+  padding: 7px 10px 0;
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: thin;
+}
+/* 右侧控件：不参与滚动、不被压缩，始终完整显示 */
+.tab-controls {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-left: 1px solid var(--border);
 }
 .file-tab {
   position: relative;
@@ -794,25 +864,8 @@ body.resizing-col {
   color: var(--text);
 }
 
-/* ── case 标题栏（视图切换 + 保存）── */
-.case-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.case-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-.dirty-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--orange);
-}
+/* ── 视图切换 + 保存按钮（现位于 Tab 行右侧 .tab-controls 内）── */
 .save-btn.ghost {
-  margin-left: auto;
   height: 26px;
   padding: 0 14px;
   font-size: 12px;
@@ -937,7 +990,6 @@ body.resizing-col {
 
 /* ── 视图切换段控件（文本 / 流程 / 请求）── */
 .view-switch {
-  margin-left: auto;
   display: inline-flex;
   padding: 2px;
   background: #f0f0f2;
@@ -963,10 +1015,6 @@ body.resizing-col {
   background: var(--panel);
   font-weight: 600;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
-}
-/* 有视图切换时二者一起靠右（gap 提供间距）；无切换时保存单独靠右 */
-.case-head .save-btn.ghost {
-  margin-left: auto;
 }
 
 /* ── application.yml 可视设置页（左导航 + 右配置）── */
