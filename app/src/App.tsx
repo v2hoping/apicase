@@ -161,6 +161,19 @@ function FileIcon({ active }: { active?: boolean }) {
     </svg>
   );
 }
+// 工作空间配置文件（application.yml）专用：齿轮图标，一眼可辨"这是配置文件"
+// viewBox 24×24 且齿轮四周留约 2.5 边距，缩放渲染时齿尖不会被裁切；可复用到顶栏配置按钮
+function ConfigIcon({ className = "tree-ico ico-config", size = 15 }: { className?: string; size?: number }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
+      <path
+        fill="currentColor"
+        fillRule="evenodd"
+        d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"
+      />
+    </svg>
+  );
+}
 // 展开/折叠 chevron（默认指向右，展开时旋转 90° 指向下，带过渡）
 function Chevron({ open }: { open: boolean }) {
   return (
@@ -250,17 +263,24 @@ function TreeNode({
 }) {
   const isOpen = expanded.has(entry.path);
   const children = childrenMap[entry.path];
+  const isSelected = selectedPath === entry.path;
+  const rowRef = useRef<HTMLDivElement>(null);
+  // 成为选中项时（含展开后异步挂载）滚动到可见范围，最小滚动、不影响横向
+  useEffect(() => {
+    if (isSelected) rowRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [isSelected]);
   return (
     <div className="tree-node">
       <div
-        className={`tree-row ${selectedPath === entry.path ? "selected" : ""}`}
+        ref={rowRef}
+        className={`tree-row ${isSelected ? "selected" : ""}`}
         style={{ paddingLeft: 6 + depth * 14 }}
         title={entry.name}
         onClick={() => (entry.isDir ? onToggle(entry) : onSelect(entry.path))}
         onContextMenu={(e) => onContext(e, entry)}
       >
         <span className={`tree-caret ${entry.isDir ? "" : "tree-caret-empty"}`}>{entry.isDir && <Chevron open={isOpen} />}</span>
-        {entry.isDir ? <FolderIcon /> : <FileIcon active={isYamlFile(entry.path) && !isAppConfig(entry.path)} />}
+        {entry.isDir ? <FolderIcon /> : isAppConfig(entry.path) ? <ConfigIcon /> : <FileIcon active={isYamlFile(entry.path)} />}
         <span className="tree-name">{entry.name}</span>
       </div>
       {entry.isDir && isOpen && children && (
@@ -681,6 +701,10 @@ function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(200);
   const resizingRef = useRef(false);
+  // 流程/请求分栏：流程面板宽度（px）。null → 用 CSS 默认 44%；拖动后固定为像素值
+  const [flowPaneWidth, setFlowPaneWidth] = useState<number | null>(null);
+  const flowResizingRef = useRef(false);
+  const structuredRef = useRef<HTMLDivElement>(null);
   // environment（多套环境）：从工作空间根 application.yml 读取
   const [environments, setEnvironments] = useState<Record<string, Record<string, string>>>({});
   const [activeEnv, setActiveEnv] = useState("");
@@ -689,7 +713,7 @@ function App() {
   // 文件树
   const [childrenMap, setChildrenMap] = useState<Record<string, DirEntry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selectedPath, setSelectedPath] = useState("");
+  // 文件树/搜索的选中高亮直接以 currentCasePath 为准（当前打开的文件），无需单独状态
   // 搜索栏 / 可视化新建
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<DirEntry[]>([]);
@@ -773,6 +797,29 @@ function App() {
     function onUp() {
       if (!resizingRef.current) return;
       resizingRef.current = false;
+      document.body.classList.remove("resizing-col");
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  // 流程/请求分栏的拖动分割条：调整流程面板宽度（请求面板占剩余空间）
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (!flowResizingRef.current) return;
+      const box = structuredRef.current?.getBoundingClientRect();
+      if (!box) return;
+      // 流程面板不小于 260，且尽量给请求面板留 360（260 下限优先）
+      const w = Math.max(260, Math.min(box.width - 360, e.clientX - box.left));
+      setFlowPaneWidth(w);
+    }
+    function onUp() {
+      if (!flowResizingRef.current) return;
+      flowResizingRef.current = false;
       document.body.classList.remove("resizing-col");
     }
     document.addEventListener("mousemove", onMove);
@@ -878,12 +925,42 @@ function App() {
     }
   }
 
+  // 在文件树中「显露」某个文件：展开它与工作空间根之间的各级父目录，并懒加载其子项，
+  // 使折叠目录里的文件（如从 Tab 切过去）能正确展开并高亮可见。
+  function revealInTree(path: string) {
+    if (!workspace || !path.startsWith(workspace)) return;
+    const ancestors: string[] = [];
+    let d = dirName(path);
+    // 收集根与文件之间的所有中间目录（不含根，根在树中始终显示）
+    while (d.length > workspace.length && d.startsWith(workspace)) {
+      ancestors.push(d);
+      const parent = dirName(d);
+      if (parent === d) break; // 防御：路径已到顶，dirName 不再变化
+      d = parent;
+    }
+    if (ancestors.length === 0) return; // 文件就在根目录下，无需展开
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      ancestors.forEach((a) => next.add(a));
+      return next;
+    });
+    // 未加载 children 的目录先加载，否则展开后子树为空、文件仍不可见
+    ancestors.forEach((a) => {
+      if (!childrenMap[a]) loadDir(a);
+    });
+  }
+
+  // 活动文件变化（点 Tab、关标签切邻居、新建等）时，自动在文件树中展开显露它
+  useEffect(() => {
+    revealInTree(currentCasePath);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentCasePath, workspace]);
+
   function applyWorkspace(path: string) {
     setWorkspace(path);
     setRecentWorkspaces((prev) => [path, ...prev.filter((p) => p !== path)].slice(0, 10));
     setChildrenMap({});
     setExpanded(new Set());
-    setSelectedPath("");
     closeAllTabsAndReset();
     loadDir(path);
     loadEnvironments(path);
@@ -1063,7 +1140,6 @@ function App() {
   }
 
   function onSelectFile(path: string) {
-    setSelectedPath(path);
     openTab(path); // 任意文件都打开：case 渲染结构、其余落文本、二进制读取失败给提示
   }
 
@@ -1453,7 +1529,6 @@ function App() {
       await loadDir(dir);
       setExpanded((prev) => new Set(prev).add(dir));
       openTab(path);
-      setSelectedPath(path);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     }
@@ -1565,6 +1640,51 @@ function App() {
   const runErr = run?.error || null;
   const sending = run?.status === "running";
 
+  // Tab 行右侧固定控件：视图切换（文本|可视/流程/请求）+ 保存。始终完整显示，不随 Tab 滚动
+  const headControls =
+    !currentCasePath || binaryFile ? null : isConfig ? (
+      <div className="tab-controls">
+        <div className="view-switch">
+          <button className={`vs-btn ${!configVisual ? "active" : ""}`} onClick={exitConfigVisual} title="原始 YAML">
+            文本
+          </button>
+          <button className={`vs-btn ${configVisual ? "active" : ""}`} onClick={enterConfigVisual} title="可视化设置">
+            可视
+          </button>
+        </div>
+        <button className="save-btn ghost" onClick={saveCase} disabled={!dirty}>
+          保存
+        </button>
+      </div>
+    ) : (
+      <div className="tab-controls">
+        {caseEligible && (
+          <div className="view-switch">
+            <button className={`vs-btn ${effectiveText ? "active" : ""}`} onClick={onClickText} title="原始 YAML（互斥）">
+              文本
+            </button>
+            {effectiveText ? (
+              <button className="vs-btn" onClick={onClickVisual} title="可视化编辑">
+                可视
+              </button>
+            ) : (
+              <>
+                <button className={`vs-btn ${showFlow ? "active" : ""}`} onClick={onClickFlow} title="DAG 流程画布">
+                  流程
+                </button>
+                <button className={`vs-btn ${showRequest ? "active" : ""}`} onClick={onClickRequest} title="请求编辑器">
+                  请求
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        <button className="save-btn ghost" onClick={saveCase} disabled={!dirty}>
+          保存
+        </button>
+      </div>
+    );
+
   return (
     <div className="app">
       <header className={`topbar ${isFullscreen ? "is-fullscreen" : ""}`} data-tauri-drag-region>
@@ -1635,7 +1755,6 @@ function App() {
                   onClick={() => {
                     setEnvMenuOpen(false);
                     const p = joinPath(workspace, "application.yml");
-                    setSelectedPath(p);
                     openTab(p);
                   }}
                 >
@@ -1644,6 +1763,16 @@ function App() {
               </div>
             )}
           </div>
+        )}
+
+        {workspace && (
+          <button
+            className="topbar-config"
+            title="工作空间配置（application.yml）"
+            onClick={() => openTab(joinPath(workspace, "application.yml"))}
+          >
+            <ConfigIcon className="topbar-config-ico" size={18} />
+          </button>
         )}
       </header>
 
@@ -1695,14 +1824,14 @@ function App() {
                       return (
                         <div
                           key={r.path}
-                          className={`search-row ${selectedPath === r.path ? "selected" : ""} ${r.isDir ? "is-dir" : ""}`}
+                          className={`search-row ${currentCasePath === r.path ? "selected" : ""} ${r.isDir ? "is-dir" : ""}`}
                           title={r.path}
                           onClick={() => {
                             if (!r.isDir) onSelectFile(r.path);
                           }}
                           onContextMenu={(e) => openContext(e, r)}
                         >
-                          {r.isDir ? <FolderIcon /> : <FileIcon active={isYamlFile(r.path) && !isAppConfig(r.path)} />}
+                          {r.isDir ? <FolderIcon /> : isAppConfig(r.path) ? <ConfigIcon /> : <FileIcon active={isYamlFile(r.path)} />}
                           <span className="search-name">{r.name}</span>
                           {rel && rel !== r.name && <span className="search-path">{rel}</span>}
                         </div>
@@ -1723,7 +1852,7 @@ function App() {
                       depth={0}
                       expanded={expanded}
                       childrenMap={childrenMap}
-                      selectedPath={selectedPath}
+                      selectedPath={currentCasePath}
                       onToggle={toggleDir}
                       onSelect={onSelectFile}
                       onContext={openContext}
@@ -1756,18 +1885,21 @@ function App() {
         {/* 主工作区 */}
         <main className="workspace">
           {tabOrder.length > 0 && (
-            <TabBar
-              tabs={tabOrder}
-              active={currentCasePath}
-              isDirty={isDirtyPath}
-              onSelect={openTab}
-              onClose={closeTab}
-              onContext={(e, p) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setTabMenu({ x: e.clientX, y: e.clientY, path: p });
-              }}
-            />
+            <div className="tab-row">
+              <TabBar
+                tabs={tabOrder}
+                active={currentCasePath}
+                isDirty={isDirtyPath}
+                onSelect={openTab}
+                onClose={closeTab}
+                onContext={(e, p) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setTabMenu({ x: e.clientX, y: e.clientY, path: p });
+                }}
+              />
+              {headControls}
+            </div>
           )}
           {!currentCasePath ? (
             <div className="workspace-empty">从左侧选择一个用例，或新建一个开始调试。</div>
@@ -1782,20 +1914,6 @@ function App() {
             </div>
           ) : isConfig ? (
             <>
-              <div className="case-head">
-                <div className="view-switch">
-                  <button className={`vs-btn ${!configVisual ? "active" : ""}`} onClick={exitConfigVisual} title="原始 YAML">
-                    文本
-                  </button>
-                  <button className={`vs-btn ${configVisual ? "active" : ""}`} onClick={enterConfigVisual} title="可视化设置">
-                    可视
-                  </button>
-                </div>
-                <button className="save-btn ghost" onClick={saveCase} disabled={!dirty}>
-                  保存
-                </button>
-              </div>
-
               {error && <div className="error-box">⚠ {error}</div>}
 
               {configVisual ? (
@@ -1817,35 +1935,6 @@ function App() {
             </>
           ) : (
             <>
-              <div className="case-head">
-                {caseEligible && (
-                  <div className="view-switch">
-                    <button className={`vs-btn ${effectiveText ? "active" : ""}`} onClick={onClickText} title="原始 YAML（互斥）">
-                      文本
-                    </button>
-                    {effectiveText ? (
-                      // 文本模式：显示「可视」入口
-                      <button className="vs-btn" onClick={onClickVisual} title="可视化编辑">
-                        可视
-                      </button>
-                    ) : (
-                      // 可视模式：「可视」原地换成 流程 / 请求
-                      <>
-                        <button className={`vs-btn ${showFlow ? "active" : ""}`} onClick={onClickFlow} title="DAG 流程画布">
-                          流程
-                        </button>
-                        <button className={`vs-btn ${showRequest ? "active" : ""}`} onClick={onClickRequest} title="请求编辑器">
-                          请求
-                        </button>
-                      </>
-                    )}
-                  </div>
-                )}
-                <button className="save-btn ghost" onClick={saveCase} disabled={!dirty}>
-                  保存
-                </button>
-              </div>
-
               {error && <div className="error-box">⚠ {error}</div>}
 
               {effectiveText ? (
@@ -1865,9 +1954,16 @@ function App() {
                   />
                 </div>
               ) : (
-                <div className={`structured ${showFlow && showRequest ? "split" : showFlow ? "only-flow" : "only-request"}`}>
+                <div ref={structuredRef} className={`structured ${showFlow && showRequest ? "split" : showFlow ? "only-flow" : "only-request"}`}>
                   {showFlow && (
-                    <div className="flow-pane">
+                    <div
+                      className="flow-pane"
+                      style={
+                        showFlow && showRequest && flowPaneWidth != null
+                          ? { flex: `0 0 ${flowPaneWidth}px`, maxWidth: "none", minWidth: 0 }
+                          : undefined
+                      }
+                    >
                       <FlowCanvas
                         nodes={flowNodes}
                         selectedId={selectedStepId}
@@ -1879,6 +1975,18 @@ function App() {
                         running={runningAll}
                       />
                     </div>
+                  )}
+                  {showFlow && showRequest && selected && (
+                    <div
+                      className="pane-resizer"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        flowResizingRef.current = true;
+                        document.body.classList.add("resizing-col");
+                      }}
+                      onDoubleClick={() => setFlowPaneWidth(null)}
+                      title="拖动调整宽度（双击恢复默认）"
+                    />
                   )}
                   {showRequest && selected && (
                     <div className="request-pane">
