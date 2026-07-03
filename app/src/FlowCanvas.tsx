@@ -104,7 +104,6 @@ export function FlowCanvas({
         <button className="flow-tool-btn" onClick={onRunAll} disabled={running}>
           {running ? "运行中…" : "▶ 运行"}
         </button>
-        <span className="flow-hint">{nodes.length} 个请求 · 按依赖拓扑序执行、变量透传</span>
       </div>
 
       <div className="flow-scroll">

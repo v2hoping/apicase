@@ -458,74 +458,6 @@ function NewCaseDialog({
   );
 }
 
-// 步骤 ID 输入：本地编辑、失焦/回车提交（避免逐键改 id 破坏依赖引用）
-function StepIdField({ id, onCommit }: { id: string; onCommit: (v: string) => void }) {
-  const [v, setV] = useState(id);
-  useEffect(() => {
-    setV(id);
-  }, [id]);
-  return (
-    <input
-      className="sm-id-input"
-      value={v}
-      onChange={(e) => setV(e.target.value)}
-      onBlur={() => {
-        if (v.trim() && v.trim() !== id) onCommit(v.trim());
-        else setV(id);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        else if (e.key === "Escape") {
-          setV(id);
-          (e.target as HTMLInputElement).blur();
-        }
-      }}
-    />
-  );
-}
-
-// flow 请求元信息条：ID + 依赖（输出/断言在请求编辑器 Tab 内）
-function RequestMeta({
-  step,
-  allIds,
-  onRename,
-  onDeps,
-}: {
-  step: RequestDraft;
-  allIds: string[];
-  onRename: (oldId: string, newId: string) => void;
-  onDeps: (deps: string[]) => void;
-}) {
-  const others = allIds.filter((id) => id !== step.id);
-  return (
-    <div className="step-meta">
-      <div className="sm-row">
-        <label>请求 ID</label>
-        <StepIdField id={step.id} onCommit={(v) => onRename(step.id, v)} />
-        <label className="sm-dep-label">依赖</label>
-        <div className="dep-chips">
-          {others.length === 0 ? (
-            <span className="dep-empty">无其它请求</span>
-          ) : (
-            others.map((id) => {
-              const on = step.dependsOn.includes(id);
-              return (
-                <button
-                  key={id}
-                  className={`dep-chip ${on ? "on" : ""}`}
-                  onClick={() => onDeps(on ? step.dependsOn.filter((x) => x !== id) : [...step.dependsOn, id])}
-                >
-                  {id}
-                </button>
-              );
-            })
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // application.yml 的可视化设置页：左导航 + 右配置面板（仿 GitHub 设置页）
 function SettingsPage({
   environments,
@@ -1380,11 +1312,6 @@ function App() {
     mark();
   }
 
-  function setDeps(deps: string[]) {
-    setRequests((prev) => prev.map((s) => (s.id === selectedRequestId ? { ...s, dependsOn: deps } : s)));
-    mark();
-  }
-
   function setOutputs(list: RequestOutput[]) {
     setRequests((prev) => prev.map((s) => (s.id === selectedRequestId ? { ...s, outputs: list } : s)));
     mark();
@@ -1988,9 +1915,6 @@ function App() {
                   )}
                   {showRequest && selected && (
                     <div className="request-pane">
-                      {isFlow && (
-                        <RequestMeta step={selected} allIds={requests.map((s) => s.id)} onRename={renameRequest} onDeps={setDeps} />
-                      )}
                       <RequestEditor
                         key={currentCasePath + "/" + selectedRequestId}
                         value={selected.req}
@@ -2003,6 +1927,8 @@ function App() {
                         assertResults={run?.asserts}
                         outputs={isFlow ? selected.outputs : undefined}
                         onOutputs={isFlow ? setOutputs : undefined}
+                        stepId={selected.id}
+                        onRenameId={isFlow ? (v) => renameRequest(selected.id, v) : undefined}
                       />
 
                       {/* 响应区 */}

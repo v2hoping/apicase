@@ -1,7 +1,7 @@
 // 通用请求编辑器：单请求 case 与多请求 flow 的每个请求都复用它。
 // 完全受控——父组件持有 ReqDraft，本组件只读 value、通过 onChange 汇报变更。
 // 切换 step 时父组件用 key 强制重挂载，从而重置内部 Tab 等瞬时状态。
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { KV, AuthType, BodyType, Assertion, AssertOp, ASSERT_OPS, RequestOutput, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
 import { ReqDraft } from "./draft";
 import { AssertResult } from "./flow";
@@ -161,6 +161,32 @@ function AssertTable({
   );
 }
 
+// 请求 ID 输入：本地编辑、失焦/回车提交（避免逐键改 id 破坏引用）
+function StepIdField({ id, onCommit }: { id: string; onCommit: (v: string) => void }) {
+  const [v, setV] = useState(id);
+  useEffect(() => {
+    setV(id);
+  }, [id]);
+  return (
+    <input
+      className="sm-id-input"
+      value={v}
+      onChange={(e) => setV(e.target.value)}
+      onBlur={() => {
+        if (v.trim() && v.trim() !== id) onCommit(v.trim());
+        else setV(id);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        else if (e.key === "Escape") {
+          setV(id);
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+    />
+  );
+}
+
 export function RequestEditor({
   value,
   onChange,
@@ -172,6 +198,8 @@ export function RequestEditor({
   assertResults,
   outputs,
   onOutputs,
+  stepId,
+  onRenameId,
 }: {
   value: ReqDraft;
   onChange: (d: ReqDraft) => void;
@@ -183,6 +211,8 @@ export function RequestEditor({
   assertResults?: AssertResult[];
   outputs?: RequestOutput[];
   onOutputs?: (o: RequestOutput[]) => void;
+  stepId?: string;
+  onRenameId?: (newId: string) => void;
 }) {
   const [tab, setTab] = useState<string>("params");
   const d = value;
@@ -200,8 +230,9 @@ export function RequestEditor({
   const tabs: string[] = ["params", "headers", "auth", "body"];
   if (onOutputs) tabs.push("outputs");
   if (onAssertions) tabs.push("assert");
+  if (onRenameId) tabs.push("meta");
   const label = (t: string) =>
-    t === "params" ? "参数" : t === "headers" ? "请求头" : t === "auth" ? "认证" : t === "body" ? "请求体" : t === "outputs" ? "输出" : "断言";
+    t === "params" ? "参数" : t === "headers" ? "请求头" : t === "auth" ? "认证" : t === "body" ? "请求体" : t === "outputs" ? "输出" : t === "assert" ? "断言" : "请求 ID";
   const tabBadge = (t: string) => (t === "params" ? paramCount : t === "headers" ? headerCount : t === "outputs" ? outputCount : 0);
 
   return (
@@ -354,6 +385,15 @@ export function RequestEditor({
               目标：<code>status</code> / JSONPath（<code>$.data.token</code>）/ <code>header.名称</code>；运行后逐条校验。
             </div>
             <AssertTable rows={assertions || []} onChange={onAssertions} results={assertResults} />
+          </div>
+        )}
+        {tab === "meta" && onRenameId && (
+          <div className="meta-panel">
+            <div className="panel-hint">请求在用例中的唯一标识，用于流程编排与变量引用。</div>
+            <div className="field-row">
+              <label>请求 ID</label>
+              <StepIdField id={stepId || ""} onCommit={onRenameId} />
+            </div>
           </div>
         )}
       </div>
