@@ -1,8 +1,8 @@
-// 请求「编辑态草稿」（ReqDraft）：与 case.ts 的 RequestSpec 互转。
+// 请求「编辑态草稿」（ReqDraft）：与 case.ts 的 HttpSpec 互转。
 // 为什么要独立草稿：编辑 JSON body 时允许中途非法文本（不即时 parse），
-// 故用字符串保存 body 文本，仅在保存/发送边界才校验并转回 RequestSpec。
-// 单节点与 flow 的每个 step 都复用同一份 ReqDraft，请求编辑器因而完全通用。
-import { RequestSpec, AuthSpec, AuthType, BodySpec, BodyType, KV, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
+// 故用字符串保存 body 文本，仅在保存/发送边界才校验并转回 HttpSpec。
+// 单请求与多请求 flow 的每个请求都复用同一份 ReqDraft，请求编辑器因而完全通用。
+import { HttpSpec, AuthSpec, AuthType, BodySpec, BodyType, KV, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
 
 export interface ReqDraft {
   method: string;
@@ -42,8 +42,8 @@ export function emptyDraft(method = "GET", url = ""): ReqDraft {
   };
 }
 
-/** RequestSpec → 编辑态草稿（打开 case / 切换 step 时用）。 */
-export function requestToDraft(r: RequestSpec): ReqDraft {
+/** HttpSpec → 编辑态草稿（打开 case / 切换请求时用）。 */
+export function requestToDraft(r: HttpSpec): ReqDraft {
   const split = splitQueryFromUrl(r.url);
   const allQuery = [...split.query, ...r.query];
   return {
@@ -80,8 +80,8 @@ function draftAuth(d: ReqDraft): AuthSpec {
   return { type: "none" };
 }
 
-/** 草稿 → RequestSpec（保存边界，含 JSON body 校验）。 */
-export function draftToRequest(d: ReqDraft): { request?: RequestSpec; error?: string } {
+/** 草稿 → HttpSpec（保存边界，含 JSON body 校验）。 */
+export function draftToRequest(d: ReqDraft): { request?: HttpSpec; error?: string } {
   let body: BodySpec;
   if (d.bodyType === "json") {
     if (d.bodyText.trim() === "") body = { type: "none" };
@@ -101,7 +101,7 @@ export function draftToRequest(d: ReqDraft): { request?: RequestSpec; error?: st
   } else {
     body = { type: "none" };
   }
-  const request: RequestSpec = {
+  const request: HttpSpec = {
     method: d.method,
     url: splitQueryFromUrl(d.url.trim()).base,
     query: d.query,
