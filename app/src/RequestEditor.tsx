@@ -1,8 +1,8 @@
-// 通用请求编辑器：单节点 case 与 flow 的每个 step 都复用它。
+// 通用请求编辑器：单请求 case 与多请求 flow 的每个请求都复用它。
 // 完全受控——父组件持有 ReqDraft，本组件只读 value、通过 onChange 汇报变更。
 // 切换 step 时父组件用 key 强制重挂载，从而重置内部 Tab 等瞬时状态。
 import { useState } from "react";
-import { KV, AuthType, BodyType, Assertion, AssertOp, ASSERT_OPS, StepOutput, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
+import { KV, AuthType, BodyType, Assertion, AssertOp, ASSERT_OPS, RequestOutput, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
 import { ReqDraft } from "./draft";
 import { AssertResult } from "./flow";
 
@@ -181,8 +181,8 @@ export function RequestEditor({
   assertions?: Assertion[];
   onAssertions?: (a: Assertion[]) => void;
   assertResults?: AssertResult[];
-  outputs?: StepOutput[];
-  onOutputs?: (o: StepOutput[]) => void;
+  outputs?: RequestOutput[];
+  onOutputs?: (o: RequestOutput[]) => void;
 }) {
   const [tab, setTab] = useState<string>("params");
   const d = value;
@@ -339,7 +339,7 @@ export function RequestEditor({
         )}
         {tab === "outputs" && onOutputs && (
           <div className="outputs-panel">
-            <div className="panel-hint">从响应提取变量，供下游步骤 <code>{"{{steps.本步.outputs.变量名}}"}</code> 引用。</div>
+            <div className="panel-hint">从响应提取变量，供下游请求 <code>{"{{requests.本请求.outputs.变量名}}"}</code> 引用。</div>
             <KVTable
               rows={(outputs || []).map((o) => ({ name: o.name, value: o.path, enabled: true }))}
               onChange={(rows) => onOutputs(rows.filter((r) => r.name || r.value).map((r) => ({ name: r.name, path: r.value })))}

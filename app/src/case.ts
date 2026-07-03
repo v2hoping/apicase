@@ -1,6 +1,7 @@
 // case 的 YAML schema 类型 + 解析/序列化。
 // 设计见 docs/0.latest/1.产品概念模型.md 与 docs/1.feature/20260630-case读写与格式/技术方案.md。
-// 本阶段在前端用 js-yaml 解析（后端只做通用文件读写）；request 结构在单/多节点复用。
+// 前端用 js-yaml 解析（后端只做通用文件读写）；单/多请求统一为 requests 列表（单 = 长度 1）。
+// 每个请求的报文按协议名承载（当前 http:，未来可并列 grpc:/ws:），故类型名为 HttpSpec。
 import { load, dump } from "js-yaml";
 
 /** 一行键值（query / headers / 表单项通用）；enabled 默认 true，为 true 时不落盘 */
@@ -30,7 +31,8 @@ export interface AuthSpec {
   apikey?: { key: string; value: string; in: "header" | "query" };
 }
 
-export interface RequestSpec {
+/** HTTP 请求报文规格（单/多请求复用）；未来多协议可另立 GrpcSpec 等，并列于 Request 之下。 */
+export interface HttpSpec {
   method: string;
   url: string;
   query: KV[];
@@ -39,10 +41,8 @@ export interface RequestSpec {
   body: BodySpec;
 }
 
-export type CaseKind = "single" | "flow";
-
-/** 一个 step 的输出提取：outputs: { token: $.data.token } → { name:"token", path:"$.data.token" } */
-export interface StepOutput {
+/** 一个请求的输出提取：outputs: { token: $.data.token } → { name:"token", path:"$.data.token" } */
+export interface RequestOutput {
   name: string;
   path: string;
 }
@@ -58,27 +58,28 @@ export interface Assertion {
   value?: string; // exists/notExists 无需 value
 }
 
-/** flow 中的一个节点（借 Arazzo step / GHA job）；request 结构与单节点完全复用 */
-export interface Step {
+/**
+ * 一个请求节点（原 Step；借 Arazzo step / GHA job）：一次可编排的调用。
+ * 报文按协议名承载（http），故不再叫 request，规避「requests[i].request」的重名。
+ */
+export interface Request {
   id: string;
-  request: RequestSpec;
+  http: HttpSpec; // 具体协议报文（未来可并列 grpc / ws）
   dependsOn: string[]; // DAG 依赖指针（借 Arazzo dependsOn / GHA needs）
-  outputs: StepOutput[]; // JSONPath 提取
+  outputs: RequestOutput[]; // JSONPath 提取
   assertions: Assertion[]; // 响应断言
 }
 
 /** 画布坐标（与语义分离，规避 diff 噪声）；缺省时按 dependsOn 自动布局 */
 export type UiNodes = Record<string, { x: number; y: number }>;
 
+/** 一个 case：统一为 requests 列表（单请求 = 长度 1，多请求 = DAG）。 */
 export interface Case {
   version: string; // apicase: "0.1"
   name?: string;
   vars?: Record<string, unknown>;
-  kind: CaseKind;
-  request?: RequestSpec; // kind=single 时存在
-  assertions?: Assertion[]; // kind=single 可选：顶层响应断言
-  steps?: Step[]; // kind=flow 时存在
-  ui?: { nodes: UiNodes }; // kind=flow 可选：画布坐标
+  requests: Request[]; // 至少 1 个；单/多请求同构
+  ui?: { nodes: UiNodes }; // 可选：画布坐标
 }
 
 // ── 工具 ───────────────────────────────────────────
@@ -130,7 +131,8 @@ function normalizeBody(b: unknown): BodySpec {
   return { type: "none" };
 }
 
-function normalizeRequest(r: unknown): RequestSpec {
+/** 规范化 HTTP 报文（原 normalizeRequest）。 */
+function normalizeHttp(r: unknown): HttpSpec {
   const o = isPlainObject(r) ? r : {};
   return {
     method: (str(o.method) || "GET").toUpperCase(),
@@ -142,7 +144,7 @@ function normalizeRequest(r: unknown): RequestSpec {
   };
 }
 
-function normalizeOutputs(o: unknown): StepOutput[] {
+function normalizeOutputs(o: unknown): RequestOutput[] {
   if (!isPlainObject(o)) return [];
   return Object.entries(o).map(([name, path]) => ({ name, path: str(path) }));
 }
@@ -159,13 +161,14 @@ function normalizeAssertions(list: unknown): Assertion[] {
     .filter((a) => a.target !== "");
 }
 
-function normalizeStep(s: unknown, i: number): Step {
+/** 规范化一个请求节点（原 normalizeStep）；兼容旧字段名 `request`（→ http）。 */
+function normalizeRequest(s: unknown, i: number): Request {
   const o = isPlainObject(s) ? s : {};
-  const id = str(o.id) || `step${i + 1}`;
+  const id = str(o.id) || `req${i + 1}`;
   const dependsOn = Array.isArray(o.dependsOn) ? o.dependsOn.map(str).filter(Boolean) : [];
   return {
     id,
-    request: normalizeRequest(o.request),
+    http: normalizeHttp(o.http ?? o.request), // 兼容旧 `request:` 键
     dependsOn,
     outputs: normalizeOutputs(o.outputs),
     assertions: normalizeAssertions(o.assertions),
@@ -183,7 +186,12 @@ function normalizeUi(u: unknown): { nodes: UiNodes } | undefined {
   return Object.keys(nodes).length ? { nodes } : undefined;
 }
 
-/** 解析 case 文本。判别：有 steps → flow；否则按单节点 request。 */
+/**
+ * 解析 case 文本为统一的 requests 列表。兼容三种输入：
+ *  - 新：`requests:` 列表
+ *  - 旧多节点：`steps:` 列表（每项 `request:` → http）
+ *  - 旧单节点：顶层 `request:`（+ 顶层 `assertions:`）→ 归一化为 1 个请求
+ */
 export function parseCase(text: string): Case {
   let obj: unknown;
   try {
@@ -195,15 +203,18 @@ export function parseCase(text: string): Case {
   const version = typeof o.apicase === "string" ? o.apicase : "0.1";
   const name = typeof o.name === "string" ? o.name : undefined;
   const vars = isPlainObject(o.vars) ? o.vars : undefined;
-  if (Array.isArray(o.steps)) {
-    return { version, name, vars, kind: "flow", steps: o.steps.map(normalizeStep), ui: normalizeUi(o.ui) };
+  const arr = Array.isArray(o.requests) ? o.requests : Array.isArray(o.steps) ? o.steps : null;
+  if (arr) {
+    return { version, name, vars, requests: arr.map(normalizeRequest), ui: normalizeUi(o.ui) };
   }
-  return { version, name, vars, kind: "single", request: normalizeRequest(o.request), assertions: normalizeAssertions(o.assertions) };
+  // 旧单节点：顶层 request（+ assertions）归一化为 1 个请求
+  const single = normalizeRequest({ id: "req1", http: o.request, assertions: o.assertions }, 0);
+  return { version, name, vars, requests: [single] };
 }
 
 /**
  * 校验并解析 case 文本，用于「内容驱动默认视图 / 文本兜底」。
- * valid=true 仅当能 parse 成对象且含 `request` 或 `steps`；否则回退纯文本编辑。
+ * valid=true 仅当能 parse 成对象且含 `requests` / `steps` / `request`；否则回退纯文本编辑。
  */
 export function analyzeCase(text: string): { valid: boolean; case?: Case; error?: string } {
   let obj: unknown;
@@ -213,9 +224,8 @@ export function analyzeCase(text: string): { valid: boolean; case?: Case; error?
     return { valid: false, error: `YAML 解析失败：${e instanceof Error ? e.message : String(e)}` };
   }
   if (!isPlainObject(obj)) return { valid: false, error: "顶层不是对象，不是有效的 case" };
-  const hasSteps = Array.isArray(obj.steps);
-  const hasReq = isPlainObject(obj.request);
-  if (!hasSteps && !hasReq) return { valid: false, error: "缺少 request 或 steps 字段" };
+  const has = Array.isArray(obj.requests) || Array.isArray(obj.steps) || isPlainObject(obj.request);
+  if (!has) return { valid: false, error: "缺少 requests 字段" };
   return { valid: true, case: parseCase(text) };
 }
 
@@ -299,7 +309,8 @@ function serializeBody(b: BodySpec): Record<string, unknown> | null {
   return null;
 }
 
-function serializeRequest(r: RequestSpec): Record<string, unknown> {
+/** 序列化 HTTP 报文（原 serializeRequest）。 */
+function serializeHttp(r: HttpSpec): Record<string, unknown> {
   const out: Record<string, unknown> = { method: r.method, url: r.url };
   const q = serializeKV(r.query);
   if (q.length) out.query = q;
@@ -322,11 +333,11 @@ function serializeAssertions(list: Assertion[]): Array<Record<string, unknown>> 
     });
 }
 
-// 顺序对齐文档示例：id → dependsOn → request → outputs → assertions
-function serializeStep(s: Step): Record<string, unknown> {
+// 顺序对齐文档示例：id → dependsOn → http → outputs → assertions
+function serializeRequest(s: Request): Record<string, unknown> {
   const out: Record<string, unknown> = { id: s.id };
   if (s.dependsOn.length) out.dependsOn = s.dependsOn;
-  out.request = serializeRequest(s.request);
+  out.http = serializeHttp(s.http);
   const o: Record<string, string> = {};
   for (const it of s.outputs) if (it.name.trim()) o[it.name.trim()] = it.path;
   if (Object.keys(o).length) out.outputs = o;
@@ -335,18 +346,13 @@ function serializeStep(s: Step): Record<string, unknown> {
   return out;
 }
 
-/** 把 case 序列化为 YAML 文本（单节点写顶层 request，多节点写 steps + ui）。 */
+/** 把 case 序列化为 YAML 文本（统一写 requests 列表；单请求 = 长度 1）。 */
 export function dumpCase(c: Case): string {
   const out: Record<string, unknown> = { apicase: c.version || "0.1" };
   if (c.name) out.name = c.name;
   if (c.vars && Object.keys(c.vars).length) out.vars = c.vars;
-  if (c.kind === "flow" && c.steps) {
-    out.steps = c.steps.map(serializeStep);
-    if (c.ui && Object.keys(c.ui.nodes).length) out.ui = { nodes: c.ui.nodes };
-  } else if (c.request) {
-    out.request = serializeRequest(c.request);
-    if (c.assertions && c.assertions.length) out.assertions = serializeAssertions(c.assertions);
-  }
+  out.requests = c.requests.map(serializeRequest);
+  if (c.ui && Object.keys(c.ui.nodes).length) out.ui = { nodes: c.ui.nodes };
   return dump(out, { lineWidth: 100, noRefs: true });
 }
 

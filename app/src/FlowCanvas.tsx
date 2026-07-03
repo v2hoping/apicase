@@ -99,12 +99,12 @@ export function FlowCanvas({
     <div className="flow-canvas">
       <div className="flow-toolbar">
         <button className="flow-tool-btn primary" onClick={onAddStep}>
-          ＋ 添加步骤
+          ＋ 添加
         </button>
         <button className="flow-tool-btn" onClick={onRunAll} disabled={running}>
-          {running ? "运行中…" : "▶ 运行全部"}
+          {running ? "运行中…" : "▶ 运行"}
         </button>
-        <span className="flow-hint">{nodes.length} 个步骤 · 按依赖拓扑序执行、变量透传</span>
+        <span className="flow-hint">{nodes.length} 个请求 · 按依赖拓扑序执行、变量透传</span>
       </div>
 
       <div className="flow-scroll">
@@ -142,7 +142,7 @@ export function FlowCanvas({
                 {nodes.length > 1 && (
                   <button
                     className="fn-del"
-                    title="删除步骤"
+                    title="删除请求"
                     onClick={(e) => {
                       e.stopPropagation();
                       onDeleteStep(n.id);

@@ -6,13 +6,13 @@ import { ReqDraft } from "./draft";
 /** 运行期变量上下文：case 级 vars + 各步已提取的 outputs */
 export interface RunContext {
   vars: Record<string, unknown>;
-  steps: Record<string, Record<string, unknown>>; // stepId → { outputName: value }
+  requests: Record<string, Record<string, unknown>>; // requestId → { outputName: value }
 }
 
 // ── {{ }} 变量替换 ─────────────────────────────────
 function lookup(expr: string, ctx: RunContext): unknown {
-  const m = expr.match(/^steps\.([^.]+)\.outputs\.(.+)$/);
-  if (m) return ctx.steps[m[1]]?.[m[2]];
+  const m = expr.match(/^(?:requests|steps)\.([^.]+)\.outputs\.(.+)$/); // 兼容旧 steps. 前缀
+  if (m) return ctx.requests[m[1]]?.[m[2]];
   let key = expr;
   if (key.startsWith("vars.")) key = key.slice(5);
   return ctx.vars[key];
