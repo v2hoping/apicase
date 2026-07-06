@@ -492,22 +492,129 @@ body.resizing-col .pane-resizer::after {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel);
-  overflow: hidden;
+  /* 不裁剪：方法下拉的选项面板需溢出到容器下方 */
+  overflow: visible;
 }
 .url-group:focus-within {
   border-color: var(--orange);
 }
-.method-select {
-  height: 34px;
-  padding: 0 8px;
-  font-weight: 700;
-  border: none;
-  /* 与 URL 之间的分隔线 */
-  border-right: 1px solid var(--border);
-  border-radius: 0;
-  background: transparent;
+/* ── 自定义下拉控件（替代原生 select）──
+   触发器为纯平按钮（无系统灰白阴影），选项面板固定出现在控件正下方。 */
+.ui-select {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+}
+.ui-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
   cursor: pointer;
   outline: none;
+  transition: border-color 0.12s;
+}
+.ui-select-trigger:hover {
+  border-color: #cfcfd2;
+}
+.ui-select.is-open .ui-select-trigger {
+  border-color: var(--orange);
+}
+.ui-select-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-select-caret {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.ui-select.is-open .ui-select-caret {
+  transform: rotate(180deg);
+}
+/* 选项面板：始终贴控件下方，轻盈软阴影而非系统灰白硬阴影 */
+.ui-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(24, 24, 40, 0.12);
+  z-index: 200;
+  animation: ui-select-in 0.12s ease;
+}
+@keyframes ui-select-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ui-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ui-select-option:hover {
+  background: #f4f4f5;
+}
+.ui-select-option.is-active {
+  color: var(--orange-dark);
+  font-weight: 600;
+}
+.ui-select-check {
+  flex-shrink: 0;
+  color: var(--orange);
+  font-size: 11px;
+}
+
+/* 请求行方法下拉：融入 url-group，无独立边框，文字随方法配色 */
+.ui-select.method-select {
+  flex-shrink: 0;
+}
+.ui-select.method-select .ui-select-trigger {
+  height: 34px;
+  min-width: 96px;
+  padding: 0 12px;
+  font-weight: 700;
+  color: inherit;
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+}
+.ui-select.method-select .ui-select-caret {
+  color: currentColor;
+  opacity: 0.55;
+}
+.ui-select.method-select .ui-select-menu {
+  min-width: 150px;
 }
 .url-input {
   flex: 1;
@@ -724,6 +831,47 @@ body.resizing-col .pane-resizer::after {
   color: var(--red);
   white-space: pre-wrap;
 }
+/* 外部改动提示条：琥珀色，附「重新加载 / 忽略」操作 */
+.stale-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+  background: #fff7e6;
+  border: 1px solid #f0d089;
+  border-radius: 6px;
+  color: #8a5a00;
+}
+.stale-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.stale-btn {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
+  border: 1px solid #e0c07a;
+  border-radius: 5px;
+  background: #fff;
+  color: #8a5a00;
+  cursor: pointer;
+}
+.stale-btn:hover {
+  background: #fdf3df;
+}
+.stale-btn.reload {
+  border-color: var(--orange);
+  background: var(--orange);
+  color: #fff;
+  font-weight: 600;
+}
+.stale-btn.reload:hover {
+  background: var(--orange-dark);
+}
 .response-body {
   margin: 0;
   max-height: 360px;
@@ -911,8 +1059,7 @@ body.resizing-col .pane-resizer::after {
   font-size: 12px;
   color: var(--muted);
 }
-.field-row input,
-.field-row select {
+.field-row input {
   flex: 1;
   height: 30px;
   padding: 0 8px;
@@ -921,23 +1068,21 @@ body.resizing-col .pane-resizer::after {
   border-radius: 4px;
   background: var(--panel);
 }
-.field-row input:focus,
-.field-row select:focus {
+.field-row input:focus {
   outline: none;
   border-color: var(--orange);
+}
+.field-row .field-select {
+  flex: 1;
+  max-width: 220px;
 }
 .body-type-bar {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.body-type-bar select {
-  height: 30px;
-  padding: 0 8px;
-  font-size: 13px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--panel);
+.bodytype-select .ui-select-trigger {
+  min-width: 160px;
 }
 .ct-input {
   flex: 1;
@@ -1238,18 +1383,14 @@ body.resizing-col .pane-resizer::after {
 .assert-table .op-col2 {
   width: 104px;
 }
-.assert-table select {
+.assert-table .assert-op-select {
   width: 100%;
-  height: 28px;
-  padding: 0 6px;
-  font-size: 12px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--panel);
 }
-.assert-table select:focus {
-  outline: none;
-  border-color: var(--orange);
+.assert-table .assert-op-select .ui-select-trigger {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-radius: 4px;
 }
 .assert-badge {
   display: inline-block;
@@ -1764,8 +1905,12 @@ body.resizing-col .pane-resizer::after {
 }
 .nc-method {
   flex: 0 0 auto;
-  width: 96px;
+  width: 104px;
+}
+.nc-method .ui-select-trigger {
+  height: 30px;
   font-weight: 700;
+  color: inherit; /* 继承方法配色 */
 }
 .nc-url {
   flex: 1;

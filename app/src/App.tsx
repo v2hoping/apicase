@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Case, Request, RequestOutput, Assertion, UiNodes, analyzeCase, dumpCase, splitQueryFromUrl, parseEnvironments, dumpApplicationConfig } from "./case";
 import { ReqDraft, requestToDraft, draftToRequest, buildApiRequest, emptyDraft } from "./draft";
-import { RequestEditor, KVTable, METHODS, methodClass } from "./RequestEditor";
+import { RequestEditor, KVTable, METHODS, methodClass, Select } from "./RequestEditor";
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
 import { RunContext, AssertResult, resolveDraft, extractOutputs, evalAssertions } from "./flow";
 import {
@@ -444,13 +445,13 @@ function NewCaseDialog({
         </div>
         <div className="field-row">
           <label>请求</label>
-          <select className={`nc-method ${methodClass(method)}`} value={method} onChange={(e) => setMethod(e.target.value)}>
-            {METHODS.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
+          <Select
+            className={`nc-method ${methodClass(method)}`}
+            value={method}
+            options={METHODS.map((m) => ({ value: m, label: m }))}
+            onChange={(v) => setMethod(v)}
+            ariaLabel="请求方法"
+          />
           <input
             className="nc-url"
             value={url}
@@ -771,6 +772,13 @@ function App() {
   // 文件树
   const [childrenMap, setChildrenMap] = useState<Record<string, DirEntry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // 文件系统监听：外部增删改的自愈刷新
+  // 本应用刚写过的路径 → 时间戳，用于抑制监听回声（避免自身保存触发重载/覆盖）
+  const selfWritesRef = useRef<Map<string, number>>(new Map());
+  // 监听器每次触发时读取的最新处理闭包（避免一次性订阅捕获过期 state）
+  const fsHandlerRef = useRef<(paths: string[]) => void>(() => {});
+  // 活动文件被外部修改且存在未保存改动时的提示（不静默覆盖用户编辑）
+  const [externalStale, setExternalStale] = useState(false);
   // 文件树/搜索的选中高亮直接以 currentCasePath 为准（当前打开的文件），无需单独状态
   // 搜索栏 / 可视化新建
   const [searchQuery, setSearchQuery] = useState("");
@@ -938,6 +946,21 @@ function App() {
     };
   }, []);
 
+  // 挂载一次：订阅后端文件系统变更事件，交给最新的处理闭包（fsHandlerRef）
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<string[]>("workspace:fs-change", (e) => {
+      fsHandlerRef.current(e.payload || []);
+    })
+      .then((u) => {
+        unlisten = u;
+      })
+      .catch(() => {});
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   // 全局快捷键：单一 document 监听；用 ref 取最新绑定 / 动作闭包
   const saveRef = useRef<() => void>(() => {});
   const scLookupRef = useRef<Record<string, ActionId>>({});
@@ -988,6 +1011,12 @@ function App() {
     }
   }
 
+  // 记录本应用自身发起的写操作路径，令监听回声可被识别并抑制
+  function noteSelfWrite(...paths: string[]) {
+    const now = Date.now();
+    paths.forEach((p) => selfWritesRef.current.set(p, now));
+  }
+
   function toggleDir(entry: DirEntry) {
     const isOpen = expanded.has(entry.path);
     setExpanded((prev) => {
@@ -1029,6 +1058,7 @@ function App() {
   // 活动文件变化（点 Tab、关标签切邻居、新建等）时，自动在文件树中展开显露它
   useEffect(() => {
     revealInTree(currentCasePath);
+    setExternalStale(false); // 切换活动文件即清除上一个文件的外部改动提示
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentCasePath, workspace]);
 
@@ -1040,6 +1070,8 @@ function App() {
     closeAllTabsAndReset();
     loadDir(path);
     loadEnvironments(path);
+    // 启动/切换文件系统监听：外部对该工作空间的增删改将实时回传
+    invoke("watch_workspace", { path }).catch(() => {});
   }
 
   // 读取工作空间 environment（application.yml）并挑选活动环境
@@ -1174,6 +1206,27 @@ function App() {
     delete tabCacheRef.current[path];
     setTabOrder(rest);
     if (wasActive) {
+      if (rest.length === 0) {
+        resetCaseState();
+      } else {
+        const neighbor = rest[Math.min(idx, rest.length - 1)];
+        const s = tabCacheRef.current[neighbor];
+        if (s) restoreSnapshot(s);
+        else openCase(neighbor);
+      }
+    }
+  }
+
+  // 外部删除：静默关闭指向该路径的标签并切到邻居（文件已不存在，无需确认）
+  function dropOpenTab(path: string) {
+    const idx = tabOrder.indexOf(path);
+    if (idx === -1) return;
+    const wasActive = path === currentCasePath;
+    const rest = tabOrder.filter((p) => p !== path);
+    delete tabCacheRef.current[path];
+    setTabOrder(rest);
+    if (wasActive) {
+      setExternalStale(false);
       if (rest.length === 0) {
         resetCaseState();
       } else {
@@ -1404,6 +1457,7 @@ function App() {
   // ── 保存 ────────────────────────────────────────
   async function saveCase() {
     if (!currentCasePath) return;
+    noteSelfWrite(currentCasePath); // 抑制本次保存的监听回声
     try {
       if (isAppConfig(currentCasePath) && configVisual) {
         // 可视设置页：把 environments 序列化进 application.yml
@@ -1443,6 +1497,7 @@ function App() {
       }
       setDirty(false);
       setError(null);
+      setExternalStale(false);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     }
@@ -1475,6 +1530,50 @@ function App() {
     "send-request": () => {
       if (selected) onSendRequest(selected.id);
     },
+  };
+
+  // 文件系统变更处理（监听器每次触发时经 fsHandlerRef 读取此最新闭包）
+  fsHandlerRef.current = (paths: string[]) => {
+    if (!workspace) return;
+    const under = (p: string) => p === workspace || p.startsWith(workspace + "/") || p.startsWith(workspace + "\\");
+    const inWs = paths.filter(under);
+    if (inWs.length === 0) return;
+
+    const now = Date.now();
+    const isEcho = (p: string) => {
+      const t = selfWritesRef.current.get(p);
+      return t !== undefined && now - t < 2500; // 本应用刚写过：忽略回声
+    };
+
+    // 1) 目录树：刷新受影响且「已加载」的目录（懒加载一致——不主动展开新目录）
+    const dirs = new Set<string>();
+    for (const p of inWs) {
+      const parent = dirName(p);
+      if (parent === workspace || childrenMap[parent] !== undefined) dirs.add(parent); // 增/删/改名改变父目录列表
+      if (childrenMap[p] !== undefined) dirs.add(p); // 受影响路径本身是已展开目录
+    }
+    dirs.forEach((d) => loadDir(d));
+
+    // 2) application.yml 外部改动 → 重载环境（非活动文件时；活动文件走下方重载）
+    const cfg = joinPath(workspace, "application.yml");
+    if (inWs.includes(cfg) && !isEcho(cfg) && currentCasePath !== cfg) {
+      loadEnvironments(workspace);
+    }
+
+    // 3) 已打开标签受影响：核对存在性——删除→关标签；活动文件被改→净态重载 / 脏态提示
+    const affected = tabOrder.filter((p) => inWs.includes(p) && !isEcho(p));
+    affected.forEach((p) => {
+      invoke<boolean>("path_exists", { path: p })
+        .then((exists) => {
+          if (!exists) {
+            dropOpenTab(p);
+          } else if (p === currentCasePath && !binaryFile) {
+            if (dirty) setExternalStale(true); // 有未保存改动：提示，绝不静默覆盖
+            else openCase(p); // 净态：直接加载最新内容
+          }
+        })
+        .catch(() => {});
+    });
   };
 
   // ── 请求编辑 ────────────────────────────────────
@@ -1621,6 +1720,7 @@ function App() {
       ],
     };
     try {
+      noteSelfWrite(path);
       await invoke("create_file", { path, content: dumpCase(c) });
       await loadDir(dir);
       setExpanded((prev) => new Set(prev).add(dir));
@@ -1638,6 +1738,7 @@ function App() {
         if (!name.trim()) return;
         const path = joinPath(dir, name.trim());
         try {
+          noteSelfWrite(path);
           await invoke("create_dir", { path });
           await loadDir(dir);
           setExpanded((prev) => new Set(prev).add(dir));
@@ -1657,6 +1758,7 @@ function App() {
         const dir = dirName(entry.path);
         const to = joinPath(dir, name.trim());
         try {
+          noteSelfWrite(entry.path, to);
           await invoke("rename_path", { from: entry.path, to });
           await loadDir(dir);
           // 同步已打开的标签（精确文件改名）
@@ -1680,6 +1782,7 @@ function App() {
     if (!window.confirm(`确定删除「${entry.name}」？此操作不可撤销。`)) return;
     const dir = dirName(entry.path);
     try {
+      noteSelfWrite(entry.path);
       await invoke("delete_path", { path: entry.path });
       await loadDir(dir);
       // 关闭被删文件/目录下的所有标签
@@ -2023,6 +2126,19 @@ function App() {
           ) : isConfig ? (
             <>
               {error && <div className="error-box">⚠ {error}</div>}
+              {externalStale && (
+                <div className="stale-box">
+                  <span>⚠ 此文件已在外部被修改，而你有未保存的改动。</span>
+                  <span className="stale-actions">
+                    <button className="stale-btn reload" onClick={() => { setExternalStale(false); openCase(currentCasePath); }}>
+                      重新加载
+                    </button>
+                    <button className="stale-btn" onClick={() => setExternalStale(false)}>
+                      忽略
+                    </button>
+                  </span>
+                </div>
+              )}
 
               {configVisual ? (
                 <SettingsPage
@@ -2051,6 +2167,19 @@ function App() {
           ) : (
             <>
               {error && <div className="error-box">⚠ {error}</div>}
+              {externalStale && (
+                <div className="stale-box">
+                  <span>⚠ 此文件已在外部被修改，而你有未保存的改动。</span>
+                  <span className="stale-actions">
+                    <button className="stale-btn reload" onClick={() => { setExternalStale(false); openCase(currentCasePath); }}>
+                      重新加载
+                    </button>
+                    <button className="stale-btn" onClick={() => setExternalStale(false)}>
+                      忽略
+                    </button>
+                  </span>
+                </div>
+              )}
 
               {effectiveText ? (
                 <div className="text-view">
