@@ -1,4 +1,8 @@
-# apicase
+<p align="center">
+  <img src="app/src-tauri/icons/icon.png" alt="apicase logo" width="128" height="128" />
+</p>
+
+<h1 align="center">apicase</h1>
 
 **API 接口调试、管理与用例编排** 的本地优先（local-first）桌面软件。
 

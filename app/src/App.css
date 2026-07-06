@@ -961,10 +961,51 @@ body.resizing-col .pane-resizer::after {
 .workspace-empty {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   color: var(--muted);
   font-size: 13px;
+}
+.empty-logo {
+  width: 160px;
+  height: 160px;
+  filter: grayscale(1);
+  opacity: 0.6;
+  user-select: none;
+  pointer-events: none;
+}
+.empty-shortcuts {
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 220px;
+}
+.empty-sc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.empty-sc-label {
+  font-size: 13px;
+  color: var(--muted);
+}
+.empty-sc-keys {
+  display: inline-flex;
+  gap: 4px;
+}
+.empty-sc-key {
+  min-width: 22px;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
 }
 
 /* ── 二进制/不支持编码占位（仿 VSCode）── */
@@ -1729,4 +1770,90 @@ body.resizing-col .pane-resizer::after {
 .nc-url {
   flex: 1;
   min-width: 0;
+}
+
+/* ── 快捷键设置（配置页「快捷键」分区）───────────────── */
+.sc-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sc-group {
+  margin-top: 14px;
+}
+.sc-group-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.sc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+.sc-label {
+  font-size: 13px;
+  color: var(--text);
+}
+.sc-spacer {
+  flex: 1;
+}
+.sc-keys {
+  display: inline-flex;
+  gap: 4px;
+}
+.sc-key {
+  min-width: 22px;
+  text-align: center;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.sc-badge {
+  min-width: 52px;
+  text-align: center;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.sc-badge.recording {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: rgba(45, 127, 249, 0.08);
+}
+.sc-badge.disabled {
+  color: var(--muted);
+  font-family: inherit;
+}
+.sc-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.sc-btn:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.sc-btn.ghost {
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+}
+.sc-btn.ghost:hover {
+  color: var(--red);
 }

@@ -7,6 +7,23 @@ import { ReqDraft, requestToDraft, draftToRequest, buildApiRequest, emptyDraft }
 import { RequestEditor, KVTable, METHODS, methodClass } from "./RequestEditor";
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
 import { RunContext, AssertResult, resolveDraft, extractOutputs, evalAssertions } from "./flow";
+import {
+  ACTIONS,
+  ACTION_MAP,
+  type ActionDef,
+  type ActionId,
+  type Overrides,
+  eventToAccel,
+  accelKey,
+  formatAccel,
+  accelTokens,
+  resolveBindings,
+  buildLookup,
+  findConflict,
+  isDefaultBinding,
+  loadOverrides,
+  saveOverrides,
+} from "./shortcuts";
 import "./App.css";
 
 interface HeaderEntry {
@@ -459,18 +476,127 @@ function NewCaseDialog({
 }
 
 // application.yml 的可视化设置页：左导航 + 右配置面板（仿 GitHub 设置页）
+// 配置页「快捷键」分区：查看 + 录制重绑 + 冲突检测 + 恢复默认。
+function ShortcutsSettings({ overrides, onChange }: { overrides: Overrides; onChange: (next: Overrides) => void }) {
+  const [recording, setRecording] = useState<ActionId | null>(null);
+  const bindings = resolveBindings(overrides);
+
+  // 录制态：capture 阶段全局捕获 + stopPropagation，避免录制时触发全局快捷键分发
+  useEffect(() => {
+    const rec = recording;
+    if (!rec) return;
+    function onKey(e: KeyboardEvent) {
+      if (!rec) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        setRecording(null);
+        return;
+      }
+      if (e.key === "Backspace" || e.key === "Delete") {
+        onChange({ ...overrides, [rec]: "" }); // 清空 → 禁用
+        setRecording(null);
+        return;
+      }
+      const accel = eventToAccel(e);
+      if (!accel) return; // 仅按了修饰键，等待主键
+      const conflict = findConflict(resolveBindings(overrides), accel, rec);
+      if (conflict) {
+        const ok = window.confirm(`${formatAccel(accel)} 已被「${ACTION_MAP[conflict].label}」占用，替换？（原动作将被解绑）`);
+        if (ok) onChange({ ...overrides, [conflict]: "", [rec]: accelKey(accel) });
+      } else {
+        onChange({ ...overrides, [rec]: accelKey(accel) });
+      }
+      setRecording(null);
+    }
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [recording, overrides, onChange]);
+
+  const groups: { name: string; items: ActionDef[] }[] = [];
+  for (const a of ACTIONS) {
+    let g = groups.find((x) => x.name === a.group);
+    if (!g) {
+      g = { name: a.group, items: [] };
+      groups.push(g);
+    }
+    g.items.push(a);
+  }
+
+  function restore(id: ActionId) {
+    const n = { ...overrides };
+    delete n[id];
+    onChange(n);
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-title sc-title-row">
+        <span>快捷键</span>
+        <button className="link-danger" onClick={() => onChange({})}>
+          全部恢复默认
+        </button>
+      </div>
+      <div className="settings-desc">
+        点「修改」后按下新组合键即可重绑；录制时 <code>Esc</code> 取消、<code>Backspace</code> 清空（禁用）。修饰键{" "}
+        <code>Mod</code> 在 macOS 为 ⌘、其它平台为 Ctrl。
+      </div>
+      {groups.map((g) => (
+        <div key={g.name} className="sc-group">
+          <div className="sc-group-name">{g.name}</div>
+          {g.items.map((a) => {
+            const accel = bindings[a.id];
+            const isRec = recording === a.id;
+            return (
+              <div key={a.id} className="sc-row">
+                <span className="sc-label">{a.label}</span>
+                <span className="sc-spacer" />
+                {isRec ? (
+                  <span className="sc-badge recording">按下快捷键…</span>
+                ) : accel ? (
+                  <span className="sc-keys">
+                    {accelTokens(accel).map((t, i) => (
+                      <kbd key={i} className="sc-key">
+                        {t}
+                      </kbd>
+                    ))}
+                  </span>
+                ) : (
+                  <span className="sc-badge disabled">已禁用</span>
+                )}
+                <button className="sc-btn" onClick={() => setRecording(isRec ? null : a.id)}>
+                  {isRec ? "取消" : "修改"}
+                </button>
+                {!isDefaultBinding(overrides, a.id) && (
+                  <button className="sc-btn ghost" onClick={() => restore(a.id)}>
+                    恢复
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function SettingsPage({
   environments,
   onChange,
   workspacePath,
   configPath,
+  shortcutOverrides,
+  onShortcutChange,
 }: {
   environments: Record<string, Record<string, string>>;
   onChange: (next: Record<string, Record<string, string>>) => void;
   workspacePath: string;
   configPath: string;
+  shortcutOverrides: Overrides;
+  onShortcutChange: (next: Overrides) => void;
 }) {
-  const NAV = ["通用", "主题", "环境"] as const;
+  const NAV = ["通用", "主题", "环境", "快捷键"] as const;
   const [section, setSection] = useState<(typeof NAV)[number]>("环境");
   const envNames = Object.keys(environments);
   const [selEnv, setSelEnv] = useState(envNames[0] || "");
@@ -566,6 +692,7 @@ function SettingsPage({
             <div className="settings-desc">当前为浅色主题；深色主题即将支持。</div>
           </div>
         )}
+        {section === "快捷键" && <ShortcutsSettings overrides={shortcutOverrides} onChange={onShortcutChange} />}
       </div>
     </div>
   );
@@ -688,6 +815,13 @@ function App() {
   const [pretty, setPretty] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // 全局快捷键 override（app 级偏好，持久化 localStorage）
+  const [scOverrides, setScOverrides] = useState<Overrides>(() => loadOverrides());
+  function onShortcutChange(next: Overrides) {
+    setScOverrides(next);
+    saveOverrides(next);
+  }
+
   const mark = () => setDirty(true);
 
   const selected = requests.find((s) => s.id === selectedRequestId) || requests[0];
@@ -804,14 +938,25 @@ function App() {
     };
   }, []);
 
-  // Cmd/Ctrl+S 保存（用 ref 取最新 save 闭包）
+  // 全局快捷键：单一 document 监听；用 ref 取最新绑定 / 动作闭包
   const saveRef = useRef<() => void>(() => {});
+  const scLookupRef = useRef<Record<string, ActionId>>({});
+  const scActionsRef = useRef<Partial<Record<ActionId, () => void>>>({});
+  const searchInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        saveRef.current();
+      const accel = eventToAccel(e);
+      if (!accel) return;
+      // 纯键（无 Mod/Alt）在输入类元素中不拦截，避免干扰打字
+      if (!accel.mod && !accel.alt) {
+        const t = e.target as HTMLElement | null;
+        const tag = t?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable) return;
       }
+      const id = scLookupRef.current[accelKey(accel)];
+      if (!id) return;
+      e.preventDefault();
+      scActionsRef.current[id]?.();
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -914,7 +1059,7 @@ function App() {
   async function openOrCreateWorkspace() {
     setWsMenuOpen(false);
     try {
-      const selectedDir = await open({ directory: true, multiple: false, title: "打开或创建工作空间" });
+      const selectedDir = await open({ directory: true, multiple: false, title: "打开工作空间" });
       if (typeof selectedDir === "string") {
         await invoke("init_workspace", { path: selectedDir });
         applyWorkspace(selectedDir);
@@ -1306,6 +1451,32 @@ function App() {
     if (currentCasePath && dirty) saveCase();
   };
 
+  // 快捷键：反查表 + 动作分发闭包（每次 render 取最新 state / handler）
+  const scBindings = resolveBindings(scOverrides);
+  scLookupRef.current = buildLookup(scBindings);
+  scActionsRef.current = {
+    "new-case": () => {
+      if (workspace) newCaseIn(workspace);
+    },
+    "open-workspace": () => openOrCreateWorkspace(),
+    save: () => saveRef.current(),
+    "close-tab": () => {
+      if (currentCasePath) closeTab(currentCasePath);
+    },
+    search: () => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    },
+    "open-settings": () => {
+      if (!workspace) return;
+      openTab(joinPath(workspace, "application.yml"));
+      setConfigVisual(true);
+    },
+    "send-request": () => {
+      if (selected) onSendRequest(selected.id);
+    },
+  };
+
   // ── 请求编辑 ────────────────────────────────────
   function updateReq(next: ReqDraft) {
     setRequests((prev) => prev.map((s) => (s.id === selectedRequestId ? { ...s, req: next } : s)));
@@ -1626,7 +1797,7 @@ function App() {
           {wsMenuOpen && (
             <div className="workspace-dropdown">
               <button className="ws-item" onClick={openOrCreateWorkspace}>
-                打开或创建工作空间
+                打开工作空间
               </button>
               <div className="ws-divider" />
               <div className="ws-section-title">最近</div>
@@ -1716,6 +1887,7 @@ function App() {
                 <div className="tree-search-wrap">
                   <span className="tree-search-icon">⌕</span>
                   <input
+                    ref={searchInputRef}
                     className="tree-search"
                     placeholder="搜索用例…"
                     value={searchQuery}
@@ -1786,16 +1958,7 @@ function App() {
                 </div>
               )}
             </>
-          ) : (
-            <div className="sidebar-empty">
-              未找到工作空间.
-              <br />
-              <button className="link-btn" onClick={openOrCreateWorkspace}>
-                创建或打开
-              </button>
-              工作空间.
-            </div>
-          )}
+          ) : null}
         </aside>
 
         <div
@@ -1827,7 +1990,27 @@ function App() {
             </div>
           )}
           {!currentCasePath ? (
-            <div className="workspace-empty">从左侧选择一个用例，或新建一个开始调试。</div>
+            <div className="workspace-empty">
+              <img className="empty-logo" src="/nautilus.svg" alt="" draggable={false} />
+              <div className="empty-shortcuts">
+                {(workspace ? ACTIONS : ACTIONS.filter((a) => a.id === "open-workspace")).map((a) => {
+                  const accel = scBindings[a.id];
+                  if (!accel) return null;
+                  return (
+                    <div key={a.id} className="empty-sc-row">
+                      <span className="empty-sc-label">{a.label}</span>
+                      <span className="empty-sc-keys">
+                        {accelTokens(accel).map((t, i) => (
+                          <kbd key={i} className="empty-sc-key">
+                            {t}
+                          </kbd>
+                        ))}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           ) : binaryFile ? (
             <div className="binary-view">
               <svg className="binary-ico" viewBox="0 0 24 24" width="44" height="44" aria-hidden="true">
@@ -1842,7 +2025,14 @@ function App() {
               {error && <div className="error-box">⚠ {error}</div>}
 
               {configVisual ? (
-                <SettingsPage environments={environments} onChange={onEnvChange} workspacePath={workspace} configPath={currentCasePath} />
+                <SettingsPage
+                  environments={environments}
+                  onChange={onEnvChange}
+                  workspacePath={workspace}
+                  configPath={currentCasePath}
+                  shortcutOverrides={scOverrides}
+                  onShortcutChange={onShortcutChange}
+                />
               ) : (
                 <div className="text-view">
                   <div className="text-warn is-config">⚙ 工作空间配置文件（application.yml）——编辑环境后保存即生效。</div>
