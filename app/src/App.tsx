@@ -1648,6 +1648,72 @@ function App() {
       delete n[id];
       return n;
     });
+    // 清掉被删节点的手动坐标
+    setUiNodes((prev) => {
+      if (!prev || !prev[id]) return prev;
+      const nx = { ...prev };
+      delete nx[id];
+      return nx;
+    });
+    mark();
+  }
+
+  // 拖动节点：把坐标写入 uiNodes（画布视图态，随 case 一并保存）
+  function moveNode(id: string, x: number, y: number) {
+    setUiNodes((prev) => ({ ...(prev || {}), [id]: { x, y } }));
+    mark();
+  }
+
+  // 端口连线建依赖：edge from→to 表示「to 依赖 from」；防自连、防重复、防成环
+  function addDependency(fromId: string, toId: string) {
+    if (fromId === toId) return;
+    const byId = new Map(requests.map((r) => [r.id, r]));
+    // from 若已（间接）依赖 to，则再让 to 依赖 from 会成环
+    const reaches = (start: string, target: string): boolean => {
+      const seen = new Set<string>();
+      const stack = [start];
+      while (stack.length) {
+        const cur = stack.pop() as string;
+        if (cur === target) return true;
+        if (seen.has(cur)) continue;
+        seen.add(cur);
+        const n = byId.get(cur);
+        if (n) stack.push(...n.dependsOn);
+      }
+      return false;
+    };
+    if (reaches(fromId, toId)) {
+      window.alert("无法建立依赖：会形成环。");
+      return;
+    }
+    let changed = false;
+    setRequests((prev) =>
+      prev.map((s) => {
+        if (s.id !== toId || s.dependsOn.includes(fromId)) return s;
+        changed = true;
+        return { ...s, dependsOn: [...s.dependsOn, fromId] };
+      }),
+    );
+    if (changed) mark();
+  }
+
+  // 解除依赖：从 toId.dependsOn 移除 fromId
+  function removeDependency(fromId: string, toId: string) {
+    let changed = false;
+    setRequests((prev) =>
+      prev.map((s) => {
+        if (s.id !== toId || !s.dependsOn.includes(fromId)) return s;
+        changed = true;
+        return { ...s, dependsOn: s.dependsOn.filter((d) => d !== fromId) };
+      }),
+    );
+    if (changed) mark();
+  }
+
+  // 规整：清除全部手动坐标，恢复自动分层布局
+  function resetLayout() {
+    if (!uiNodes || Object.keys(uiNodes).length === 0) return;
+    setUiNodes(undefined);
     mark();
   }
 
@@ -2217,6 +2283,10 @@ function App() {
                         onDeleteStep={deleteRequest}
                         onRunAll={onRunAll}
                         running={runningAll}
+                        onMoveNode={moveNode}
+                        onConnect={addDependency}
+                        onDisconnect={removeDependency}
+                        onResetLayout={resetLayout}
                       />
                     </div>
                   )}
