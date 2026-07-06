@@ -1,7 +1,7 @@
 // 通用请求编辑器：单请求 case 与多请求 flow 的每个请求都复用它。
 // 完全受控——父组件持有 ReqDraft，本组件只读 value、通过 onChange 汇报变更。
 // 切换 step 时父组件用 key 强制重挂载，从而重置内部 Tab 等瞬时状态。
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { KV, AuthType, BodyType, Assertion, AssertOp, ASSERT_OPS, RequestOutput, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
 import { ReqDraft } from "./draft";
 import { AssertResult } from "./flow";
@@ -12,6 +12,70 @@ const AUTH_TYPES: AuthType[] = ["none", "bearer", "basic", "apikey"];
 
 export function methodClass(m: string): string {
   return `method-${m.toLowerCase()}`;
+}
+
+// 自定义下拉：替代原生 <select>，避免系统弹层盖住控件、带灰白阴影。
+// 选项面板始终固定在控件正下方；点击外部或按 Esc 关闭。
+type SelectOption = { value: string; label: string };
+export function Select({
+  value,
+  options,
+  onChange,
+  className = "",
+  ariaLabel,
+}: {
+  value: string;
+  options: SelectOption[];
+  onChange: (v: string) => void;
+  className?: string;
+  ariaLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const current = options.find((o) => o.value === value);
+  return (
+    <div className={`ui-select ${open ? "is-open" : ""} ${className}`} ref={ref}>
+      <button type="button" className="ui-select-trigger" aria-label={ariaLabel} onClick={() => setOpen((v) => !v)}>
+        <span className="ui-select-value">{current?.label ?? value}</span>
+        <svg className="ui-select-caret" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+          <path d="M3 4.5L6 7.5L9 4.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open && (
+        <div className="ui-select-menu">
+          {options.map((o) => (
+            <button
+              type="button"
+              key={o.value}
+              className={`ui-select-option ${o.value === value ? "is-active" : ""}`}
+              onClick={() => {
+                onChange(o.value);
+                setOpen(false);
+              }}
+            >
+              <span className="ui-select-option-label">{o.label}</span>
+              {o.value === value && <span className="ui-select-check">✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // 断言操作符的中文显示（存储仍用英文标识，保持 YAML 稳定）
@@ -135,13 +199,12 @@ function AssertTable({
                 <input value={r.target} placeholder="status / $.data.token / header.X" onChange={(e) => update(i, { target: e.target.value })} />
               </td>
               <td className="op-col2">
-                <select value={r.op} onChange={(e) => update(i, { op: e.target.value as AssertOp })}>
-                  {ASSERT_OPS.map((op) => (
-                    <option key={op} value={op}>
-                      {OP_LABELS[op]}
-                    </option>
-                  ))}
-                </select>
+                <Select
+                  className="assert-op-select"
+                  value={r.op}
+                  options={ASSERT_OPS.map((op) => ({ value: op, label: OP_LABELS[op] }))}
+                  onChange={(v) => update(i, { op: v as AssertOp })}
+                />
               </td>
               <td>
                 {!noVal && <input value={r.value || ""} placeholder="期望值" onChange={(e) => update(i, { value: e.target.value })} />}
@@ -240,13 +303,13 @@ export function RequestEditor({
       {/* 请求行 */}
       <div className="request-bar">
         <div className="url-group">
-          <select className={`method-select ${methodClass(d.method)}`} value={d.method} onChange={(e) => set({ method: e.target.value })}>
-            {METHODS.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
+          <Select
+            className={`method-select ${methodClass(d.method)}`}
+            value={d.method}
+            options={METHODS.map((m) => ({ value: m, label: m }))}
+            onChange={(v) => set({ method: v })}
+            ariaLabel="请求方法"
+          />
           <input
             className="url-input"
             value={d.url}
@@ -286,13 +349,12 @@ export function RequestEditor({
           <div className="auth-panel">
             <div className="field-row">
               <label>类型</label>
-              <select value={d.authType} onChange={(e) => set({ authType: e.target.value as AuthType })}>
-                {AUTH_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
+              <Select
+                className="field-select"
+                value={d.authType}
+                options={AUTH_TYPES.map((t) => ({ value: t, label: t }))}
+                onChange={(v) => set({ authType: v as AuthType })}
+              />
             </div>
             {d.authType === "bearer" && (
               <div className="field-row">
@@ -324,10 +386,15 @@ export function RequestEditor({
                 </div>
                 <div className="field-row">
                   <label>位置</label>
-                  <select value={d.authApikeyIn} onChange={(e) => set({ authApikeyIn: e.target.value as "header" | "query" })}>
-                    <option value="header">header</option>
-                    <option value="query">query</option>
-                  </select>
+                  <Select
+                    className="field-select"
+                    value={d.authApikeyIn}
+                    options={[
+                      { value: "header", label: "header" },
+                      { value: "query", label: "query" },
+                    ]}
+                    onChange={(v) => set({ authApikeyIn: v as "header" | "query" })}
+                  />
                 </div>
               </>
             )}
@@ -337,13 +404,12 @@ export function RequestEditor({
         {tab === "body" && (
           <div className="body-panel">
             <div className="body-type-bar">
-              <select value={d.bodyType} onChange={(e) => set({ bodyType: e.target.value as BodyType })}>
-                {BODY_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
+              <Select
+                className="bodytype-select"
+                value={d.bodyType}
+                options={BODY_TYPES.map((t) => ({ value: t, label: t }))}
+                onChange={(v) => set({ bodyType: v as BodyType })}
+              />
               {d.bodyType === "text" && (
                 <input
                   className="ct-input"

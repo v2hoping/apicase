@@ -25,6 +25,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # HTTP 客户端：rustls 避免本地 OpenSSL 依赖，利于跨平台
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# 文件系统监听：跨平台原生后端（macOS FSEvents / Linux inotify / Windows ReadDirectoryChangesW）
+notify = "6"
 
 [dev-dependencies]
 # 仅用于 perform_request 的异步测试
