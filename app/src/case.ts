@@ -161,14 +161,14 @@ function normalizeAssertions(list: unknown): Assertion[] {
     .filter((a) => a.target !== "");
 }
 
-/** 规范化一个请求节点（原 normalizeStep）；兼容旧字段名 `request`（→ http）。 */
+/** 规范化一个请求节点。报文承载于 `http:`（唯一键）。 */
 function normalizeRequest(s: unknown, i: number): Request {
   const o = isPlainObject(s) ? s : {};
   const id = str(o.id) || `req${i + 1}`;
   const dependsOn = Array.isArray(o.dependsOn) ? o.dependsOn.map(str).filter(Boolean) : [];
   return {
     id,
-    http: normalizeHttp(o.http ?? o.request), // 兼容旧 `request:` 键
+    http: normalizeHttp(o.http),
     dependsOn,
     outputs: normalizeOutputs(o.outputs),
     assertions: normalizeAssertions(o.assertions),
@@ -187,10 +187,8 @@ function normalizeUi(u: unknown): { nodes: UiNodes } | undefined {
 }
 
 /**
- * 解析 case 文本为统一的 requests 列表。兼容三种输入：
- *  - 新：`requests:` 列表
- *  - 旧多节点：`steps:` 列表（每项 `request:` → http）
- *  - 旧单节点：顶层 `request:`（+ 顶层 `assertions:`）→ 归一化为 1 个请求
+ * 解析 case 文本为 requests 列表。**唯一格式**：顶层 `requests:` 列表（单节点 = 长度 1，
+ * 每项报文承载于 `http:`）。旧格式（`steps:` 列表、顶层 `request:`）一律不再兼容。
  */
 export function parseCase(text: string): Case {
   let obj: unknown;
@@ -203,18 +201,14 @@ export function parseCase(text: string): Case {
   const version = typeof o.apicase === "string" ? o.apicase : "0.1";
   const name = typeof o.name === "string" ? o.name : undefined;
   const vars = isPlainObject(o.vars) ? o.vars : undefined;
-  const arr = Array.isArray(o.requests) ? o.requests : Array.isArray(o.steps) ? o.steps : null;
-  if (arr) {
-    return { version, name, vars, requests: arr.map(normalizeRequest), ui: normalizeUi(o.ui) };
-  }
-  // 旧单节点：顶层 request（+ assertions）归一化为 1 个请求
-  const single = normalizeRequest({ id: "req1", http: o.request, assertions: o.assertions }, 0);
-  return { version, name, vars, requests: [single] };
+  const arr = Array.isArray(o.requests) ? o.requests : [];
+  return { version, name, vars, requests: arr.map(normalizeRequest), ui: normalizeUi(o.ui) };
 }
 
 /**
  * 校验并解析 case 文本，用于「内容驱动默认视图 / 文本兜底」。
- * valid=true 仅当能 parse 成对象且含 `requests` / `steps` / `request`；否则回退纯文本编辑。
+ * valid=true 仅当能 parse 成对象且含 `requests:` 列表；旧格式（`steps:` / 顶层 `request:`）
+ * 一律判为无效 → 回退纯文本编辑（不进可视化）。
  */
 export function analyzeCase(text: string): { valid: boolean; case?: Case; error?: string } {
   let obj: unknown;
@@ -224,8 +218,7 @@ export function analyzeCase(text: string): { valid: boolean; case?: Case; error?
     return { valid: false, error: `YAML 解析失败：${e instanceof Error ? e.message : String(e)}` };
   }
   if (!isPlainObject(obj)) return { valid: false, error: "顶层不是对象，不是有效的 case" };
-  const has = Array.isArray(obj.requests) || Array.isArray(obj.steps) || isPlainObject(obj.request);
-  if (!has) return { valid: false, error: "缺少 requests 字段" };
+  if (!Array.isArray(obj.requests)) return { valid: false, error: "缺少 requests 列表" };
   return { valid: true, case: parseCase(text) };
 }
 
