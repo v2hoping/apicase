@@ -434,7 +434,7 @@ body,
   background: transparent;
 }
 .sidebar-resizer:hover::after,
-body.resizing-col .sidebar-resizer::after {
+body.resizing-sidebar .sidebar-resizer::after {
   background: var(--orange);
 }
 /* 拖动调宽过程中：全局禁选 + col-resize 光标 */
@@ -464,7 +464,7 @@ body.resizing-col {
   background: transparent;
 }
 .pane-resizer:hover::after,
-body.resizing-col .pane-resizer::after {
+body.resizing-pane .pane-resizer::after {
   background: var(--orange);
 }
 
@@ -2313,7 +2313,7 @@ body.resizing-row {
   background: transparent;
 }
 .ai-resizer:hover::after,
-body.resizing-col .ai-resizer::after {
+body.resizing-ai .ai-resizer::after {
   background: var(--orange);
 }
 
