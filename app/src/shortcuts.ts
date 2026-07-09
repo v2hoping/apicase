@@ -9,7 +9,10 @@ export type ActionId =
   | "close-tab"
   | "search"
   | "open-settings"
-  | "send-request";
+  | "send-request"
+  | "toggle-left-sidebar"
+  | "toggle-bottom-panel"
+  | "toggle-right-sidebar";
 
 /** 规范化的快捷键组合。key 为小写主键（字母 / 数字 / 符号原样，特殊键如 "enter"）。 */
 export interface Accel {
@@ -42,6 +45,9 @@ export const ACTIONS: ActionDef[] = [
   { id: "search", label: "搜索用例", group: "导航", def: A("p", { mod: true }) },
   { id: "open-settings", label: "打开配置页", group: "导航", def: A(",", { mod: true }) },
   { id: "send-request", label: "发送请求", group: "运行", def: A("enter", { mod: true }) },
+  { id: "toggle-left-sidebar", label: "切换左侧边栏（文件树）", group: "视图", def: A("b", { mod: true }) },
+  { id: "toggle-bottom-panel", label: "切换底部栏（终端）", group: "视图", def: A("j", { mod: true }) },
+  { id: "toggle-right-sidebar", label: "切换右侧边栏（AI 对话）", group: "视图", def: A("b", { mod: true, alt: true }) },
 ];
 
 export const ACTION_MAP: Record<ActionId, ActionDef> = Object.fromEntries(
