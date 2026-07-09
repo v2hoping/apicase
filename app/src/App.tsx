@@ -943,7 +943,7 @@ function App() {
     function onUp() {
       if (!resizingRef.current) return;
       resizingRef.current = false;
-      document.body.classList.remove("resizing-col");
+      document.body.classList.remove("resizing-col", "resizing-sidebar");
     }
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -986,7 +986,7 @@ function App() {
     function onUp() {
       if (!aiResizingRef.current) return;
       aiResizingRef.current = false;
-      document.body.classList.remove("resizing-col");
+      document.body.classList.remove("resizing-col", "resizing-ai");
     }
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -1009,7 +1009,7 @@ function App() {
     function onUp() {
       if (!flowResizingRef.current) return;
       flowResizingRef.current = false;
-      document.body.classList.remove("resizing-col");
+      document.body.classList.remove("resizing-col", "resizing-pane");
     }
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -2297,7 +2297,7 @@ function App() {
             onMouseDown={(e) => {
               e.preventDefault();
               resizingRef.current = true;
-              document.body.classList.add("resizing-col");
+              document.body.classList.add("resizing-col", "resizing-sidebar");
             }}
           />
         )}
@@ -2461,7 +2461,7 @@ function App() {
                       onMouseDown={(e) => {
                         e.preventDefault();
                         flowResizingRef.current = true;
-                        document.body.classList.add("resizing-col");
+                        document.body.classList.add("resizing-col", "resizing-pane");
                       }}
                       onDoubleClick={() => setFlowPaneWidth(null)}
                       title="拖动调整宽度（双击恢复默认）"
@@ -2584,7 +2584,7 @@ function App() {
             onMouseDown={(e) => {
               e.preventDefault();
               aiResizingRef.current = true;
-              document.body.classList.add("resizing-col");
+              document.body.classList.add("resizing-col", "resizing-ai");
             }}
           />
         )}
