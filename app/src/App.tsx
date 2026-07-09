@@ -7,6 +7,8 @@ import { Case, Request, RequestOutput, Assertion, UiNodes, analyzeCase, dumpCase
 import { ReqDraft, requestToDraft, draftToRequest, buildApiRequest, emptyDraft } from "./draft";
 import { RequestEditor, KVTable, METHODS, methodClass, Select } from "./RequestEditor";
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
+import { TerminalPane } from "./TerminalPane";
+import { AiChat } from "./AiChat";
 import { RunContext, AssertResult, resolveDraft, extractOutputs, evalAssertions } from "./flow";
 import {
   ACTIONS,
@@ -197,6 +199,23 @@ function Chevron({ open }: { open: boolean }) {
   return (
     <svg className={`chevron ${open ? "is-open" : ""}`} viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
       <path fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" d="M6 3.5 10.5 8 6 12.5" />
+    </svg>
+  );
+}
+// 布局切换图标（仿 VSCode）：外框方块 + 对应一侧填充块；`on` 时高亮激活。
+// side 决定填充块位置：left=左列、bottom=底行、right=右列。
+function PanelIcon({ side }: { side: "left" | "bottom" | "right" }) {
+  // 内部填充块的位置（16×16 视图，外框内边距 2）
+  const fill =
+    side === "left"
+      ? { x: 2.5, y: 2.5, width: 4.5, height: 11 }
+      : side === "right"
+      ? { x: 9, y: 2.5, width: 4.5, height: 11 }
+      : { x: 2.5, y: 9.5, width: 11, height: 4 };
+  return (
+    <svg className="panel-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.6" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <rect {...fill} rx="0.6" fill="currentColor" className="panel-ico-fill" />
     </svg>
   );
 }
@@ -751,6 +770,29 @@ function TabBar({
   );
 }
 
+// 三栏布局显隐标志（左文件树 / 底部终端 / 右侧 AI），持久化于 localStorage。
+interface LayoutFlags {
+  left: boolean;
+  bottom: boolean;
+  right: boolean;
+}
+const LAYOUT_KEY = "apicase.layout.v1";
+function loadLayout(): LayoutFlags {
+  const fallback: LayoutFlags = { left: true, bottom: false, right: false };
+  try {
+    const raw = localStorage.getItem(LAYOUT_KEY);
+    if (!raw) return fallback;
+    const o = JSON.parse(raw);
+    return {
+      left: typeof o.left === "boolean" ? o.left : fallback.left,
+      bottom: typeof o.bottom === "boolean" ? o.bottom : fallback.bottom,
+      right: typeof o.right === "boolean" ? o.right : fallback.right,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 function App() {
   // 工作空间
   const [workspace, setWorkspace] = useState("");
@@ -760,6 +802,28 @@ function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(200);
   const resizingRef = useRef(false);
+  // 三栏布局显隐（顶栏切换）：左=文件树 / 底=终端 / 右=AI 对话；持久化到 localStorage
+  const [layout, setLayout] = useState<LayoutFlags>(() => loadLayout());
+  const { left: showLeft, bottom: showBottom, right: showRight } = layout;
+  const toggleBottom = () => setLayout((l) => ({ ...l, bottom: !l.bottom }));
+  const toggleRight = () => setLayout((l) => ({ ...l, right: !l.right }));
+  // 左栏（文件树）仅在有工作空间时才存在；没有工作空间就不显示、顶栏开关也随之置灰
+  const canShowLeft = !!workspace;
+  const effectiveShowLeft = showLeft && canShowLeft;
+  const toggleLeft = () => {
+    if (canShowLeft) setLayout((l) => ({ ...l, left: !l.left }));
+  };
+  // 底部终端一旦打开即常驻（隐藏而非卸载），保持 shell 会话与滚动；右侧 AI 同理
+  const termEverOpened = useRef(false);
+  if (showBottom) termEverOpened.current = true;
+  const aiEverOpened = useRef(false);
+  if (showRight) aiEverOpened.current = true;
+  // 底部终端高度（px，可拖）+ 右侧 AI 宽度（px，可拖）
+  const [bottomHeight, setBottomHeight] = useState(240);
+  const bottomResizingRef = useRef(false);
+  const [aiWidth, setAiWidth] = useState(320);
+  const aiResizingRef = useRef(false);
+  const centerColRef = useRef<HTMLDivElement>(null);
   // 流程/请求分栏：流程面板宽度（px）。null → 用 CSS 默认 44%；拖动后固定为像素值
   const [flowPaneWidth, setFlowPaneWidth] = useState<number | null>(null);
   const flowResizingRef = useRef(false);
@@ -861,6 +925,15 @@ function App() {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [envMenuOpen]);
 
+  // 三栏布局显隐持久化
+  useEffect(() => {
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+    } catch {
+      /* ignore */
+    }
+  }, [layout]);
+
   // 左侧栏拖动调宽
   useEffect(() => {
     function onMove(e: MouseEvent) {
@@ -870,6 +943,49 @@ function App() {
     function onUp() {
       if (!resizingRef.current) return;
       resizingRef.current = false;
+      document.body.classList.remove("resizing-col");
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  // 底部终端栏拖动调高（向上拖增高）
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (!bottomResizingRef.current) return;
+      const box = centerColRef.current?.getBoundingClientRect();
+      if (!box) return;
+      // 从中间列底边反推高度；上限留 120px 给主区，下限 80px
+      const h = box.bottom - e.clientY;
+      setBottomHeight(Math.max(80, Math.min(box.height - 120, h)));
+    }
+    function onUp() {
+      if (!bottomResizingRef.current) return;
+      bottomResizingRef.current = false;
+      document.body.classList.remove("resizing-row");
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  // 右侧 AI 栏拖动调宽（向左拖增宽）
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (!aiResizingRef.current) return;
+      const w = window.innerWidth - e.clientX;
+      setAiWidth(Math.max(240, Math.min(560, w)));
+    }
+    function onUp() {
+      if (!aiResizingRef.current) return;
+      aiResizingRef.current = false;
       document.body.classList.remove("resizing-col");
     }
     document.addEventListener("mousemove", onMove);
@@ -1070,6 +1186,8 @@ function App() {
     closeAllTabsAndReset();
     loadDir(path);
     loadEnvironments(path);
+    // 打开 / 切换工作空间即显示左侧文件树（顶栏开关随之点亮）
+    setLayout((l) => ({ ...l, left: true }));
     // 启动/切换文件系统监听：外部对该工作空间的增删改将实时回传
     invoke("watch_workspace", { path }).catch(() => {});
   }
@@ -1509,6 +1627,8 @@ function App() {
   // 快捷键：反查表 + 动作分发闭包（每次 render 取最新 state / handler）
   const scBindings = resolveBindings(scOverrides);
   scLookupRef.current = buildLookup(scBindings);
+  // 按钮 tooltip 里附带该动作当前快捷键（无绑定则空串）
+  const accelHint = (id: ActionId) => formatAccel(scBindings[id]);
   scActionsRef.current = {
     "new-case": () => {
       if (workspace) newCaseIn(workspace);
@@ -1530,6 +1650,9 @@ function App() {
     "send-request": () => {
       if (selected) onSendRequest(selected.id);
     },
+    "toggle-left-sidebar": () => toggleLeft(),
+    "toggle-bottom-panel": () => toggleBottom(),
+    "toggle-right-sidebar": () => toggleRight(),
   };
 
   // 文件系统变更处理（监听器每次触发时经 fsHandlerRef 读取此最新闭包）
@@ -1986,6 +2109,8 @@ function App() {
           )}
         </div>
 
+        {/* 右侧集群：环境 + 配置 + 三面板切换，整体靠最右 */}
+        <div className="topbar-right">
         {workspace && (
           <div className="environment-menu" ref={envMenuRef}>
             <button className={`env-trigger ${envMenuOpen ? "is-open" : ""}`} onClick={() => setEnvMenuOpen((v) => !v)} title="切换环境">
@@ -2039,10 +2164,45 @@ function App() {
             <ConfigIcon className="topbar-config-ico" size={18} />
           </button>
         )}
+
+        {/* 右上角：三面板显隐切换（仿 VSCode） */}
+        <div className="layout-toggles">
+          <button
+            className={`layout-toggle ${effectiveShowLeft ? "is-on" : ""}`}
+            title={
+              canShowLeft
+                ? `切换左侧边栏（文件树）  ${accelHint("toggle-left-sidebar")}`
+                : "打开工作空间后可显示文件树"
+            }
+            aria-pressed={effectiveShowLeft}
+            disabled={!canShowLeft}
+            onClick={toggleLeft}
+          >
+            <PanelIcon side="left" />
+          </button>
+          <button
+            className={`layout-toggle ${showBottom ? "is-on" : ""}`}
+            title={`切换底部栏（终端）  ${accelHint("toggle-bottom-panel")}`}
+            aria-pressed={showBottom}
+            onClick={toggleBottom}
+          >
+            <PanelIcon side="bottom" />
+          </button>
+          <button
+            className={`layout-toggle ${showRight ? "is-on" : ""}`}
+            title={`切换右侧边栏（AI 对话）  ${accelHint("toggle-right-sidebar")}`}
+            aria-pressed={showRight}
+            onClick={toggleRight}
+          >
+            <PanelIcon side="right" />
+          </button>
+        </div>
+        </div>
       </header>
 
       <div className="body-layout">
-        {/* 左侧栏：文件树 */}
+        {/* 左侧栏：文件树（仅在有工作空间且开启左栏时显示） */}
+        {effectiveShowLeft && (
         <aside
           className="sidebar"
           style={{ width: sidebarWidth }}
@@ -2129,16 +2289,21 @@ function App() {
             </>
           ) : null}
         </aside>
+        )}
 
-        <div
-          className="sidebar-resizer"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            resizingRef.current = true;
-            document.body.classList.add("resizing-col");
-          }}
-        />
+        {effectiveShowLeft && (
+          <div
+            className="sidebar-resizer"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              resizingRef.current = true;
+              document.body.classList.add("resizing-col");
+            }}
+          />
+        )}
 
+        {/* 中间列：主工作区 + 底部终端栏 */}
+        <div className="center-col" ref={centerColRef}>
         {/* 主工作区 */}
         <main className="workspace">
           {tabOrder.length > 0 && (
@@ -2384,6 +2549,50 @@ function App() {
             </>
           )}
         </main>
+
+          {/* 底部终端栏：首次打开后常驻，隐藏用 display:none 保留 shell 会话与滚动 */}
+          {termEverOpened.current && (
+            <>
+              <div
+                className="panel-resizer-h"
+                style={{ display: showBottom ? "block" : "none" }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  bottomResizingRef.current = true;
+                  document.body.classList.add("resizing-row");
+                }}
+              />
+              <div className="bottom-panel" style={{ height: bottomHeight, display: showBottom ? "flex" : "none" }}>
+                <div className="panel-head">
+                  <span className="panel-head-title">
+                    <span className="panel-head-glyph">›_</span> 终端
+                  </span>
+                  <button className="panel-close" title="关闭终端" onClick={() => setLayout((l) => ({ ...l, bottom: false }))}>
+                    ×
+                  </button>
+                </div>
+                <TerminalPane cwd={workspace} active={showBottom} />
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* 右侧 AI 对话栏：可拖宽；首次打开后常驻，隐藏保留对话历史 */}
+        {showRight && (
+          <div
+            className="ai-resizer"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              aiResizingRef.current = true;
+              document.body.classList.add("resizing-col");
+            }}
+          />
+        )}
+        {aiEverOpened.current && (
+          <aside className="ai-panel" style={{ width: aiWidth, display: showRight ? "flex" : "none" }}>
+            <AiChat />
+          </aside>
+        )}
       </div>
 
       {ctxMenu && <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={ctxItems(ctxMenu.entry)} onClose={() => setCtxMenu(null)} />}
