@@ -1144,6 +1144,21 @@ body.resizing-pane .pane-resizer::after {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  cursor: pointer;
+  padding: 3px 8px;
+  margin: 0 -8px;
+  border-radius: 6px;
+  transition: background 0.12s, color 0.12s;
+}
+/* 悬浮：整行变暗（背景加深灰 + 标签由灰转深），点击等同按下该快捷键 */
+.empty-sc-row:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+.empty-sc-row:hover .empty-sc-label {
+  color: var(--text);
+}
+.empty-sc-row:active {
+  background: rgba(0, 0, 0, 0.09);
 }
 .empty-sc-label {
   font-size: 13px;
@@ -2259,7 +2274,13 @@ body.resizing-row {
   font-family: ui-monospace, Menlo, monospace;
   font-weight: 700;
 }
-.panel-close {
+.panel-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.panel-close,
+.panel-add {
   width: 20px;
   height: 20px;
   display: inline-flex;
@@ -2273,8 +2294,98 @@ body.resizing-row {
   border-radius: 4px;
   cursor: pointer;
 }
-.panel-close:hover {
+.panel-add {
+  font-size: 17px;
+}
+.panel-close:hover,
+.panel-add:hover {
   background: #f0f0f2;
+  color: var(--text);
+}
+/* 底部面板主体：左终端区 + 右终端列表 */
+.bottom-panel-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.term-stack {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  min-height: 0;
+}
+.term-pane-wrap {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+/* 右侧终端列表（切换 / 关闭），仿 VSCode */
+.term-tabs {
+  width: 156px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  overflow-y: auto;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+}
+.term-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  user-select: none;
+}
+.term-tab:hover {
+  background: var(--bg);
+}
+.term-tab.active {
+  background: #f0f0f2;
+  color: var(--text);
+}
+.term-tab-glyph {
+  font-family: ui-monospace, Menlo, monospace;
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--muted);
+}
+.term-tab.active .term-tab-glyph {
+  color: var(--orange);
+}
+.term-tab-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.term-tab-close {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+}
+.term-tab:hover .term-tab-close,
+.term-tab.active .term-tab-close {
+  opacity: 1;
+}
+.term-tab-close:hover {
+  background: #e2e2e5;
   color: var(--text);
 }
 .terminal-host {
