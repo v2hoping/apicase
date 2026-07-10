@@ -441,6 +441,15 @@ fn terminal_open(
     }
     // 让 shell 内程序输出全彩、并被识别为交互式终端
     cmd.env("TERM", "xterm-256color");
+    // macOS：不要继承外层 Terminal.app 的会话标识（TERM_PROGRAM=Apple_Terminal /
+    // TERM_SESSION_ID）。否则 zsh 会误触发 /etc/zshrc_Apple_Terminal 的「会话保存/恢复」，
+    // 与外层窗口共用同一 session 文件发生竞态，把 "Saving session..." 状态文本写进
+    // ~/.zsh_sessions/<id>.session，下次 source 时当命令执行（command not found: Saving）。
+    // 本终端并非 Apple Terminal，改用自有标识并显式禁用该机制即可根除。
+    cmd.env("TERM_PROGRAM", "apicase");
+    cmd.env_remove("TERM_SESSION_ID");
+    cmd.env_remove("TERM_PROGRAM_VERSION");
+    cmd.env("SHELL_SESSIONS_DISABLE", "1");
 
     let child = pair
         .slave

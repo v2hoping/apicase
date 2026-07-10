@@ -770,7 +770,9 @@ function TabBar({
   );
 }
 
-// 三栏布局显隐标志（左文件树 / 底部终端 / 右侧 AI），持久化于 localStorage。
+// 三栏布局显隐标志（左文件树 / 底部终端 / 右侧 AI）。
+// 用 sessionStorage 而非 localStorage：只在本次运行内记忆（含 dev 热重载/刷新），
+// 应用整体关闭再启动即视为全新会话，回退到默认「三栏全关」。
 interface LayoutFlags {
   left: boolean;
   bottom: boolean;
@@ -778,9 +780,9 @@ interface LayoutFlags {
 }
 const LAYOUT_KEY = "apicase.layout.v1";
 function loadLayout(): LayoutFlags {
-  const fallback: LayoutFlags = { left: true, bottom: false, right: false };
+  const fallback: LayoutFlags = { left: false, bottom: false, right: false };
   try {
-    const raw = localStorage.getItem(LAYOUT_KEY);
+    const raw = sessionStorage.getItem(LAYOUT_KEY);
     if (!raw) return fallback;
     const o = JSON.parse(raw);
     return {
@@ -802,17 +804,14 @@ function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(200);
   const resizingRef = useRef(false);
-  // 三栏布局显隐（顶栏切换）：左=文件树 / 底=终端 / 右=AI 对话；持久化到 localStorage
+  // 三栏布局显隐（顶栏切换）：左=文件树 / 底=终端 / 右=AI 对话；仅本次运行内记忆
   const [layout, setLayout] = useState<LayoutFlags>(() => loadLayout());
   const { left: showLeft, bottom: showBottom, right: showRight } = layout;
   const toggleBottom = () => setLayout((l) => ({ ...l, bottom: !l.bottom }));
   const toggleRight = () => setLayout((l) => ({ ...l, right: !l.right }));
-  // 左栏（文件树）仅在有工作空间时才存在；没有工作空间就不显示、顶栏开关也随之置灰
-  const canShowLeft = !!workspace;
-  const effectiveShowLeft = showLeft && canShowLeft;
-  const toggleLeft = () => {
-    if (canShowLeft) setLayout((l) => ({ ...l, left: !l.left }));
-  };
+  // 左栏可独立开关：无工作空间时开关照常可用，仅内容显示为空态提示（引导打开工作空间）
+  const effectiveShowLeft = showLeft;
+  const toggleLeft = () => setLayout((l) => ({ ...l, left: !l.left }));
   // 底部终端一旦打开即常驻（隐藏而非卸载），保持 shell 会话与滚动；右侧 AI 同理
   const termEverOpened = useRef(false);
   if (showBottom) termEverOpened.current = true;
@@ -821,6 +820,34 @@ function App() {
   // 底部终端高度（px，可拖）+ 右侧 AI 宽度（px，可拖）
   const [bottomHeight, setBottomHeight] = useState(240);
   const bottomResizingRef = useRef(false);
+  // 多终端（仿 VSCode/Postman）：底部栏可开多个 shell，右侧列表切换/关闭。
+  // cwd 在创建时快照——切换工作空间不影响已开终端；新开的终端用当前工作空间。
+  const [terminals, setTerminals] = useState<{ id: string; cwd: string; n: number }[]>([]);
+  const [activeTermId, setActiveTermId] = useState("");
+  const termSeqRef = useRef(0);
+  function addTerminal() {
+    const n = termSeqRef.current + 1;
+    termSeqRef.current = n;
+    const t = { id: `bterm-${n}`, cwd: workspace, n };
+    setTerminals((prev) => [...prev, t]);
+    setActiveTermId(t.id);
+  }
+  function closeTerminal(id: string) {
+    const idx = terminals.findIndex((t) => t.id === id);
+    if (idx < 0) return;
+    const next = terminals.filter((t) => t.id !== id);
+    setTerminals(next);
+    if (activeTermId === id) {
+      const neighbor = next[idx] || next[idx - 1];
+      setActiveTermId(neighbor ? neighbor.id : "");
+    }
+    if (next.length === 0) setLayout((l) => ({ ...l, bottom: false })); // 关掉最后一个即收起底部栏
+  }
+  // 底部栏打开且尚无终端时，自动创建一个（首次开栏 / 关净后重开）
+  useEffect(() => {
+    if (showBottom && terminals.length === 0) addTerminal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showBottom]);
   const [aiWidth, setAiWidth] = useState(320);
   const aiResizingRef = useRef(false);
   const centerColRef = useRef<HTMLDivElement>(null);
@@ -925,10 +952,10 @@ function App() {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [envMenuOpen]);
 
-  // 三栏布局显隐持久化
+  // 三栏布局显隐持久化（仅本次运行内，见 loadLayout 说明）
   useEffect(() => {
     try {
-      localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+      sessionStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
     } catch {
       /* ignore */
     }
@@ -1627,8 +1654,6 @@ function App() {
   // 快捷键：反查表 + 动作分发闭包（每次 render 取最新 state / handler）
   const scBindings = resolveBindings(scOverrides);
   scLookupRef.current = buildLookup(scBindings);
-  // 按钮 tooltip 里附带该动作当前快捷键（无绑定则空串）
-  const accelHint = (id: ActionId) => formatAccel(scBindings[id]);
   scActionsRef.current = {
     "new-case": () => {
       if (workspace) newCaseIn(workspace);
@@ -1650,9 +1675,6 @@ function App() {
     "send-request": () => {
       if (selected) onSendRequest(selected.id);
     },
-    "toggle-left-sidebar": () => toggleLeft(),
-    "toggle-bottom-panel": () => toggleBottom(),
-    "toggle-right-sidebar": () => toggleRight(),
   };
 
   // 文件系统变更处理（监听器每次触发时经 fsHandlerRef 读取此最新闭包）
@@ -2169,20 +2191,15 @@ function App() {
         <div className="layout-toggles">
           <button
             className={`layout-toggle ${effectiveShowLeft ? "is-on" : ""}`}
-            title={
-              canShowLeft
-                ? `切换左侧边栏（文件树）  ${accelHint("toggle-left-sidebar")}`
-                : "打开工作空间后可显示文件树"
-            }
+            title="切换左侧边栏（文件树）"
             aria-pressed={effectiveShowLeft}
-            disabled={!canShowLeft}
             onClick={toggleLeft}
           >
             <PanelIcon side="left" />
           </button>
           <button
             className={`layout-toggle ${showBottom ? "is-on" : ""}`}
-            title={`切换底部栏（终端）  ${accelHint("toggle-bottom-panel")}`}
+            title="切换底部栏（终端）"
             aria-pressed={showBottom}
             onClick={toggleBottom}
           >
@@ -2190,7 +2207,7 @@ function App() {
           </button>
           <button
             className={`layout-toggle ${showRight ? "is-on" : ""}`}
-            title={`切换右侧边栏（AI 对话）  ${accelHint("toggle-right-sidebar")}`}
+            title="切换右侧边栏（AI 对话）"
             aria-pressed={showRight}
             onClick={toggleRight}
           >
@@ -2201,7 +2218,7 @@ function App() {
       </header>
 
       <div className="body-layout">
-        {/* 左侧栏：文件树（仅在有工作空间且开启左栏时显示） */}
+        {/* 左侧栏：开启左栏即显示；有工作空间显示文件树，否则显示空态引导 */}
         {effectiveShowLeft && (
         <aside
           className="sidebar"
@@ -2287,7 +2304,11 @@ function App() {
                 </div>
               )}
             </>
-          ) : null}
+          ) : (
+            <div className="sidebar-empty">
+              <div>未打开工作空间</div>
+            </div>
+          )}
         </aside>
         )}
 
@@ -2331,7 +2352,12 @@ function App() {
                   const accel = scBindings[a.id];
                   if (!accel) return null;
                   return (
-                    <div key={a.id} className="empty-sc-row">
+                    <div
+                      key={a.id}
+                      className="empty-sc-row"
+                      role="button"
+                      onClick={() => scActionsRef.current[a.id]?.()}
+                    >
                       <span className="empty-sc-label">{a.label}</span>
                       <span className="empty-sc-keys">
                         {accelTokens(accel).map((t, i) => (
@@ -2567,11 +2593,52 @@ function App() {
                   <span className="panel-head-title">
                     <span className="panel-head-glyph">›_</span> 终端
                   </span>
-                  <button className="panel-close" title="关闭终端" onClick={() => setLayout((l) => ({ ...l, bottom: false }))}>
-                    ×
-                  </button>
+                  <span className="panel-head-actions">
+                    <button className="panel-add" title="新建终端" onClick={addTerminal}>
+                      +
+                    </button>
+                    <button className="panel-close" title="隐藏终端栏" onClick={() => setLayout((l) => ({ ...l, bottom: false }))}>
+                      ×
+                    </button>
+                  </span>
                 </div>
-                <TerminalPane cwd={workspace} active={showBottom} />
+                <div className="bottom-panel-body">
+                  <div className="term-stack">
+                    {terminals.map((t) => {
+                      const on = showBottom && activeTermId === t.id;
+                      return (
+                        <div key={t.id} className="term-pane-wrap" style={{ display: on ? "flex" : "none" }}>
+                          <TerminalPane cwd={t.cwd} active={on} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {terminals.length > 0 && (
+                    <div className="term-tabs">
+                      {terminals.map((t) => (
+                        <div
+                          key={t.id}
+                          className={`term-tab ${activeTermId === t.id ? "active" : ""}`}
+                          title={`终端 ${t.n}`}
+                          onClick={() => setActiveTermId(t.id)}
+                        >
+                          <span className="term-tab-glyph">›_</span>
+                          <span className="term-tab-label">终端 {t.n}</span>
+                          <button
+                            className="term-tab-close"
+                            title="关闭此终端"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              closeTerminal(t.id);
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </>
           )}
