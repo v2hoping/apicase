@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { KV, AuthType, BodyType, Assertion, AssertOp, ASSERT_OPS, RequestOutput, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
 import { ReqDraft } from "./draft";
 import { AssertResult } from "./flow";
+import { MarkdownEditor } from "./markdown";
 
 export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const BODY_TYPES: BodyType[] = ["none", "json", "text", "form-urlencoded", "form-data"];
@@ -261,6 +262,8 @@ export function RequestEditor({
   assertResults,
   outputs,
   onOutputs,
+  docs,
+  onDocs,
   stepId,
   onRenameId,
 }: {
@@ -274,6 +277,8 @@ export function RequestEditor({
   assertResults?: AssertResult[];
   outputs?: RequestOutput[];
   onOutputs?: (o: RequestOutput[]) => void;
+  docs?: string;
+  onDocs?: (v: string) => void;
   stepId?: string;
   onRenameId?: (newId: string) => void;
 }) {
@@ -293,9 +298,24 @@ export function RequestEditor({
   const tabs: string[] = ["params", "headers", "auth", "body"];
   if (onOutputs) tabs.push("outputs");
   if (onAssertions) tabs.push("assert");
+  if (onDocs) tabs.push("docs");
   if (onRenameId) tabs.push("meta");
   const label = (t: string) =>
-    t === "params" ? "参数" : t === "headers" ? "请求头" : t === "auth" ? "认证" : t === "body" ? "请求体" : t === "outputs" ? "输出" : t === "assert" ? "断言" : "请求 ID";
+    t === "params"
+      ? "参数"
+      : t === "headers"
+        ? "请求头"
+        : t === "auth"
+          ? "认证"
+          : t === "body"
+            ? "请求体"
+            : t === "outputs"
+              ? "输出"
+              : t === "assert"
+                ? "断言"
+                : t === "docs"
+                  ? "文档"
+                  : "请求 ID";
   const tabBadge = (t: string) => (t === "params" ? paramCount : t === "headers" ? headerCount : t === "outputs" ? outputCount : 0);
 
   return (
@@ -451,6 +471,11 @@ export function RequestEditor({
               目标：<code>status</code> / JSONPath（<code>$.data.token</code>）/ <code>header.名称</code>；运行后逐条校验。
             </div>
             <AssertTable rows={assertions || []} onChange={onAssertions} results={assertResults} />
+          </div>
+        )}
+        {tab === "docs" && onDocs && (
+          <div className="docs-panel">
+            <MarkdownEditor value={docs || ""} onChange={onDocs} compact placeholder="为该请求编写 Markdown 文档：用途、参数说明、注意事项…" />
           </div>
         )}
         {tab === "meta" && onRenameId && (

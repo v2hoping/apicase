@@ -1,7 +1,7 @@
 // case 的 YAML schema 类型 + 解析/序列化。
 // 设计见 docs/0.latest/1.产品概念模型.md 与 docs/1.feature/20260630-case读写与格式/技术方案.md。
-// 前端用 js-yaml 解析（后端只做通用文件读写）；单/多请求统一为 requests 列表（单 = 长度 1）。
-// 每个请求的报文按协议名承载（当前 http:，未来可并列 grpc:/ws:），故类型名为 HttpSpec。
+// 前端用 js-yaml 解析（后端只做通用文件读写）；单/多请求统一为 `steps:` 列表（单 = 长度 1）。
+// 每步用 `protocol:` 显式声明协议（当前仅 http），报文承载于 `request:`（对应内存 HttpSpec）。
 import { load, dump } from "js-yaml";
 
 /** 一行键值（query / headers / 表单项通用）；enabled 默认 true，为 true 时不落盘 */
@@ -59,26 +59,28 @@ export interface Assertion {
 }
 
 /**
- * 一个请求节点（原 Step；借 Arazzo step / GHA job）：一次可编排的调用。
- * 报文按协议名承载（http），故不再叫 request，规避「requests[i].request」的重名。
+ * 一个 step（可编排的调用节点；借 Arazzo step / GHA job）。
+ * 协议由 `protocol` 显式声明（当前仅 `http`），报文承载于 `request`（未来可随协议扩展）。
  */
 export interface Request {
   id: string;
-  http: HttpSpec; // 具体协议报文（未来可并列 grpc / ws）
+  protocol: string; // 协议标识：当前仅 "http"
+  http: HttpSpec; // 报文（YAML 键为 `request:`；内部沿用 http 命名承载 HttpSpec）
   dependsOn: string[]; // DAG 依赖指针（借 Arazzo dependsOn / GHA needs）
   outputs: RequestOutput[]; // JSONPath 提取
   assertions: Assertion[]; // 响应断言
+  docs?: string; // 该 step 的 markdown 文档（可选）
 }
 
 /** 画布坐标（与语义分离，规避 diff 噪声）；缺省时按 dependsOn 自动布局 */
 export type UiNodes = Record<string, { x: number; y: number }>;
 
-/** 一个 case：统一为 requests 列表（单请求 = 长度 1，多请求 = DAG）。 */
+/** 一个 case：统一为 steps 列表（单请求 = 长度 1，多请求 = DAG）。 */
 export interface Case {
   version: string; // apicase: "0.1"
   name?: string;
   vars?: Record<string, unknown>;
-  requests: Request[]; // 至少 1 个；单/多请求同构
+  requests: Request[]; // 对应 YAML `steps:`（内部沿用 requests 命名）；至少 1 个
   ui?: { nodes: UiNodes }; // 可选：画布坐标
 }
 
@@ -161,17 +163,20 @@ function normalizeAssertions(list: unknown): Assertion[] {
     .filter((a) => a.target !== "");
 }
 
-/** 规范化一个请求节点。报文承载于 `http:`（唯一键）。 */
+/** 规范化一个 step。协议由 `protocol` 声明，报文承载于 `request:`。 */
 function normalizeRequest(s: unknown, i: number): Request {
   const o = isPlainObject(s) ? s : {};
-  const id = str(o.id) || `req${i + 1}`;
+  const id = str(o.id) || `step${i + 1}`;
+  const protocol = str(o.protocol) || "http";
   const dependsOn = Array.isArray(o.dependsOn) ? o.dependsOn.map(str).filter(Boolean) : [];
   return {
     id,
-    http: normalizeHttp(o.http),
+    protocol,
+    http: normalizeHttp(o.request),
     dependsOn,
     outputs: normalizeOutputs(o.outputs),
     assertions: normalizeAssertions(o.assertions),
+    docs: typeof o.docs === "string" ? o.docs : undefined,
   };
 }
 
@@ -187,8 +192,8 @@ function normalizeUi(u: unknown): { nodes: UiNodes } | undefined {
 }
 
 /**
- * 解析 case 文本为 requests 列表。**唯一格式**：顶层 `requests:` 列表（单节点 = 长度 1，
- * 每项报文承载于 `http:`）。旧格式（`steps:` 列表、顶层 `request:`）一律不再兼容。
+ * 解析 case 文本为 steps 列表。**唯一格式**：顶层 `steps:` 列表（单节点 = 长度 1，
+ * 每步含 `protocol:` 与 `request:`）。旧格式（`requests:` 列表、`http:` 报文键）一律不再兼容。
  */
 export function parseCase(text: string): Case {
   let obj: unknown;
@@ -201,13 +206,13 @@ export function parseCase(text: string): Case {
   const version = typeof o.apicase === "string" ? o.apicase : "0.1";
   const name = typeof o.name === "string" ? o.name : undefined;
   const vars = isPlainObject(o.vars) ? o.vars : undefined;
-  const arr = Array.isArray(o.requests) ? o.requests : [];
+  const arr = Array.isArray(o.steps) ? o.steps : [];
   return { version, name, vars, requests: arr.map(normalizeRequest), ui: normalizeUi(o.ui) };
 }
 
 /**
  * 校验并解析 case 文本，用于「内容驱动默认视图 / 文本兜底」。
- * valid=true 仅当能 parse 成对象且含 `requests:` 列表；旧格式（`steps:` / 顶层 `request:`）
+ * valid=true 仅当能 parse 成对象且含 `steps:` 列表；旧格式（`requests:` / `http:` 报文键）
  * 一律判为无效 → 回退纯文本编辑（不进可视化）。
  */
 export function analyzeCase(text: string): { valid: boolean; case?: Case; error?: string } {
@@ -218,7 +223,11 @@ export function analyzeCase(text: string): { valid: boolean; case?: Case; error?
     return { valid: false, error: `YAML 解析失败：${e instanceof Error ? e.message : String(e)}` };
   }
   if (!isPlainObject(obj)) return { valid: false, error: "顶层不是对象，不是有效的 case" };
-  if (!Array.isArray(obj.requests)) return { valid: false, error: "缺少 requests 列表" };
+  if (!Array.isArray(obj.steps)) return { valid: false, error: "缺少 steps 列表" };
+  // 止损：steps 已是新格式，但某步仍用旧内层键 http: 而非 request: —— 判为无效、回退纯文本，
+  // 避免结构化编辑器读到空报文、保存时用 dumpCase 覆盖丢失原报文（不做旧格式兼容，仅防误删）。
+  const legacyStep = obj.steps.some((s) => isPlainObject(s) && "http" in s && !("request" in s));
+  if (legacyStep) return { valid: false, error: "step 使用了旧的 http: 报文键，请改为 request:" };
   return { valid: true, case: parseCase(text) };
 }
 
@@ -326,25 +335,26 @@ function serializeAssertions(list: Assertion[]): Array<Record<string, unknown>> 
     });
 }
 
-// 顺序对齐文档示例：id → dependsOn → http → outputs → assertions
+// 顺序对齐文档示例：id → protocol → dependsOn → request → outputs → assertions → docs
 function serializeRequest(s: Request): Record<string, unknown> {
-  const out: Record<string, unknown> = { id: s.id };
+  const out: Record<string, unknown> = { id: s.id, protocol: s.protocol || "http" };
   if (s.dependsOn.length) out.dependsOn = s.dependsOn;
-  out.http = serializeHttp(s.http);
+  out.request = serializeHttp(s.http);
   const o: Record<string, string> = {};
   for (const it of s.outputs) if (it.name.trim()) o[it.name.trim()] = it.path;
   if (Object.keys(o).length) out.outputs = o;
   const asserts = serializeAssertions(s.assertions);
   if (asserts.length) out.assertions = asserts;
+  if (s.docs && s.docs.trim()) out.docs = s.docs;
   return out;
 }
 
-/** 把 case 序列化为 YAML 文本（统一写 requests 列表；单请求 = 长度 1）。 */
+/** 把 case 序列化为 YAML 文本（统一写 steps 列表；单请求 = 长度 1）。 */
 export function dumpCase(c: Case): string {
   const out: Record<string, unknown> = { apicase: c.version || "0.1" };
   if (c.name) out.name = c.name;
   if (c.vars && Object.keys(c.vars).length) out.vars = c.vars;
-  out.requests = c.requests.map(serializeRequest);
+  out.steps = c.requests.map(serializeRequest);
   if (c.ui && Object.keys(c.ui.nodes).length) out.ui = { nodes: c.ui.nodes };
   return dump(out, { lineWidth: 100, noRefs: true });
 }

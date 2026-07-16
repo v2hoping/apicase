@@ -9,6 +9,7 @@ import { RequestEditor, KVTable, METHODS, methodClass, Select } from "./RequestE
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
 import { TerminalPane } from "./TerminalPane";
 import { AiChat } from "./AiChat";
+import { MarkdownEditor } from "./markdown";
 import { RunContext, AssertResult, resolveDraft, extractOutputs, evalAssertions } from "./flow";
 import {
   ACTIONS,
@@ -51,9 +52,11 @@ interface DirEntry {
 // case 内部统一模型：单请求 = 只有 1 个请求；每个请求复用 ReqDraft
 interface RequestDraft {
   id: string;
+  protocol: string;
   dependsOn: string[];
   outputs: RequestOutput[];
   assertions: Assertion[];
+  docs: string;
   req: ReqDraft;
 }
 
@@ -139,6 +142,12 @@ function isAppConfig(path: string): boolean {
   return n === "application.yml" || n === "application.yaml";
 }
 
+// Markdown 文本文件：用 markdown 编辑器（编辑/预览/分屏）打开
+function isMarkdownFile(path: string): boolean {
+  const n = baseName(path).toLowerCase();
+  return n.endsWith(".md") || n.endsWith(".markdown");
+}
+
 // 已知二进制/媒体扩展名：直接短路，不读取整个文件（避免大文件读入内存）
 const BINARY_EXTS = new Set([
   // 图片
@@ -182,15 +191,18 @@ function FileIcon({ active }: { active?: boolean }) {
   );
 }
 // 工作空间配置文件（application.yml）专用：齿轮图标，一眼可辨"这是配置文件"
-// viewBox 24×24 且齿轮四周留约 2.5 边距，缩放渲染时齿尖不会被裁切；可复用到顶栏配置按钮
+// 线条描边、中心镂空（背景透出）——只有轮廓、无实心填充；viewBox 24×24 留边，缩放不裁齿尖
 function ConfigIcon({ className = "tree-ico ico-config", size = 15 }: { className?: string; size?: number }) {
   return (
     <svg className={className} viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
       <path
-        fill="currentColor"
-        fillRule="evenodd"
-        d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+        d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58z"
       />
+      <circle cx="12" cy="12" r="3.15" fill="none" stroke="currentColor" strokeWidth="1.5" />
     </svg>
   );
 }
@@ -237,15 +249,17 @@ function byteSize(s: string): string {
 
 // Case → 内部 RequestDraft 列表（case.requests 已是统一列表；空则兜底 1 个）
 function caseToRequests(c: Case): { requests: RequestDraft[]; ui?: UiNodes } {
-  const src = c.requests.length
+  const src: Request[] = c.requests.length
     ? c.requests
-    : [{ id: "req1", http: emptyDraftRequest(), dependsOn: [], outputs: [], assertions: [] }];
+    : [{ id: "step1", protocol: "http", http: emptyDraftRequest(), dependsOn: [], outputs: [], assertions: [] }];
   return {
     requests: src.map((r) => ({
       id: r.id,
+      protocol: r.protocol || "http",
       dependsOn: r.dependsOn,
       outputs: r.outputs,
       assertions: r.assertions,
+      docs: r.docs || "",
       req: requestToDraft(r.http),
     })),
     ui: c.ui?.nodes,
@@ -929,6 +943,7 @@ function App() {
   // 仅 .yml/.yaml（非 application.yml）可作为 case：决定是否显示流程/请求视图切换
   const caseEligible = !!currentCasePath && isYamlFile(currentCasePath) && !isAppConfig(currentCasePath);
   const isConfig = !!currentCasePath && isAppConfig(currentCasePath);
+  const isMarkdown = !!currentCasePath && !binaryFile && isMarkdownFile(currentCasePath);
 
   // 点击菜单外部时关闭工作空间下拉
   useEffect(() => {
@@ -1499,7 +1514,15 @@ function App() {
     for (const rd of requests) {
       const { request, error: err } = draftToRequest(rd.req);
       if (err || !request) return { error: `请求「${rd.id}」：${err || "请求非法"}` };
-      out.push({ id: rd.id, http: request, dependsOn: rd.dependsOn, outputs: rd.outputs, assertions: rd.assertions });
+      out.push({
+        id: rd.id,
+        protocol: rd.protocol || "http",
+        http: request,
+        dependsOn: rd.dependsOn,
+        outputs: rd.outputs,
+        assertions: rd.assertions,
+        docs: rd.docs ? rd.docs : undefined,
+      });
     }
     if (out.length === 0) return { error: "无请求" };
     const c: Case = {
@@ -1737,6 +1760,11 @@ function App() {
     mark();
   }
 
+  function setDocs(text: string) {
+    setRequests((prev) => prev.map((s) => (s.id === selectedRequestId ? { ...s, docs: text } : s)));
+    mark();
+  }
+
   function renameRequest(oldId: string, newId: string) {
     if (requests.some((s) => s.id === newId)) {
       window.alert("请求 ID 已存在");
@@ -1776,7 +1804,10 @@ function App() {
       id = `req${i}`;
     }
     const dependsOn = selectedRequestId ? [selectedRequestId] : [];
-    setRequests((prev) => [...prev, { id, dependsOn, outputs: [], assertions: [], req: emptyDraft("GET", "") }]);
+    setRequests((prev) => [
+      ...prev,
+      { id, protocol: "http", dependsOn, outputs: [], assertions: [], docs: "", req: emptyDraft("GET", "") },
+    ]);
     setSelectedRequestId(id);
     setShowFlow(true);
     setShowRequest(true);
@@ -1922,7 +1953,8 @@ function App() {
       version: "0.1",
       requests: [
         {
-          id: "req1",
+          id: "step1",
+          protocol: "http",
           http: { method, url: split.base, query: split.query, headers: [], auth: { type: "none" }, body: { type: "none" } },
           dependsOn: [],
           outputs: [],
@@ -2380,6 +2412,32 @@ function App() {
               </svg>
               <div className="binary-msg">此文件是二进制文件或使用了不受支持的文本编码，所以无法在文本编辑器中显示。</div>
             </div>
+          ) : isMarkdown ? (
+            <>
+              {error && <div className="error-box">⚠ {error}</div>}
+              {externalStale && (
+                <div className="stale-box">
+                  <span>⚠ 此文件已在外部被修改，而你有未保存的改动。</span>
+                  <span className="stale-actions">
+                    <button className="stale-btn reload" onClick={() => { setExternalStale(false); openCase(currentCasePath); }}>
+                      重新加载
+                    </button>
+                    <button className="stale-btn" onClick={() => setExternalStale(false)}>
+                      忽略
+                    </button>
+                  </span>
+                </div>
+              )}
+              <div className="md-file-view">
+                <MarkdownEditor
+                  value={rawText}
+                  onChange={(v) => {
+                    setRawText(v);
+                    mark();
+                  }}
+                />
+              </div>
+            </>
           ) : isConfig ? (
             <>
               {error && <div className="error-box">⚠ {error}</div>}
@@ -2507,6 +2565,8 @@ function App() {
                         assertResults={run?.asserts}
                         outputs={isFlow ? selected.outputs : undefined}
                         onOutputs={isFlow ? setOutputs : undefined}
+                        docs={selected.docs}
+                        onDocs={setDocs}
                         stepId={selected.id}
                         onRenameId={isFlow ? (v) => renameRequest(selected.id, v) : undefined}
                       />
