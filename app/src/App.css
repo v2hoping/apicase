@@ -1365,29 +1365,24 @@ body.resizing-pane .pane-resizer::after {
 }
 
 /* Tab 计数徽章 */
+/* 计数数字：黑色、字号小于标签、贴在标签右上角（上标） */
 .tab-count {
   display: inline-block;
-  margin-left: 5px;
-  padding: 0 5px;
-  min-width: 16px;
-  font-size: 10.5px;
-  line-height: 15px;
-  text-align: center;
-  color: var(--muted);
-  background: #ededf0;
-  border-radius: 8px;
+  margin-left: 1px;
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 600;
+  color: #111;
+  vertical-align: super;
 }
 .tab.active .tab-count {
-  color: #fff;
-  background: var(--orange);
+  color: #111;
 }
 .tab-count.all-ok {
-  color: #fff;
-  background: var(--green);
+  color: var(--green);
 }
 .tab-count.has-bad {
-  color: #fff;
-  background: var(--red);
+  color: var(--red);
 }
 
 /* ── 断言表 ── */
@@ -2191,10 +2186,11 @@ body.resizing-pane .pane-resizer::after {
   color: var(--text);
 }
 .layout-toggle.is-on {
-  color: var(--orange);
+  color: #3a3a3f;
+  background: #e4e4e6;
 }
 .layout-toggle.is-on:hover {
-  background: #fdece4;
+  background: #dbdbde;
 }
 .layout-toggle:disabled {
   color: #cfcfd4;
@@ -2575,4 +2571,228 @@ body.resizing-ai .ai-resizer::after {
 .ai-send:disabled {
   background: #d8d8dc;
   cursor: default;
+}
+
+/* ── Markdown 编辑器（.md 文件视图 + 请求「文档」标签复用）── */
+.md-file-view {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+.md-editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.md-editor.compact {
+  min-height: 340px;
+}
+.md-toolbar {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+.md-modes {
+  display: inline-flex;
+  padding: 2px;
+  background: #f0f0f2;
+  border-radius: 8px;
+  gap: 2px;
+}
+.md-mode-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.md-mode-btn:hover {
+  color: var(--text);
+}
+.md-mode-btn.active {
+  color: var(--orange-dark);
+  background: var(--panel);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+.md-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.md-editor.compact .md-body {
+  min-height: 300px;
+}
+.md-input {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  padding: 12px 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text);
+  border: none;
+  background: transparent;
+  resize: none;
+  tab-size: 2;
+}
+.md-input:focus {
+  outline: none;
+}
+/* 分屏时编辑区与预览区并排，中缝一条分隔线 */
+.md-editor.mode-split .md-preview {
+  border-left: 1px solid var(--border);
+}
+.md-preview {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 18px 18px;
+  overflow-y: auto;
+  background: var(--panel);
+}
+
+/* ── Markdown 渲染排版 ── */
+.markdown-view {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.7;
+  word-wrap: break-word;
+}
+.markdown-view.is-empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding-top: 8px;
+}
+.markdown-view .md-h {
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 20px 0 10px;
+}
+.markdown-view .md-h:first-child {
+  margin-top: 6px;
+}
+.markdown-view .md-h1 {
+  font-size: 22px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.markdown-view .md-h2 {
+  font-size: 18px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+}
+.markdown-view .md-h3 {
+  font-size: 16px;
+}
+.markdown-view .md-h4 {
+  font-size: 14px;
+}
+.markdown-view .md-h5,
+.markdown-view .md-h6 {
+  font-size: 13px;
+  color: var(--muted);
+}
+.markdown-view .md-p {
+  margin: 10px 0;
+}
+.markdown-view .md-list {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+.markdown-view .md-list li {
+  margin: 4px 0;
+}
+.markdown-view .md-list .md-list {
+  margin: 4px 0;
+}
+.markdown-view a {
+  color: var(--blue);
+  text-decoration: none;
+}
+.markdown-view a:hover {
+  text-decoration: underline;
+}
+.markdown-view strong {
+  font-weight: 600;
+}
+.markdown-view del {
+  color: var(--muted);
+}
+.markdown-view code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.88em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #f0f0f2;
+  color: #d6336c;
+}
+.markdown-view .md-pre {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #1c1c22;
+  overflow-x: auto;
+}
+.markdown-view .md-pre code {
+  padding: 0;
+  background: transparent;
+  color: #e6e6ea;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.markdown-view .md-quote {
+  margin: 12px 0;
+  padding: 2px 14px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+.markdown-view .md-quote .md-p {
+  margin: 6px 0;
+}
+.markdown-view .md-hr {
+  margin: 18px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.markdown-view .md-table {
+  margin: 12px 0;
+  border-collapse: collapse;
+  font-size: 13px;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.markdown-view .md-table th,
+.markdown-view .md-table td {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+.markdown-view .md-table th {
+  background: #f6f6f8;
+  font-weight: 600;
+}
+.markdown-view .md-img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+/* 请求编辑器「文档」标签容器 */
+.docs-panel {
+  display: flex;
+  min-height: 0;
 }
