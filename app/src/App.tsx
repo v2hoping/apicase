@@ -249,9 +249,9 @@ const SETTINGS_NAV_ICONS: Record<string, ReactNode> = {
     </>
   ),
 };
-function SettingsNavIcon({ name }: { name: string }) {
+function SettingsNavIcon({ name, className = "settings-nav-ico", size = 16 }: { name: string; className?: string; size?: number }) {
   return (
-    <svg className="settings-nav-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+    <svg className={className} viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
       {SETTINGS_NAV_ICONS[name]}
     </svg>
   );
@@ -2366,7 +2366,7 @@ function App() {
         {workspace && (
           <div className="environment-menu" ref={envMenuRef}>
             <button className={`env-trigger ${envMenuOpen ? "is-open" : ""}`} onClick={() => setEnvMenuOpen((v) => !v)} title="切换环境">
-              <span className="env-glyph">◇</span>
+              <SettingsNavIcon name="环境" className="env-glyph" size={14} />
               <span className="env-label">{activeEnv || "无环境"}</span>
               <CaretDown open={envMenuOpen} />
             </button>
@@ -2666,7 +2666,6 @@ function App() {
                 />
               ) : (
                 <div className="text-view">
-                  <div className="text-warn is-config">⚙ 工作空间配置文件（application.yml）——编辑环境后保存即生效。</div>
                   <textarea
                     className="raw-editor"
                     value={rawText}
@@ -2698,10 +2697,6 @@ function App() {
 
               {effectiveText ? (
                 <div className="text-view">
-                  {!caseValid && caseEligible && (
-                    // 仅 .yml/.yaml 才提示"不是有效用例"；普通 .txt/.json 干净地当文本
-                    <div className="text-warn">⚠ 该文件不是有效用例（{textError || "缺少 requests"}）；以纯文本显示。</div>
-                  )}
                   <textarea
                     className="raw-editor"
                     value={rawText}
