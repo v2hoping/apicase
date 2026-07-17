@@ -8,13 +8,13 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
-// 白色终端主题：与应用整体浅色一致（白底 + 深字 + 橙光标），ANSI 色为浅底优化
+// 白色终端主题：与应用整体浅色一致（白底 + 深字 + 黑光标），ANSI 色为浅底优化
 const THEME = {
   background: "#ffffff",
   foreground: "#1c1c1e",
-  cursor: "#ff6c37",
+  cursor: "#1c1c1e",
   cursorAccent: "#ffffff",
-  selectionBackground: "rgba(255,108,55,0.22)",
+  selectionBackground: "rgba(45,127,249,0.18)",
   black: "#1c1c1e",
   red: "#d1383d",
   green: "#2e9e6b",

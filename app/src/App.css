@@ -1,6 +1,4 @@
 :root {
-  --orange: #ff6c37;
-  --orange-dark: #e85d2a;
   --border: #e1e1e3;
   --bg: #fafafa;
   --panel: #ffffff;
@@ -16,6 +14,9 @@
   --red: #d6332f;
   --purple: #8a3ffc;
   --amber: #c79100;
+  /* 品牌强调色：取自 logo 的蓝色渐变，与 --blue 同值（原为橙 #ff6c37，2026-07-17 整体切蓝） */
+  --accent: var(--blue);
+  --accent-dark: var(--blue-dark);
 
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
     Helvetica, Arial, sans-serif;
@@ -218,7 +219,7 @@ body,
   background: #ededed;
 }
 .env-glyph {
-  color: var(--orange);
+  color: var(--accent);
   font-size: 11px;
 }
 .env-label {
@@ -238,7 +239,7 @@ body,
 }
 .env-item .env-check {
   width: 12px;
-  color: var(--orange);
+  color: var(--accent);
   font-size: 11px;
 }
 .env-item .env-name {
@@ -249,7 +250,7 @@ body,
 }
 .env-item.active .env-name {
   font-weight: 600;
-  color: var(--orange-dark);
+  color: var(--text);
 }
 .env-item .env-count {
   font-size: 11px;
@@ -331,7 +332,7 @@ body,
   bottom: 4px;
   width: 2.5px;
   border-radius: 0 2px 2px 0;
-  background: var(--orange);
+  background: var(--accent);
 }
 .tree-row.selected .tree-name {
   color: var(--text);
@@ -386,7 +387,7 @@ body,
   color: #9aa0ac;
 }
 .tree-ico.ico-file.is-case {
-  color: var(--orange);
+  color: var(--accent);
   opacity: 0.85;
 }
 .tree-row.selected .tree-ico.ico-file.is-case {
@@ -410,7 +411,7 @@ body,
   background: none;
   padding: 0;
   margin: 0;
-  color: var(--orange);
+  color: var(--accent);
   font: inherit;
   cursor: pointer;
 }
@@ -440,7 +441,7 @@ body,
 }
 .sidebar-resizer:hover::after,
 body.resizing-sidebar .sidebar-resizer::after {
-  background: var(--orange);
+  background: var(--accent);
 }
 /* 拖动调宽过程中：全局禁选 + col-resize 光标 */
 body.resizing-col {
@@ -470,7 +471,7 @@ body.resizing-col {
 }
 .pane-resizer:hover::after,
 body.resizing-pane .pane-resizer::after {
-  background: var(--orange);
+  background: var(--accent);
 }
 
 /* 中间列：主工作区 + 底部终端（纵向排布） */
@@ -513,7 +514,7 @@ body.resizing-pane .pane-resizer::after {
   overflow: visible;
 }
 .url-group:focus-within {
-  border-color: var(--orange);
+  border-color: var(--accent);
 }
 /* ── 自定义下拉控件（替代原生 select）──
    触发器为纯平按钮（无系统灰白阴影），选项面板固定出现在控件正下方。 */
@@ -543,7 +544,7 @@ body.resizing-pane .pane-resizer::after {
   border-color: #cfcfd2;
 }
 .ui-select.is-open .ui-select-trigger {
-  border-color: var(--orange);
+  border-color: var(--accent);
 }
 .ui-select-value {
   overflow: hidden;
@@ -602,12 +603,12 @@ body.resizing-pane .pane-resizer::after {
   background: #f4f4f5;
 }
 .ui-select-option.is-active {
-  color: var(--orange-dark);
+  color: var(--text);
   font-weight: 600;
 }
 .ui-select-check {
   flex-shrink: 0;
-  color: var(--orange);
+  color: var(--accent);
   font-size: 11px;
 }
 
@@ -701,7 +702,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .tab.active {
   color: var(--text);
-  border-bottom-color: var(--orange);
+  border-bottom-color: var(--accent);
   font-weight: 600;
 }
 .tabs.sub {
@@ -749,7 +750,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .kv-table input:focus {
   outline: none;
-  border-color: var(--orange);
+  border-color: var(--accent);
 }
 .kv-table.readonly td {
   padding: 4px 8px;
@@ -758,7 +759,7 @@ body.resizing-pane .pane-resizer::after {
   font-size: 12px;
 }
 .kv-table .hk {
-  color: var(--orange-dark);
+  color: var(--accent-dark);
   white-space: nowrap;
 }
 .kv-table .hv {
@@ -790,7 +791,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .body-input:focus {
   outline: none;
-  border-color: var(--orange);
+  border-color: var(--accent);
 }
 
 /* 响应区 */
@@ -882,13 +883,13 @@ body.resizing-pane .pane-resizer::after {
   background: #fdf3df;
 }
 .stale-btn.reload {
-  border-color: var(--orange);
-  background: var(--orange);
+  border-color: var(--accent);
+  background: var(--accent);
   color: #fff;
   font-weight: 600;
 }
 .stale-btn.reload:hover {
-  background: var(--orange-dark);
+  background: var(--accent-dark);
 }
 .response-body {
   margin: 0;
@@ -974,7 +975,7 @@ body.resizing-pane .pane-resizer::after {
   right: -1px;
   top: -1px;
   height: 2px;
-  background: var(--orange);
+  background: var(--accent);
   border-radius: 7px 7px 0 0;
 }
 /* 遮住 tab-bar 底边框，与内容区连贯 */
@@ -1003,7 +1004,7 @@ body.resizing-pane .pane-resizer::after {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--orange);
+  background: var(--accent);
 }
 .ft-close {
   display: none;
@@ -1042,8 +1043,8 @@ body.resizing-pane .pane-resizer::after {
   cursor: pointer;
 }
 .save-btn.ghost:hover:not(:disabled) {
-  border-color: var(--orange);
-  color: var(--orange);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .save-btn.ghost:disabled {
   color: var(--muted);
@@ -1088,7 +1089,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .field-row input:focus {
   outline: none;
-  border-color: var(--orange);
+  border-color: var(--accent);
 }
 .field-row .field-select {
   flex: 1;
@@ -1112,7 +1113,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .ct-input:focus {
   outline: none;
-  border-color: var(--orange);
+  border-color: var(--accent);
 }
 .panel-hint {
   padding: 12px 2px;
@@ -1230,7 +1231,7 @@ body.resizing-pane .pane-resizer::after {
   color: var(--text);
 }
 .vs-btn.active {
-  color: var(--orange-dark);
+  color: var(--text);
   background: var(--panel);
   font-weight: 600;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
@@ -1308,8 +1309,8 @@ body.resizing-pane .pane-resizer::after {
   padding: 1px 5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
-  color: var(--orange-dark);
-  background: rgba(255, 108, 55, 0.1);
+  color: var(--accent-dark);
+  background: rgba(45, 127, 249, 0.1);
   border-radius: 4px;
 }
 .settings-empty {
@@ -1389,9 +1390,9 @@ body.resizing-pane .pane-resizer::after {
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 .about-link:hover {
-  color: var(--orange-dark);
-  border-color: var(--orange);
-  background: rgba(255, 108, 55, 0.06);
+  color: var(--accent-dark);
+  border-color: var(--accent);
+  background: rgba(45, 127, 249, 0.06);
 }
 .about-copyright {
   font-size: 12px;
@@ -1513,7 +1514,7 @@ body.resizing-pane .pane-resizer::after {
 .env-name-input:focus {
   outline: none;
   background: var(--panel);
-  border-color: var(--orange);
+  border-color: var(--accent);
 }
 .env-detail-body {
   flex: 1;
@@ -1564,8 +1565,8 @@ body.resizing-pane .pane-resizer::after {
   padding: 1px 5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
-  color: var(--orange-dark);
-  background: rgba(255, 108, 55, 0.1);
+  color: var(--accent-dark);
+  background: rgba(45, 127, 249, 0.1);
   border-radius: 4px;
 }
 .assert-table .res-col {
@@ -1635,7 +1636,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .raw-editor:focus {
   outline: none;
-  border-color: var(--orange);
+  border-color: var(--accent);
 }
 
 /* ── 结构化区：流程 + 请求分栏 ── */
@@ -1695,7 +1696,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .sm-id-input:focus {
   outline: none;
-  border-color: var(--orange);
+  border-color: var(--accent);
 }
 
 /* ── DAG 画布 ── */
@@ -1744,16 +1745,16 @@ body.resizing-pane .pane-resizer::after {
   cursor: pointer;
 }
 .flow-tool-btn:hover {
-  border-color: var(--orange);
-  color: var(--orange-dark);
+  border-color: var(--accent);
+  color: var(--accent-dark);
 }
 .flow-tool-btn.primary {
   color: #fff;
-  background: var(--orange);
-  border-color: var(--orange);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 .flow-tool-btn.primary:hover {
-  background: var(--orange-dark);
+  background: var(--accent-dark);
 }
 .flow-tool-btn:disabled {
   opacity: 0.55;
@@ -1792,7 +1793,7 @@ body.resizing-pane .pane-resizer::after {
   overflow: visible;
 }
 .align-guide {
-  stroke: var(--orange);
+  stroke: var(--accent);
   stroke-width: 1;
   stroke-dasharray: 4 3;
   opacity: 0.9;
@@ -1815,11 +1816,11 @@ body.resizing-pane .pane-resizer::after {
   fill: #c9c9d0;
 }
 .flow-minimap .mm-node.selected {
-  fill: var(--orange);
+  fill: var(--accent);
 }
 .flow-minimap .mm-view {
-  fill: rgba(255, 108, 55, 0.12);
-  stroke: var(--orange);
+  fill: rgba(45, 127, 249, 0.12);
+  stroke: var(--accent);
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
 }
@@ -1836,7 +1837,7 @@ body.resizing-pane .pane-resizer::after {
   stroke-width: 2;
 }
 .flow-edge-group.hot .flow-edge {
-  stroke: var(--orange);
+  stroke: var(--accent);
   stroke-width: 2.5;
 }
 /* 加宽的透明命中区，便于悬停/点击边（svg 本身 pointer-events:none，子元素单独放开） */
@@ -1849,7 +1850,7 @@ body.resizing-pane .pane-resizer::after {
 }
 /* 连线时跟随光标的虚线幽灵边 */
 .flow-edge.ghost {
-  stroke: var(--orange);
+  stroke: var(--accent);
   stroke-width: 2;
   stroke-dasharray: 5 4;
   opacity: 0.85;
@@ -1895,8 +1896,8 @@ body.resizing-pane .pane-resizer::after {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 .flow-node.selected {
-  border-color: var(--orange);
-  box-shadow: 0 0 0 2px rgba(255, 108, 55, 0.28), 0 4px 12px rgba(255, 108, 55, 0.16);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(45, 127, 249, 0.28), 0 4px 12px rgba(45, 127, 249, 0.16);
 }
 .flow-node.dragging {
   cursor: grabbing;
@@ -1971,12 +1972,12 @@ body.resizing-pane .pane-resizer::after {
 }
 /* out 端口是连线起点：悬停放大并高亮，提示可拖拽 */
 .fn-port.out:hover {
-  background: var(--orange);
-  border-color: var(--orange);
+  background: var(--accent);
+  border-color: var(--accent);
   transform: scale(1.35);
 }
 .flow-node.selected .fn-port {
-  border-color: var(--orange);
+  border-color: var(--accent);
 }
 /* 删除按钮：hover 时出现在右上角 */
 .fn-del {
@@ -2069,7 +2070,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .modal-input:focus {
   outline: none;
-  border-color: var(--orange);
+  border-color: var(--accent);
 }
 .modal-actions {
   display: flex;
@@ -2091,17 +2092,17 @@ body.resizing-pane .pane-resizer::after {
   color: var(--text);
 }
 .btn-ghost:hover {
-  border-color: var(--orange);
-  color: var(--orange);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .btn-primary {
-  border: 1px solid var(--orange);
-  background: var(--orange);
+  border: 1px solid var(--accent);
+  background: var(--accent);
   color: #fff;
 }
 .btn-primary:hover {
-  background: var(--orange-dark);
-  border-color: var(--orange-dark);
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
 }
 
 /* ── 文件树顶部工具栏（搜索 + 新建）── */
@@ -2124,7 +2125,7 @@ body.resizing-pane .pane-resizer::after {
   background: var(--panel);
 }
 .tree-search-wrap:focus-within {
-  border-color: var(--orange);
+  border-color: var(--accent);
 }
 .tree-search-icon {
   color: var(--muted);
@@ -2163,8 +2164,8 @@ body.resizing-pane .pane-resizer::after {
   cursor: pointer;
 }
 .tree-add:hover {
-  border-color: var(--orange);
-  color: var(--orange);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* ── 搜索结果（扁平列表）── */
@@ -2400,7 +2401,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .panel-resizer-h:hover::after,
 body.resizing-row .panel-resizer-h::after {
-  background: var(--orange);
+  background: var(--accent);
 }
 body.resizing-row {
   cursor: row-resize;
@@ -2436,7 +2437,7 @@ body.resizing-row {
   color: var(--muted);
 }
 .panel-head-glyph {
-  color: var(--orange);
+  color: var(--accent);
   font-family: ui-monospace, Menlo, monospace;
   font-weight: 700;
 }
@@ -2522,7 +2523,7 @@ body.resizing-row {
   color: var(--muted);
 }
 .term-tab.active .term-tab-glyph {
-  color: var(--orange);
+  color: var(--muted);
 }
 .term-tab-label {
   flex: 1;
@@ -2591,7 +2592,7 @@ body.resizing-row {
 }
 .ai-resizer:hover::after,
 body.resizing-ai .ai-resizer::after {
-  background: var(--orange);
+  background: var(--accent);
 }
 
 /* 右侧 AI 对话面板 */
@@ -2628,7 +2629,7 @@ body.resizing-ai .ai-resizer::after {
   color: var(--text);
 }
 .ai-glyph {
-  color: var(--orange);
+  color: var(--accent);
 }
 .ai-clear {
   font-size: 11px;
@@ -2676,8 +2677,8 @@ body.resizing-ai .ai-resizer::after {
   color: #5b6ed6;
 }
 .ai-msg.user .ai-avatar {
-  background: rgba(255, 108, 55, 0.14);
-  color: var(--orange-dark);
+  background: rgba(45, 127, 249, 0.14);
+  color: var(--accent-dark);
 }
 .ai-bubble {
   max-width: 82%;
@@ -2694,7 +2695,7 @@ body.resizing-ai .ai-resizer::after {
   border-top-left-radius: 2px;
 }
 .ai-msg.user .ai-bubble {
-  background: rgba(255, 108, 55, 0.12);
+  background: rgba(45, 127, 249, 0.12);
   border-top-right-radius: 2px;
 }
 .ai-input-row {
@@ -2721,7 +2722,7 @@ body.resizing-ai .ai-resizer::after {
   outline: none;
 }
 .ai-input:focus {
-  border-color: var(--orange);
+  border-color: var(--accent);
 }
 .ai-send {
   flex-shrink: 0;
@@ -2730,13 +2731,13 @@ body.resizing-ai .ai-resizer::after {
   font-size: 12.5px;
   font-weight: 600;
   color: #fff;
-  background: var(--orange);
+  background: var(--accent);
   border: none;
   border-radius: 8px;
   cursor: pointer;
 }
 .ai-send:hover {
-  background: var(--orange-dark);
+  background: var(--accent-dark);
 }
 .ai-send:disabled {
   background: #d8d8dc;
@@ -2788,7 +2789,7 @@ body.resizing-ai .ai-resizer::after {
   color: var(--text);
 }
 .md-mode-btn.active {
-  color: var(--orange-dark);
+  color: var(--text);
   background: var(--panel);
   font-weight: 600;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
