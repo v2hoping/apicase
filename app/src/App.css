@@ -6,8 +6,13 @@
   --panel: #ffffff;
   --text: #1c1c1e;
   --muted: #8a8a8e;
+  /* 列表/按钮的交互底色：选中比 hover 深一档，全局统一 */
+  --hover: #ededed;
+  --selected: #e4e4e6;
+  --selected-hover: #dbdbde;
   --green: #2e9b53;
   --blue: #2d7ff9;
+  --blue-dark: #1f6fe5;
   --red: #d6332f;
   --purple: #8a3ffc;
   --amber: #c79100;
@@ -55,7 +60,7 @@ body,
 .topbar.is-fullscreen {
   padding-left: 16px;
 }
-/* 顶栏右上角配置按钮：齿轮与文件树配置图标同色（蓝紫），低调方形图标按钮 */
+/* 顶栏右上角配置按钮：低调方形图标按钮，配色同紧邻的三面板切换按钮（灰） */
 .topbar-config {
   display: inline-flex;
   align-items: center;
@@ -64,7 +69,7 @@ body,
   height: 26px;
   flex-shrink: 0;
   padding: 0;
-  color: #5b6ed6;
+  color: var(--muted);
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -73,8 +78,8 @@ body,
   transition: background 0.12s, color 0.12s;
 }
 .topbar-config:hover {
-  background: #eceef9;
-  color: #4453c4;
+  background: var(--hover);
+  color: var(--text);
 }
 .topbar-config-ico {
   display: block;
@@ -312,10 +317,10 @@ body,
   transition: background 0.1s;
 }
 .tree-row:hover {
-  background: #f4f4f6;
+  background: var(--hover);
 }
 .tree-row.selected {
-  background: rgba(255, 108, 55, 0.1);
+  background: var(--selected);
 }
 /* 选中左侧橙色强调条 */
 .tree-row.selected::before {
@@ -329,7 +334,7 @@ body,
   background: var(--orange);
 }
 .tree-row.selected .tree-name {
-  color: var(--orange-dark);
+  color: var(--text);
   font-weight: 500;
 }
 .tree-caret {
@@ -387,9 +392,9 @@ body,
 .tree-row.selected .tree-ico.ico-file.is-case {
   opacity: 1;
 }
-/* 工作空间配置文件的齿轮图标：蓝紫色，与普通文件/用例区分开 */
+/* 工作空间配置文件的齿轮图标：灰色，与顶栏设置齿轮同色；靠齿轮形状（而非颜色）区别于普通文件/用例 */
 .tree-ico.ico-config {
-  color: #5b6ed6;
+  color: var(--muted);
 }
 /* 未找到工作空间提示 */
 .sidebar-empty {
@@ -643,13 +648,14 @@ body.resizing-pane .pane-resizer::after {
   padding: 0 22px;
   border: none;
   border-radius: 6px;
-  background: var(--orange);
+  background: var(--blue);
   color: #fff;
   font-weight: 600;
   cursor: pointer;
+  transition: background 0.12s;
 }
 .send-btn:hover {
-  background: var(--orange-dark);
+  background: var(--blue-dark);
 }
 .send-btn:disabled {
   opacity: 0.6;
@@ -1240,6 +1246,15 @@ body.resizing-pane .pane-resizer::after {
   border-radius: 8px;
   overflow: hidden;
 }
+/* 配置可视设置页：铺满内容区——去掉 workspace 四周留白与 tab-row 下方间距、去卡片圆角/外框 */
+.workspace.is-flush {
+  gap: 0;
+}
+.workspace.is-flush .settings {
+  margin: 0 -12px -12px;
+  border: none;
+  border-radius: 0;
+}
 .settings-nav {
   flex: 0 0 172px;
   display: flex;
@@ -1260,11 +1275,11 @@ body.resizing-pane .pane-resizer::after {
   cursor: pointer;
 }
 .settings-nav-item:hover {
-  background: #f0f0f0;
+  background: var(--hover);
 }
 .settings-nav-item.active {
-  background: rgba(255, 108, 55, 0.12);
-  color: var(--orange-dark);
+  background: var(--selected);
+  color: var(--text);
   font-weight: 600;
 }
 .settings-panel {
@@ -1306,50 +1321,205 @@ body.resizing-pane .pane-resizer::after {
   background: #f7f7f8;
   color: var(--muted);
 }
-.env-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
+/* ── 关于页（整体居中，每行一条信息）──────────── */
+.settings-section.about {
+  align-items: center;
+  text-align: center;
+  gap: 24px;
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 40px 0 20px;
 }
-.env-tab {
-  padding: 5px 12px;
+.about-logo {
+  width: 76px;
+  height: 76px;
+  object-fit: contain;
+}
+/* Logo 下的名称+版本作为一个紧凑分组，与其余行拉开统一间距 */
+.about-title {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.about-name {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--text);
+}
+.about-ver {
   font-size: 12.5px;
   color: var(--muted);
+}
+.about-intro {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.about-sys {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+}
+.about-sys-row {
+  font-size: 13px;
+}
+.about-sys-k {
+  margin-right: 8px;
+  color: var(--muted);
+}
+.about-sys-v {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.about-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 16px;
+  font-size: 13px;
+  color: var(--text);
   background: var(--panel);
   border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.about-link:hover {
+  color: var(--orange-dark);
+  border-color: var(--orange);
+  background: rgba(255, 108, 55, 0.06);
+}
+.about-copyright {
+  font-size: 12px;
+  color: var(--muted);
+}
+/* ── 环境管理：左列表 + 右详情 ── */
+.settings-panel.is-env {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.settings-section.env-manage {
+  flex: 1;
+  min-height: 0;
+  max-width: none;
+}
+.env-manage-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.env-side {
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  background: #fafafa;
+}
+.env-side-head {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.env-side-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  overflow: auto;
+}
+.env-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  color: var(--text);
   border-radius: 6px;
   cursor: pointer;
 }
-.env-tab:hover {
-  border-color: var(--orange);
-  color: var(--orange-dark);
+.env-row:hover {
+  background: var(--hover);
 }
-.env-tab.active {
-  color: #fff;
-  background: var(--orange);
-  border-color: var(--orange);
+.env-row.active {
+  background: var(--selected);
+  color: var(--text);
+  font-weight: 600;
 }
-.env-tab.add {
-  border-style: dashed;
+.env-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.env-row-del {
+  flex-shrink: 0;
+  opacity: 0;
+  border: none;
+  background: none;
   color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
 }
-.env-tab.add:hover {
-  color: var(--orange-dark);
-  border-color: var(--orange);
-  background: transparent;
+.env-row:hover .env-row-del {
+  opacity: 1;
 }
-.env-head {
+.env-row-del:hover {
+  color: var(--red);
+}
+.env-detail {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 4px;
+  flex-direction: column;
 }
-.env-cur-name {
+.env-detail.is-empty {
+  align-items: center;
+  justify-content: center;
+}
+.env-detail-head {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.env-name-input {
+  width: 100%;
+  max-width: 280px;
+  height: 28px;
+  padding: 0 8px;
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+.env-name-input:hover {
+  border-color: var(--border);
+}
+.env-name-input:focus {
+  outline: none;
+  background: var(--panel);
+  border-color: var(--orange);
+}
+.env-detail-body {
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+  overflow: auto;
 }
 .link-danger {
   margin-left: auto;
@@ -1854,8 +2024,8 @@ body.resizing-pane .pane-resizer::after {
   cursor: pointer;
 }
 .ctx-item:hover {
-  background: rgba(255, 108, 55, 0.12);
-  color: var(--orange-dark);
+  background: var(--hover);
+  color: var(--text);
 }
 .ctx-item.danger {
   color: var(--red);
@@ -2012,10 +2182,10 @@ body.resizing-pane .pane-resizer::after {
   cursor: pointer;
 }
 .search-row:hover {
-  background: rgba(255, 108, 55, 0.08);
+  background: var(--hover);
 }
 .search-row.selected {
-  background: rgba(255, 108, 55, 0.14);
+  background: var(--selected);
 }
 .search-row.is-dir {
   cursor: default;
@@ -2182,15 +2352,15 @@ body.resizing-pane .pane-resizer::after {
   transition: background 0.12s, color 0.12s;
 }
 .layout-toggle:hover {
-  background: #ededed;
+  background: var(--hover);
   color: var(--text);
 }
 .layout-toggle.is-on {
   color: #3a3a3f;
-  background: #e4e4e6;
+  background: var(--selected);
 }
 .layout-toggle.is-on:hover {
-  background: #dbdbde;
+  background: var(--selected-hover);
 }
 .layout-toggle:disabled {
   color: #cfcfd4;
