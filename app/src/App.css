@@ -219,8 +219,8 @@ body,
   background: #ededed;
 }
 .env-glyph {
-  color: var(--accent);
-  font-size: 11px;
+  flex-shrink: 0;
+  color: var(--muted);
 }
 .env-label {
   overflow: hidden;
