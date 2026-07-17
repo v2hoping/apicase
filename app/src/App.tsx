@@ -9,6 +9,7 @@ import { ReqDraft, requestToDraft, draftToRequest, buildApiRequest, emptyDraft }
 import { RequestEditor, KVTable, METHODS, methodClass, Select } from "./RequestEditor";
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
 import { TerminalPane } from "./TerminalPane";
+import { type ThemeMode, loadThemeMode, saveThemeMode, resolveTheme, applyTheme } from "./theme";
 import { AiChat } from "./AiChat";
 import { MarkdownEditor } from "./markdown";
 import { RunContext, AssertResult, resolveDraft, extractOutputs, evalAssertions } from "./flow";
@@ -731,6 +732,12 @@ function AboutSettings() {
   );
 }
 
+const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
+  { mode: "light", label: "浅色" },
+  { mode: "dark", label: "深色" },
+  { mode: "system", label: "跟随系统" },
+];
+
 function SettingsPage({
   environments,
   onChange,
@@ -740,6 +747,8 @@ function SettingsPage({
   onShortcutChange,
   shortcutsEnabled,
   onShortcutsEnabledChange,
+  themeMode,
+  onThemeChange,
 }: {
   environments: Record<string, Record<string, string>>;
   onChange: (next: Record<string, Record<string, string>>) => void;
@@ -749,6 +758,8 @@ function SettingsPage({
   onShortcutChange: (next: Overrides) => void;
   shortcutsEnabled: boolean;
   onShortcutsEnabledChange: (next: boolean) => void;
+  themeMode: ThemeMode;
+  onThemeChange: (next: ThemeMode) => void;
 }) {
   const NAV = ["通用", "主题", "环境", "快捷键", "关于"] as const;
   const [section, setSection] = useState<(typeof NAV)[number]>("环境");
@@ -906,7 +917,20 @@ function SettingsPage({
         {section === "主题" && (
           <div className="settings-section">
             <div className="settings-title">主题</div>
-            <div className="settings-desc">当前为浅色主题；深色主题即将支持。</div>
+            <div className="settings-desc">选择界面外观；「跟随系统」会随操作系统的浅色/深色偏好自动切换。</div>
+            <div className="theme-options">
+              {THEME_OPTIONS.map((o) => (
+                <button
+                  key={o.mode}
+                  className={`theme-card ${themeMode === o.mode ? "active" : ""}`}
+                  onClick={() => onThemeChange(o.mode)}
+                >
+                  <span className={`theme-swatch is-${o.mode}`} aria-hidden="true" />
+                  <span className="theme-card-label">{o.label}</span>
+                  {themeMode === o.mode && <span className="theme-card-check">✓</span>}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         {section === "快捷键" && (
@@ -1131,6 +1155,19 @@ function App() {
     setScEnabled(next);
     saveShortcutsEnabled(next);
   }
+
+  // 主题（浅色 / 深色 / 跟随系统）：写 data-theme（供 CSS 变量覆盖）+ 传 resolvedTheme 给终端等运行时消费者
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => loadThemeMode());
+  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() => resolveTheme(loadThemeMode()));
+  useEffect(() => {
+    saveThemeMode(themeMode);
+    setResolvedTheme(applyTheme(themeMode));
+    if (themeMode !== "system") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => setResolvedTheme(applyTheme("system"));
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [themeMode]);
 
   const mark = () => setDirty(true);
 
@@ -2663,6 +2700,8 @@ function App() {
                   onShortcutChange={onShortcutChange}
                   shortcutsEnabled={scEnabled}
                   onShortcutsEnabledChange={onShortcutsEnabledChange}
+                  themeMode={themeMode}
+                  onThemeChange={setThemeMode}
                 />
               ) : (
                 <div className="text-view">
@@ -2863,7 +2902,7 @@ function App() {
                       const on = showBottom && activeTermId === t.id;
                       return (
                         <div key={t.id} className="term-pane-wrap" style={{ display: on ? "flex" : "none" }}>
-                          <TerminalPane cwd={t.cwd} active={on} />
+                          <TerminalPane cwd={t.cwd} active={on} theme={resolvedTheme} />
                         </div>
                       );
                     })}
