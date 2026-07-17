@@ -535,6 +535,61 @@ fn terminal_close(state: State<PtyState>, id: String) -> Result<(), String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 「关于」页展示的系统信息
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemInfo {
+    pub os: String,   // 操作系统友好名 + 版本，如 "macOS 14.6"
+    pub arch: String, // 架构，如 "arm64" / "x86_64"
+    pub chip: String, // 芯片型号（mac 取品牌串，如 "Apple M1 Pro"），其它平台退回架构
+}
+
+#[tauri::command]
+fn system_info() -> SystemInfo {
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        other => other,
+    }
+    .to_string();
+
+    #[cfg(target_os = "macos")]
+    let os = {
+        let ver = std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if ver.is_empty() {
+            "macOS".to_string()
+        } else {
+            format!("macOS {}", ver)
+        }
+    };
+    #[cfg(target_os = "windows")]
+    let os = "Windows".to_string();
+    #[cfg(target_os = "linux")]
+    let os = "Linux".to_string();
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let os = std::env::consts::OS.to_string();
+
+    // 芯片：macOS 取 CPU 品牌串（如 Apple M1 Pro），其它平台退回架构
+    #[cfg(target_os = "macos")]
+    let chip = std::process::Command::new("sysctl")
+        .args(["-n", "machdep.cpu.brand_string"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| arch.clone());
+    #[cfg(not(target_os = "macos"))]
+    let chip = arch.clone();
+
+    SystemInfo { os, arch, chip }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -558,7 +613,8 @@ pub fn run() {
             terminal_open,
             terminal_write,
             terminal_resize,
-            terminal_close
+            terminal_close,
+            system_info
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

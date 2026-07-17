@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Case, Request, RequestOutput, Assertion, UiNodes, analyzeCase, dumpCase, splitQueryFromUrl, parseEnvironments, dumpApplicationConfig } from "./case";
 import { ReqDraft, requestToDraft, draftToRequest, buildApiRequest, emptyDraft } from "./draft";
@@ -615,6 +616,52 @@ function ShortcutsSettings({ overrides, onChange }: { overrides: Overrides; onCh
   );
 }
 
+// 应用元信息（与 package.json / tauri.conf.json 保持一致）
+const APP_VERSION = "0.1.0";
+const APP_REPO = "https://github.com/v2hoping/apicase";
+
+type SysInfo = { os: string; arch: string; chip: string };
+
+// 配置页「关于」分区：应用元信息 + 一句话简介 + 系统信息 + 外链
+function AboutSettings() {
+  const [sys, setSys] = useState<SysInfo | null>(null);
+  useEffect(() => {
+    invoke<SysInfo>("system_info")
+      .then(setSys)
+      .catch(() => {});
+  }, []);
+  function openLink(url: string) {
+    openUrl(url).catch(() => {});
+  }
+  return (
+    <div className="settings-section about">
+      <img className="about-logo" src="/nautilus.svg" alt="" draggable={false} />
+      <div className="about-title">
+        <div className="about-name">Apicase</div>
+        <div className="about-ver">版本 {APP_VERSION}</div>
+      </div>
+      <p className="about-intro">一款 AI 原生的 API 自动化测试工具，集接口调试、接口管理、用例编排与文件即数据于一体</p>
+      <div className="about-sys">
+        <div className="about-sys-row">
+          <span className="about-sys-k">操作系统</span>
+          <span className="about-sys-v">{sys?.os || "—"}</span>
+        </div>
+        <div className="about-sys-row">
+          <span className="about-sys-k">芯片</span>
+          <span className="about-sys-v">{sys ? `${sys.chip}（${sys.arch}）` : "—"}</span>
+        </div>
+      </div>
+      <button className="about-link" onClick={() => openLink(APP_REPO)}>
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+        </svg>
+        项目主页 / 源码
+      </button>
+      <div className="about-copyright">© 2026 Apicase</div>
+    </div>
+  );
+}
+
 function SettingsPage({
   environments,
   onChange,
@@ -630,11 +677,16 @@ function SettingsPage({
   shortcutOverrides: Overrides;
   onShortcutChange: (next: Overrides) => void;
 }) {
-  const NAV = ["通用", "主题", "环境", "快捷键"] as const;
+  const NAV = ["通用", "主题", "环境", "快捷键", "关于"] as const;
   const [section, setSection] = useState<(typeof NAV)[number]>("环境");
   const envNames = Object.keys(environments);
   const [selEnv, setSelEnv] = useState(envNames[0] || "");
   const cur = envNames.includes(selEnv) ? selEnv : envNames[0] || "";
+  const [envQuery, setEnvQuery] = useState("");
+  const shownEnvs = envNames.filter((e) => e.toLowerCase().includes(envQuery.trim().toLowerCase()));
+  // 改名走草稿：逐字改 key 会让 activeEnv 抖动，故失焦/回车才提交
+  const [nameDraft, setNameDraft] = useState(cur);
+  useEffect(() => setNameDraft(cur), [cur]);
 
   function setVars(env: string, rows: { name: string; value: string; enabled?: boolean }[]) {
     const m: Record<string, string> = {};
@@ -642,15 +694,11 @@ function SettingsPage({
     onChange({ ...environments, [env]: m });
   }
   function addEnv() {
-    const name = window.prompt("新环境名称（如 dev / test / prod）", "");
-    if (!name || !name.trim()) return;
-    const n = name.trim();
-    if (environments[n]) {
-      window.alert("环境已存在");
-      return;
-    }
+    let n = "新环境";
+    for (let i = 2; environments[n]; i++) n = `新环境 ${i}`;
     onChange({ ...environments, [n]: {} });
     setSelEnv(n);
+    setEnvQuery(""); // 否则新环境可能被搜索词过滤掉
   }
   function delEnv(env: string) {
     if (!window.confirm(`删除环境「${env}」？`)) return;
@@ -658,6 +706,22 @@ function SettingsPage({
     delete next[env];
     onChange(next);
     setSelEnv(Object.keys(next)[0] || "");
+  }
+  function commitRename() {
+    const n = nameDraft.trim();
+    if (!n || n === cur) {
+      setNameDraft(cur);
+      return;
+    }
+    if (environments[n]) {
+      window.alert("环境已存在");
+      setNameDraft(cur);
+      return;
+    }
+    const next: Record<string, Record<string, string>> = {};
+    for (const [k, v] of Object.entries(environments)) next[k === cur ? n : k] = v; // 重建以保持顺序
+    onChange(next);
+    setSelEnv(n);
   }
 
   return (
@@ -669,41 +733,84 @@ function SettingsPage({
           </button>
         ))}
       </nav>
-      <div className="settings-panel">
+      <div className={`settings-panel ${section === "环境" ? "is-env" : ""}`}>
         {section === "环境" && (
-          <div className="settings-section">
+          <div className="settings-section env-manage">
             <div className="settings-title">环境</div>
-            <div className="settings-desc">
-              多套环境，运行时用 <code>{"{{变量名}}"}</code> 引用；右上角可切换活动环境。case 级 vars 会覆盖同名环境变量。
-            </div>
-            <div className="env-tabs">
-              {envNames.map((e) => (
-                <button key={e} className={`env-tab ${e === cur ? "active" : ""}`} onClick={() => setSelEnv(e)}>
-                  {e}
-                </button>
-              ))}
-              <button className="env-tab add" onClick={addEnv}>
-                ＋ 添加环境
-              </button>
-            </div>
-            {cur ? (
-              <>
-                <div className="env-head">
-                  <span className="env-cur-name">{cur}</span>
-                  <button className="link-danger" onClick={() => delEnv(cur)}>
-                    删除此环境
+            <div className="env-manage-body">
+              <div className="env-side">
+                <div className="env-side-head">
+                  <div className="tree-search-wrap">
+                    <span className="tree-search-icon">⌕</span>
+                    <input
+                      className="tree-search"
+                      placeholder="搜索环境…"
+                      value={envQuery}
+                      onChange={(e) => setEnvQuery(e.target.value)}
+                    />
+                    {envQuery && (
+                      <button className="tree-search-clear" title="清空" onClick={() => setEnvQuery("")}>
+                        ×
+                      </button>
+                    )}
+                  </div>
+                  <button className="tree-add" title="新增环境" onClick={addEnv}>
+                    ＋
                   </button>
                 </div>
-                <KVTable
-                  rows={Object.entries(environments[cur] || {}).map(([name, value]) => ({ name, value, enabled: true }))}
-                  onChange={(rows) => setVars(cur, rows)}
-                  namePlaceholder="变量名"
-                  valuePlaceholder="值（如 https://api.demo.com）"
-                />
-              </>
-            ) : (
-              <div className="settings-empty">暂无环境，点「添加环境」新建。</div>
-            )}
+                <div className="env-side-list">
+                  {shownEnvs.map((e) => (
+                    <div key={e} className={`env-row ${e === cur ? "active" : ""}`} onClick={() => setSelEnv(e)}>
+                      <span className="env-row-name">{e}</span>
+                      <button
+                        className="env-row-del"
+                        title="删除环境"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          delEnv(e);
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                  {!shownEnvs.length && <div className="settings-empty">{envNames.length ? "无匹配环境" : "暂无环境，点 ＋ 新建。"}</div>}
+                </div>
+              </div>
+              {cur ? (
+                <div className="env-detail">
+                  <div className="env-detail-head">
+                    <input
+                      className="env-name-input"
+                      value={nameDraft}
+                      placeholder="环境名称"
+                      onChange={(e) => setNameDraft(e.target.value)}
+                      onBlur={commitRename}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                        if (e.key === "Escape") {
+                          setNameDraft(cur);
+                          e.currentTarget.blur();
+                        }
+                      }}
+                    />
+                  </div>
+                  <div className="env-detail-body">
+                    <KVTable
+                      rows={Object.entries(environments[cur] || {}).map(([name, value]) => ({ name, value, enabled: true }))}
+                      onChange={(rows) => setVars(cur, rows)}
+                      namePlaceholder="变量名"
+                      valuePlaceholder="值（如 https://api.demo.com）"
+                      hideEnabled
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="env-detail is-empty">
+                  <div className="settings-empty">选择或新建一个环境</div>
+                </div>
+              )}
+            </div>
           </div>
         )}
         {section === "通用" && (
@@ -727,6 +834,7 @@ function SettingsPage({
           </div>
         )}
         {section === "快捷键" && <ShortcutsSettings overrides={shortcutOverrides} onChange={onShortcutChange} />}
+        {section === "关于" && <AboutSettings />}
       </div>
     </div>
   );
@@ -2357,8 +2465,8 @@ function App() {
 
         {/* 中间列：主工作区 + 底部终端栏 */}
         <div className="center-col" ref={centerColRef}>
-        {/* 主工作区 */}
-        <main className="workspace">
+        {/* 主工作区（配置可视设置页铺满，去四周留白）*/}
+        <main className={`workspace ${isConfig && configVisual ? "is-flush" : ""}`}>
           {tabOrder.length > 0 && (
             <div className="tab-row">
               <TabBar

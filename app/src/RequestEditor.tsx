@@ -97,11 +97,13 @@ export function KVTable({
   onChange,
   namePlaceholder = "Key",
   valuePlaceholder = "Value",
+  hideEnabled = false,
 }: {
   rows: KV[];
   onChange: (rows: KV[]) => void;
   namePlaceholder?: string;
   valuePlaceholder?: string;
+  hideEnabled?: boolean; // 无启用/停用语义的场景（如环境变量）隐藏勾选列
 }) {
   const display = rows.length ? rows : [{ name: "", value: "", enabled: true }];
   function update(i: number, patch: Partial<KV>) {
@@ -117,7 +119,7 @@ export function KVTable({
     <table className="kv-table">
       <thead>
         <tr>
-          <th className="ck-col"></th>
+          {!hideEnabled && <th className="ck-col"></th>}
           <th>键</th>
           <th>值</th>
           <th></th>
@@ -128,9 +130,11 @@ export function KVTable({
           const filled = !!(r.name || r.value);
           return (
             <tr key={i}>
-              <td className="ck-col">
-                <input type="checkbox" checked={r.enabled !== false} onChange={(e) => update(i, { enabled: e.target.checked })} />
-              </td>
+              {!hideEnabled && (
+                <td className="ck-col">
+                  <input type="checkbox" checked={r.enabled !== false} onChange={(e) => update(i, { enabled: e.target.checked })} />
+                </td>
+              )}
               <td>
                 <input value={r.name} placeholder={namePlaceholder} onChange={(e) => update(i, { name: e.target.value })} />
               </td>
