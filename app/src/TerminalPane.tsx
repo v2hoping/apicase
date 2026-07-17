@@ -8,8 +8,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
-// 白色终端主题：与应用整体浅色一致（白底 + 深字 + 黑光标），ANSI 色为浅底优化
-const THEME = {
+// 浅色终端主题：白底 + 深字 + 黑光标，ANSI 色为浅底优化
+const LIGHT_THEME = {
   background: "#ffffff",
   foreground: "#1c1c1e",
   cursor: "#1c1c1e",
@@ -33,13 +33,41 @@ const THEME = {
   brightWhite: "#1c1c1e",
 };
 
+// 深色终端主题：深底 + 浅字 + 亮光标，ANSI 色为深底提亮
+const DARK_THEME = {
+  background: "#17171a",
+  foreground: "#e6e6ea",
+  cursor: "#e6e6ea",
+  cursorAccent: "#17171a",
+  selectionBackground: "rgba(77,148,255,0.3)",
+  black: "#3b3b42",
+  red: "#f0554f",
+  green: "#40bd6a",
+  yellow: "#d9a83c",
+  blue: "#4d94ff",
+  magenta: "#c96fd0",
+  cyan: "#3fb6cc",
+  white: "#c8c8ce",
+  brightBlack: "#6a6a72",
+  brightRed: "#ff6b66",
+  brightGreen: "#5fd486",
+  brightYellow: "#e8bf5a",
+  brightBlue: "#6ba6ff",
+  brightMagenta: "#dd8fe0",
+  brightCyan: "#5fcfe0",
+  brightWhite: "#f4f4f8",
+};
+
+const themeObj = (t: "light" | "dark") => (t === "dark" ? DARK_THEME : LIGHT_THEME);
+
 let SEQ = 0;
 
-export function TerminalPane({ cwd, active }: { cwd: string; active: boolean }) {
+export function TerminalPane({ cwd, active, theme }: { cwd: string; active: boolean; theme: "light" | "dark" }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const idRef = useRef<string>("");
+  const themeRef = useRef(theme);
 
   // 挂载即创建终端与后端会话；卸载即关闭。cwd 变化（切工作空间）也重建。
   useEffect(() => {
@@ -55,7 +83,7 @@ export function TerminalPane({ cwd, active }: { cwd: string; active: boolean }) 
         'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
       lineHeight: 1.15,
       cursorBlink: true,
-      theme: THEME,
+      theme: themeObj(themeRef.current),
       allowProposedApi: true,
     });
     const fit = new FitAddon();
@@ -122,6 +150,12 @@ export function TerminalPane({ cwd, active }: { cwd: string; active: boolean }) 
       fitRef.current = null;
     };
   }, [cwd]);
+
+  // 主题切换：热更新 xterm 配色（不重建会话，保留终端内容）
+  useEffect(() => {
+    themeRef.current = theme;
+    if (termRef.current) termRef.current.options.theme = themeObj(theme);
+  }, [theme]);
 
   // 从隐藏切回可见：此前 display:none 尺寸为 0，需重新 fit + focus
   useEffect(() => {
