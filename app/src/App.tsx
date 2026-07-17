@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -28,6 +28,8 @@ import {
   isDefaultBinding,
   loadOverrides,
   saveOverrides,
+  loadShortcutsEnabled,
+  saveShortcutsEnabled,
 } from "./shortcuts";
 import "./App.css";
 
@@ -204,6 +206,53 @@ function ConfigIcon({ className = "tree-ico ico-config", size = 15 }: { classNam
         d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58z"
       />
       <circle cx="12" cy="12" r="3.15" fill="none" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+// 设置页左导航图标：统一线条描边（currentColor 跟随文字色），16×16 viewBox
+const SETTINGS_NAV_ICONS: Record<string, ReactNode> = {
+  // 通用：调节滑块
+  通用: (
+    <>
+      <path fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" d="M2.5 5h11M2.5 11h11" />
+      <circle cx="6" cy="5" r="1.9" fill="var(--panel)" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="10.5" cy="11" r="1.9" fill="var(--panel)" stroke="currentColor" strokeWidth="1.4" />
+    </>
+  ),
+  // 主题：半明半暗圆（明暗对比）
+  主题: (
+    <>
+      <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path fill="currentColor" d="M8 2.4a5.6 5.6 0 0 0 0 11.2z" />
+    </>
+  ),
+  // 环境：层叠（多套环境）
+  环境: (
+    <>
+      <path fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" d="M8 2 14 5.2 8 8.4 2 5.2Z" />
+      <path fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" d="M2.4 8.4 8 11.4l5.6-3M2.4 11.2 8 14.2l5.6-3" />
+    </>
+  ),
+  // 快捷键：键盘
+  快捷键: (
+    <>
+      <rect x="1.5" y="4" width="13" height="8" rx="1.6" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" d="M4 6.5h.01M6.4 6.5h.01M8.8 6.5h.01M11.2 6.5h.01M5 9.5h6" />
+    </>
+  ),
+  // 关于：信息 i
+  关于: (
+    <>
+      <circle cx="8" cy="8" r="5.8" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" d="M8 7.4v3.4" />
+      <circle cx="8" cy="5.1" r="0.9" fill="currentColor" />
+    </>
+  ),
+};
+function SettingsNavIcon({ name }: { name: string }) {
+  return (
+    <svg className="settings-nav-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      {SETTINGS_NAV_ICONS[name]}
     </svg>
   );
 }
@@ -512,7 +561,17 @@ function NewCaseDialog({
 
 // application.yml 的可视化设置页：左导航 + 右配置面板（仿 GitHub 设置页）
 // 配置页「快捷键」分区：查看 + 录制重绑 + 冲突检测 + 恢复默认。
-function ShortcutsSettings({ overrides, onChange }: { overrides: Overrides; onChange: (next: Overrides) => void }) {
+function ShortcutsSettings({
+  overrides,
+  onChange,
+  enabled,
+  onToggleEnabled,
+}: {
+  overrides: Overrides;
+  onChange: (next: Overrides) => void;
+  enabled: boolean;
+  onToggleEnabled: (next: boolean) => void;
+}) {
   const [recording, setRecording] = useState<ActionId | null>(null);
   const bindings = resolveBindings(overrides);
 
@@ -568,20 +627,29 @@ function ShortcutsSettings({ overrides, onChange }: { overrides: Overrides; onCh
     <div className="settings-section">
       <div className="settings-title sc-title-row">
         <span>快捷键</span>
-        <button className="link-danger" onClick={() => onChange({})}>
-          全部恢复默认
-        </button>
+        <span className="sc-title-actions">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={enabled}
+            title={enabled ? "停用全部快捷键" : "启用快捷键"}
+            className={`sc-switch ${enabled ? "on" : ""}`}
+            onClick={() => onToggleEnabled(!enabled)}
+          >
+            <span className="sc-switch-thumb" />
+          </button>
+          <button className="sc-btn sc-reset" onClick={() => onChange({})}>
+            全部恢复默认
+          </button>
+        </span>
       </div>
-      <div className="settings-desc">
-        点「修改」后按下新组合键即可重绑；录制时 <code>Esc</code> 取消、<code>Backspace</code> 清空（禁用）。修饰键{" "}
-        <code>Mod</code> 在 macOS 为 ⌘、其它平台为 Ctrl。
-      </div>
-      {groups.map((g) => (
-        <div key={g.name} className="sc-group">
-          <div className="sc-group-name">{g.name}</div>
-          {g.items.map((a) => {
-            const accel = bindings[a.id];
-            const isRec = recording === a.id;
+      <div className={`sc-list ${enabled ? "" : "is-off"}`}>
+        {groups.map((g) => (
+          <div key={g.name} className="sc-group">
+            <div className="sc-group-name">{g.name}</div>
+            {g.items.map((a) => {
+              const accel = bindings[a.id];
+              const isRec = recording === a.id;
             return (
               <div key={a.id} className="sc-row">
                 <span className="sc-label">{a.label}</span>
@@ -610,8 +678,9 @@ function ShortcutsSettings({ overrides, onChange }: { overrides: Overrides; onCh
               </div>
             );
           })}
-        </div>
-      ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -669,6 +738,8 @@ function SettingsPage({
   configPath,
   shortcutOverrides,
   onShortcutChange,
+  shortcutsEnabled,
+  onShortcutsEnabledChange,
 }: {
   environments: Record<string, Record<string, string>>;
   onChange: (next: Record<string, Record<string, string>>) => void;
@@ -676,6 +747,8 @@ function SettingsPage({
   configPath: string;
   shortcutOverrides: Overrides;
   onShortcutChange: (next: Overrides) => void;
+  shortcutsEnabled: boolean;
+  onShortcutsEnabledChange: (next: boolean) => void;
 }) {
   const NAV = ["通用", "主题", "环境", "快捷键", "关于"] as const;
   const [section, setSection] = useState<(typeof NAV)[number]>("环境");
@@ -729,7 +802,8 @@ function SettingsPage({
       <nav className="settings-nav">
         {NAV.map((s) => (
           <button key={s} className={`settings-nav-item ${section === s ? "active" : ""}`} onClick={() => setSection(s)}>
-            {s}
+            <SettingsNavIcon name={s} />
+            <span>{s}</span>
           </button>
         ))}
       </nav>
@@ -748,13 +822,16 @@ function SettingsPage({
                       value={envQuery}
                       onChange={(e) => setEnvQuery(e.target.value)}
                     />
-                    {envQuery && (
-                      <button className="tree-search-clear" title="清空" onClick={() => setEnvQuery("")}>
-                        ×
-                      </button>
-                    )}
+                    {/* 始终占位：无文字时隐藏但保留宽度，避免出现/消失时搜索栏输入区长度跳动 */}
+                    <button
+                      className={`tree-search-clear ${envQuery ? "" : "is-hidden"}`}
+                      title="清空"
+                      onClick={() => setEnvQuery("")}
+                    >
+                      ×
+                    </button>
                   </div>
-                  <button className="tree-add" title="新增环境" onClick={addEnv}>
+                  <button className="tree-add env-add" title="新增环境" onClick={addEnv}>
                     ＋
                   </button>
                 </div>
@@ -816,7 +893,6 @@ function SettingsPage({
         {section === "通用" && (
           <div className="settings-section">
             <div className="settings-title">通用</div>
-            <div className="settings-desc">工作空间基本信息（只读）。</div>
             <div className="field-row">
               <label>工作空间</label>
               <input readOnly value={workspacePath} />
@@ -833,7 +909,14 @@ function SettingsPage({
             <div className="settings-desc">当前为浅色主题；深色主题即将支持。</div>
           </div>
         )}
-        {section === "快捷键" && <ShortcutsSettings overrides={shortcutOverrides} onChange={onShortcutChange} />}
+        {section === "快捷键" && (
+          <ShortcutsSettings
+            overrides={shortcutOverrides}
+            onChange={onShortcutChange}
+            enabled={shortcutsEnabled}
+            onToggleEnabled={onShortcutsEnabledChange}
+          />
+        )}
         {section === "关于" && <AboutSettings />}
       </div>
     </div>
@@ -1041,6 +1124,12 @@ function App() {
   function onShortcutChange(next: Overrides) {
     setScOverrides(next);
     saveOverrides(next);
+  }
+  // 快捷键功能总开关：关闭时全局不分发任何快捷键
+  const [scEnabled, setScEnabled] = useState<boolean>(() => loadShortcutsEnabled());
+  function onShortcutsEnabledChange(next: boolean) {
+    setScEnabled(next);
+    saveShortcutsEnabled(next);
   }
 
   const mark = () => setDirty(true);
@@ -1784,7 +1873,8 @@ function App() {
 
   // 快捷键：反查表 + 动作分发闭包（每次 render 取最新 state / handler）
   const scBindings = resolveBindings(scOverrides);
-  scLookupRef.current = buildLookup(scBindings);
+  // 总开关关闭 → 反查表置空，任何键都查不到动作，等于全局停用快捷键
+  scLookupRef.current = scEnabled ? buildLookup(scBindings) : {};
   scActionsRef.current = {
     "new-case": () => {
       if (workspace) newCaseIn(workspace);
@@ -2571,6 +2661,8 @@ function App() {
                   configPath={currentCasePath}
                   shortcutOverrides={scOverrides}
                   onShortcutChange={onShortcutChange}
+                  shortcutsEnabled={scEnabled}
+                  onShortcutsEnabledChange={onShortcutsEnabledChange}
                 />
               ) : (
                 <div className="text-view">

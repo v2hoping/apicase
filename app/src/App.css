@@ -1266,6 +1266,9 @@ body.resizing-pane .pane-resizer::after {
   background: #fafafa;
 }
 .settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   text-align: left;
   padding: 8px 12px;
   font-size: 13px;
@@ -1275,6 +1278,10 @@ body.resizing-pane .pane-resizer::after {
   border-radius: 6px;
   cursor: pointer;
 }
+.settings-nav-ico {
+  flex-shrink: 0;
+  color: var(--muted);
+}
 .settings-nav-item:hover {
   background: var(--hover);
 }
@@ -1282,6 +1289,9 @@ body.resizing-pane .pane-resizer::after {
   background: var(--selected);
   color: var(--text);
   font-weight: 600;
+}
+.settings-nav-item.active .settings-nav-ico {
+  color: var(--text);
 }
 .settings-panel {
   flex: 1;
@@ -2151,7 +2161,14 @@ body.resizing-pane .pane-resizer::after {
 .tree-search-clear:hover {
   color: var(--text);
 }
+.tree-search-clear.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
 .tree-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 28px;
   height: 28px;
   flex-shrink: 0;
@@ -2165,6 +2182,16 @@ body.resizing-pane .pane-resizer::after {
 }
 .tree-add:hover {
   border-color: var(--accent);
+  color: var(--accent);
+}
+/* 环境页新增按钮：无边框方框的纯图标按钮，加号居中，hover 给淡底反馈 */
+.env-add {
+  border: none;
+  background: transparent;
+}
+.env-add:hover {
+  border: none;
+  background: var(--hover);
   color: var(--accent);
 }
 
@@ -2239,6 +2266,15 @@ body.resizing-pane .pane-resizer::after {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+.sc-title-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+/* 总开关关闭 → 列表整体淡出，提示快捷键已停用（仍可编辑绑定，只是不生效） */
+.sc-list.is-off {
+  opacity: 0.5;
 }
 .sc-group {
   margin-top: 14px;
@@ -2318,6 +2354,45 @@ body.resizing-pane .pane-resizer::after {
 }
 .sc-btn.ghost:hover {
   color: var(--red);
+}
+/* 「全部恢复默认」按钮：破坏性操作，hover 转红 */
+.sc-reset:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+/* 快捷键启用/禁用开关 */
+.sc-switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--border);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.sc-switch.on {
+  background: var(--accent);
+}
+.sc-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.sc-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform 0.15s;
+}
+.sc-switch.on .sc-switch-thumb {
+  transform: translateX(14px);
 }
 
 /* ─────────────────── 三栏布局：顶栏切换按钮 + 底部终端 + 右侧 AI ─────────────────── */

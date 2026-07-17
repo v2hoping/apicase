@@ -135,8 +135,22 @@ export function accelTokens(a: Accel | null): string[] {
 // ── 持久化（localStorage）─────────────────────────
 // override 值：accel 字符串（自定义）| ""（显式禁用）；缺省 key → 用默认。
 const LS_KEY = "apicase.shortcuts.v1";
+// 快捷键功能总开关（关闭时全局不分发任何快捷键）；缺省视为启用。
+const LS_ENABLED_KEY = "apicase.shortcuts.enabled.v1";
 
 export type Overrides = Partial<Record<ActionId, string>>;
+
+export function loadShortcutsEnabled(): boolean {
+  return localStorage.getItem(LS_ENABLED_KEY) !== "0";
+}
+
+export function saveShortcutsEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(LS_ENABLED_KEY, enabled ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
 
 export function loadOverrides(): Overrides {
   try {
