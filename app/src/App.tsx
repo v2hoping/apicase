@@ -10,6 +10,8 @@ import { RequestEditor, KVTable, METHODS, methodClass, Select } from "./RequestE
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
 import { TerminalPane } from "./TerminalPane";
 import { type ThemeMode, loadThemeMode, saveThemeMode, resolveTheme, applyTheme } from "./theme";
+import { loadAppSettings, saveAppSettings, filterExistingPaths, pathExists } from "./settings";
+import { type ProxyConfig, type ProxyMode, loadProxyConfig, saveProxyConfig, proxyPayload } from "./proxy";
 import { AiChat } from "./AiChat";
 import { MarkdownEditor } from "./markdown";
 import { RunContext, AssertResult, resolveDraft, extractOutputs, evalAssertions } from "./flow";
@@ -210,6 +212,11 @@ function ConfigIcon({ className = "tree-ico ico-config", size = 15 }: { classNam
     </svg>
   );
 }
+// 文件图标（仅文件用，供文件树 / 搜索结果 / 标签页统一复用）：
+// application.yml → 齿轮；.yml/.yaml 用例 → 高亮文件；其余 → 普通文件
+function FileTypeIcon({ path }: { path: string }) {
+  return isAppConfig(path) ? <ConfigIcon /> : <FileIcon active={isYamlFile(path)} />;
+}
 // 设置页左导航图标：统一线条描边（currentColor 跟随文字色），16×16 viewBox
 const SETTINGS_NAV_ICONS: Record<string, ReactNode> = {
   // 通用：调节滑块
@@ -225,6 +232,19 @@ const SETTINGS_NAV_ICONS: Record<string, ReactNode> = {
     <>
       <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" strokeWidth="1.4" />
       <path fill="currentColor" d="M8 2.4a5.6 5.6 0 0 0 0 11.2z" />
+    </>
+  ),
+  // 代理：地球（赤道 + 经线，表示网络出口）
+  代理: (
+    <>
+      <circle cx="8" cy="8" r="5.8" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+        d="M2.4 8h11.2M8 2.2c1.7 1.7 2.6 3.7 2.6 5.8s-.9 4.1-2.6 5.8c-1.7-1.7-2.6-3.7-2.6-5.8s.9-4.1 2.6-5.8Z"
+      />
     </>
   ),
   // 环境：层叠（多套环境）
@@ -381,7 +401,7 @@ function TreeNode({
         onContextMenu={(e) => onContext(e, entry)}
       >
         <span className={`tree-caret ${entry.isDir ? "" : "tree-caret-empty"}`}>{entry.isDir && <Chevron open={isOpen} />}</span>
-        {entry.isDir ? <FolderIcon /> : isAppConfig(entry.path) ? <ConfigIcon /> : <FileIcon active={isYamlFile(entry.path)} />}
+        {entry.isDir ? <FolderIcon /> : <FileTypeIcon path={entry.path} />}
         <span className="tree-name">{entry.name}</span>
       </div>
       {entry.isDir && isOpen && children && (
@@ -738,6 +758,12 @@ const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
   { mode: "system", label: "跟随系统" },
 ];
 
+const PROXY_OPTIONS: { mode: ProxyMode; label: string; desc: string }[] = [
+  { mode: "system", label: "跟随系统", desc: "使用系统 / 环境变量配置的代理（默认）" },
+  { mode: "none", label: "不使用代理", desc: "直连，忽略系统代理（调试本地服务推荐）" },
+  { mode: "custom", label: "自定义", desc: "指定 http / https 代理地址" },
+];
+
 function SettingsPage({
   environments,
   onChange,
@@ -749,6 +775,8 @@ function SettingsPage({
   onShortcutsEnabledChange,
   themeMode,
   onThemeChange,
+  proxyConfig,
+  onProxyChange,
 }: {
   environments: Record<string, Record<string, string>>;
   onChange: (next: Record<string, Record<string, string>>) => void;
@@ -760,8 +788,13 @@ function SettingsPage({
   onShortcutsEnabledChange: (next: boolean) => void;
   themeMode: ThemeMode;
   onThemeChange: (next: ThemeMode) => void;
+  proxyConfig: ProxyConfig;
+  onProxyChange: (next: ProxyConfig) => void;
 }) {
-  const NAV = ["通用", "主题", "环境", "快捷键", "关于"] as const;
+  // 导航分两组：上＝跟随**项目**（工作空间 / application.yml），下＝跟随**应用**（localStorage / app 存储）
+  const NAV_PROJECT = ["通用", "环境"] as const;
+  const NAV_APP = ["主题", "代理", "快捷键", "关于"] as const;
+  const NAV = [...NAV_PROJECT, ...NAV_APP] as const;
   const [section, setSection] = useState<(typeof NAV)[number]>("环境");
   const envNames = Object.keys(environments);
   const [selEnv, setSelEnv] = useState(envNames[0] || "");
@@ -811,12 +844,14 @@ function SettingsPage({
   return (
     <div className="settings">
       <nav className="settings-nav">
-        {NAV.map((s) => (
+        {NAV.map((s, i) => [
+          // 项目组与应用组之间插入分割线，把「跟随项目」与「跟随应用存储」的数据分开显示
+          i === NAV_PROJECT.length ? <div key="__nav-divider" className="settings-nav-divider" /> : null,
           <button key={s} className={`settings-nav-item ${section === s ? "active" : ""}`} onClick={() => setSection(s)}>
             <SettingsNavIcon name={s} />
             <span>{s}</span>
-          </button>
-        ))}
+          </button>,
+        ])}
       </nav>
       <div className={`settings-panel ${section === "环境" ? "is-env" : ""}`}>
         {section === "环境" && (
@@ -933,6 +968,37 @@ function SettingsPage({
             </div>
           </div>
         )}
+        {section === "代理" && (
+          <div className="settings-section">
+            <div className="settings-title">代理</div>
+            <div className="settings-desc">
+              控制发起 HTTP 请求时是否走代理。请求本地地址（<code>127.0.0.1</code> / <code>localhost</code>）若被系统代理拦截（常见返回 502），切到「不使用代理」即可直连。
+            </div>
+            <div className="proxy-options">
+              {PROXY_OPTIONS.map((o) => (
+                <button
+                  key={o.mode}
+                  className={`proxy-card ${proxyConfig.mode === o.mode ? "active" : ""}`}
+                  onClick={() => onProxyChange({ ...proxyConfig, mode: o.mode })}
+                >
+                  <span className="proxy-card-label">{o.label}</span>
+                  <span className="proxy-card-desc">{o.desc}</span>
+                  {proxyConfig.mode === o.mode && <span className="proxy-card-check">✓</span>}
+                </button>
+              ))}
+            </div>
+            {proxyConfig.mode === "custom" && (
+              <div className="field-row proxy-url-row">
+                <label>代理地址</label>
+                <input
+                  value={proxyConfig.url}
+                  placeholder="http://127.0.0.1:7890"
+                  onChange={(e) => onProxyChange({ ...proxyConfig, url: e.target.value })}
+                />
+              </div>
+            )}
+          </div>
+        )}
         {section === "快捷键" && (
           <ShortcutsSettings
             overrides={shortcutOverrides}
@@ -979,6 +1045,7 @@ function TabBar({
           onClick={() => onSelect(path)}
           onContextMenu={(e) => onContext(e, path)}
         >
+          <FileTypeIcon path={path} />
           <span className="ft-name">{baseName(path)}</span>
           <span className="ft-right">
             {isDirty(path) && <span className="ft-dirty" />}
@@ -1027,7 +1094,25 @@ function loadLayout(): LayoutFlags {
 function App() {
   // 工作空间
   const [workspace, setWorkspace] = useState("");
+  // 最近打开的工作空间：持久化到应用配置目录 settings.json（见 settings.ts）
   const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>([]);
+  const settingsLoaded = useRef(false);
+  // 挂载时读取磁盘上的最近工作空间，先剔除已删除 / 移动的失效目录，再 merge 进内存
+  // （读取完成前用户可能已打开工作空间，用去重合并避免覆盖丢失），最近在前，最多 10 条。
+  // 过滤后的列表随下方写回 effect 覆盖 settings.json，失效项从文件中一并清除——
+  // 不会只在显示层剔除而磁盘数据无限累积。
+  useEffect(() => {
+    loadAppSettings().then(async (s) => {
+      const alive = await filterExistingPaths(s.recentWorkspaces);
+      setRecentWorkspaces((prev) => Array.from(new Set([...prev, ...alive])).slice(0, 10));
+      settingsLoaded.current = true;
+    });
+  }, []);
+  // 最近工作空间变化即写回；加载完成前不写，避免用初始空值覆盖磁盘。
+  useEffect(() => {
+    if (!settingsLoaded.current) return;
+    saveAppSettings({ recentWorkspaces });
+  }, [recentWorkspaces]);
   const [wsMenuOpen, setWsMenuOpen] = useState(false);
   const wsMenuRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -1142,6 +1227,11 @@ function App() {
   const [respTab, setRespTab] = useState<"body" | "headers">("body");
   const [pretty, setPretty] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // 响应区高度（px，可上下拖动）+ 折叠态（拖到最下收成一行「响应」）
+  const [respHeight, setRespHeight] = useState(240);
+  const [respCollapsed, setRespCollapsed] = useState(false);
+  const respResizingRef = useRef(false);
+  const requestPaneRef = useRef<HTMLDivElement>(null);
 
   // 全局快捷键 override（app 级偏好，持久化 localStorage）
   const [scOverrides, setScOverrides] = useState<Overrides>(() => loadOverrides());
@@ -1154,6 +1244,13 @@ function App() {
   function onShortcutsEnabledChange(next: boolean) {
     setScEnabled(next);
     saveShortcutsEnabled(next);
+  }
+
+  // 代理设置（app 级偏好，持久化 localStorage）：控制发请求是否走系统代理
+  const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(() => loadProxyConfig());
+  function onProxyChange(next: ProxyConfig) {
+    setProxyConfig(next);
+    saveProxyConfig(next);
   }
 
   // 主题（浅色 / 深色 / 跟随系统）：写 data-theme（供 CSS 变量覆盖）+ 传 resolvedTheme 给终端等运行时消费者
@@ -1286,6 +1383,33 @@ function App() {
       if (!flowResizingRef.current) return;
       flowResizingRef.current = false;
       document.body.classList.remove("resizing-col", "resizing-pane");
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  // 响应区拖动调高：拖动「响应」标题栏改变响应区高度；拖到最下（阈值以下）折叠为一行
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (!respResizingRef.current) return;
+      const box = requestPaneRef.current?.getBoundingClientRect();
+      if (!box) return;
+      const h = box.bottom - e.clientY; // 由请求面板底边反推响应区目标高度
+      if (h < 60) {
+        setRespCollapsed(true); // 拖到最下：收起为一行标题
+      } else {
+        setRespCollapsed(false);
+        setRespHeight(Math.max(120, Math.min(box.height - 150, h))); // 上限给请求编辑器留 150
+      }
+    }
+    function onUp() {
+      if (!respResizingRef.current) return;
+      respResizingRef.current = false;
+      document.body.classList.remove("resizing-row");
     }
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -1495,9 +1619,22 @@ function App() {
     }
   }
 
-  function selectWorkspace(ws: string) {
-    applyWorkspace(ws);
+  async function selectWorkspace(ws: string) {
     setWsMenuOpen(false);
+    // TOCTOU：历史项在点击这一刻可能已被外部删除 / 移动。先校验，
+    // 失效则从最近列表移除（经写回 effect 落盘清除）并提示，不再切过去、不污染数据。
+    if (!(await pathExists(ws))) {
+      setRecentWorkspaces((prev) => prev.filter((p) => p !== ws));
+      setError(`工作空间已不存在或被移动，已从最近列表移除：${ws}`);
+      return;
+    }
+    applyWorkspace(ws);
+  }
+
+  // 从最近列表手动移除一条记录（仅删历史记录，不删磁盘上的工作空间目录）；
+  // 经写回 effect 落盘，settings.json 同步清除。
+  function removeRecentWorkspace(ws: string) {
+    setRecentWorkspaces((prev) => prev.filter((p) => p !== ws));
   }
 
   // ── case / 标签页 打开 / 关闭 ─────────────────────
@@ -2000,6 +2137,11 @@ function App() {
     mark();
   }
 
+  function setProtocol(p: string) {
+    setRequests((prev) => prev.map((s) => (s.id === selectedRequestId ? { ...s, protocol: p } : s)));
+    mark();
+  }
+
   function renameRequest(oldId: string, newId: string) {
     if (requests.some((s) => s.id === newId)) {
       window.alert("请求 ID 已存在");
@@ -2133,7 +2275,7 @@ function App() {
   async function runRequestWithCtx(sd: RequestDraft, ctx: RunContext): Promise<{ state: RunState; outputs: Record<string, unknown> }> {
     try {
       const resolved = resolveDraft(sd.req, ctx);
-      const result = await invoke<ApiResponse>("send_request", { request: buildApiRequest(resolved) });
+      const result = await invoke<ApiResponse>("send_request", { request: buildApiRequest(resolved), proxy: proxyPayload(proxyConfig) });
       const outputs = extractOutputs(sd.outputs, result.body);
       const asserts = evalAssertions(sd.assertions, result);
       const pass = asserts.every((a) => a.ok);
@@ -2387,10 +2529,22 @@ function App() {
                   <div className="ws-empty">暂无最近工作空间</div>
                 ) : (
                   recentWorkspaces.map((ws) => (
-                    <button key={ws} className="ws-item ws-recent" title={ws} onClick={() => selectWorkspace(ws)}>
-                      <span className="ws-recent-name">{baseName(ws)}</span>
-                      <span className="ws-recent-path">{ws}</span>
-                    </button>
+                    <div key={ws} className="ws-recent-row">
+                      <button className="ws-item ws-recent" title={ws} onClick={() => selectWorkspace(ws)}>
+                        <span className="ws-recent-name">{baseName(ws)}</span>
+                        <span className="ws-recent-path">{ws}</span>
+                      </button>
+                      <button
+                        className="ws-recent-del"
+                        title="从最近列表移除"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeRecentWorkspace(ws);
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
                   ))
                 )}
               </div>
@@ -2541,7 +2695,7 @@ function App() {
                           }}
                           onContextMenu={(e) => openContext(e, r)}
                         >
-                          {r.isDir ? <FolderIcon /> : isAppConfig(r.path) ? <ConfigIcon /> : <FileIcon active={isYamlFile(r.path)} />}
+                          {r.isDir ? <FolderIcon /> : <FileTypeIcon path={r.path} />}
                           <span className="search-name">{r.name}</span>
                           {rel && rel !== r.name && <span className="search-path">{rel}</span>}
                         </div>
@@ -2702,6 +2856,8 @@ function App() {
                   onShortcutsEnabledChange={onShortcutsEnabledChange}
                   themeMode={themeMode}
                   onThemeChange={setThemeMode}
+                  proxyConfig={proxyConfig}
+                  onProxyChange={onProxyChange}
                 />
               ) : (
                 <div className="text-view">
@@ -2786,31 +2942,62 @@ function App() {
                     />
                   )}
                   {showRequest && selected && (
-                    <div className="request-pane">
-                      <RequestEditor
-                        key={currentCasePath + "/" + selectedRequestId}
-                        value={selected.req}
-                        onChange={updateReq}
-                        onSend={() => onSendRequest(selected.id)}
-                        sending={sending}
-                        sendLabel="发送"
-                        assertions={selected.assertions}
-                        onAssertions={setAssertions}
-                        assertResults={run?.asserts}
-                        outputs={isFlow ? selected.outputs : undefined}
-                        onOutputs={isFlow ? setOutputs : undefined}
-                        docs={selected.docs}
-                        onDocs={setDocs}
-                        stepId={selected.id}
-                        onRenameId={isFlow ? (v) => renameRequest(selected.id, v) : undefined}
-                      />
+                    <div className="request-pane" ref={requestPaneRef}>
+                      <div className="req-scroll">
+                        <RequestEditor
+                          key={currentCasePath + "/" + selectedRequestId}
+                          value={selected.req}
+                          onChange={updateReq}
+                          onSend={() => onSendRequest(selected.id)}
+                          sending={sending}
+                          sendLabel="发送"
+                          assertions={selected.assertions}
+                          onAssertions={setAssertions}
+                          assertResults={run?.asserts}
+                          outputs={isFlow ? selected.outputs : undefined}
+                          onOutputs={isFlow ? setOutputs : undefined}
+                          docs={selected.docs}
+                          onDocs={setDocs}
+                          stepId={selected.id}
+                          onRenameId={(v) => renameRequest(selected.id, v)}
+                          protocol={selected.protocol}
+                          onProtocol={setProtocol}
+                        />
+                      </div>
 
-                      {/* 响应区 */}
-                      <div className="response">
-                        <div className="response-head">
+                      {/* 响应区：与请求编辑器上下分栏，拖动标题栏调高；拖到最下折叠为一行 */}
+                      <div
+                        className={`response ${respCollapsed ? "is-collapsed" : ""}`}
+                        style={respCollapsed ? undefined : { height: respHeight }}
+                      >
+                        <div
+                          className="response-head"
+                          onMouseDown={
+                            respCollapsed
+                              ? undefined
+                              : (e) => {
+                                  e.preventDefault();
+                                  respResizingRef.current = true;
+                                  document.body.classList.add("resizing-row");
+                                }
+                          }
+                          onClick={respCollapsed ? () => setRespCollapsed(false) : undefined}
+                          title={respCollapsed ? "点击展开响应" : "拖动调整响应区高度"}
+                        >
+                          <button
+                            className="response-toggle"
+                            title={respCollapsed ? "展开" : "折叠"}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setRespCollapsed((v) => !v);
+                            }}
+                          >
+                            <Chevron open={!respCollapsed} />
+                          </button>
                           <span className="response-title">响应</span>
                           {resp && (
-                            <span className="response-meta">
+                            <span className="response-meta response-head-meta">
                               <span className={`status-badge ${statusClass(resp.status)}`}>
                                 {resp.status} {resp.statusText}
                               </span>
@@ -2820,47 +3007,52 @@ function App() {
                           )}
                         </div>
 
-                        {runErr && <div className="error-box">⚠ {runErr}</div>}
+                        {!respCollapsed && (
+                          <div className="response-content">
+                            {runErr && <div className="error-box">⚠ {runErr}</div>}
 
-                        {resp && (
-                          <>
-                            <div className="tabs sub">
-                              <button className={`tab ${respTab === "body" ? "active" : ""}`} onClick={() => setRespTab("body")}>
-                                响应体
-                              </button>
-                              <button className={`tab ${respTab === "headers" ? "active" : ""}`} onClick={() => setRespTab("headers")}>
-                                响应头 ({resp.headers.length})
-                              </button>
-                              {respTab === "body" && (
-                                <label className="pretty-toggle">
-                                  <input type="checkbox" checked={pretty} onChange={(e) => setPretty(e.target.checked)} />
-                                  美化
-                                </label>
-                              )}
-                            </div>
-                            <div className="tab-panel">
-                              {respTab === "body" ? (
-                                <pre className="response-body">{pretty ? prettyBody(resp.body) : resp.body}</pre>
-                              ) : (
-                                <table className="kv-table readonly">
-                                  <tbody>
-                                    {resp.headers.map((h, i) => (
-                                      <tr key={i}>
-                                        <td className="hk">{h.key}</td>
-                                        <td className="hv">{h.value}</td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              )}
-                            </div>
-                          </>
-                        )}
+                            {resp && (
+                              <>
+                                <div className="tabs sub">
+                                  <button className={`tab ${respTab === "body" ? "active" : ""}`} onClick={() => setRespTab("body")}>
+                                    响应体
+                                  </button>
+                                  <button className={`tab ${respTab === "headers" ? "active" : ""}`} onClick={() => setRespTab("headers")}>
+                                    响应头 ({resp.headers.length})
+                                  </button>
+                                  {/* 右侧：美化开关（状态/耗时/大小已移到「响应」标题栏，折叠时仍可见）*/}
+                                  <div className="resp-tab-right">
+                                    {respTab === "body" && (
+                                      <label className="pretty-toggle">
+                                        <input type="checkbox" checked={pretty} onChange={(e) => setPretty(e.target.checked)} />
+                                        美化
+                                      </label>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="tab-panel">
+                                  {respTab === "body" ? (
+                                    <pre className="response-body">{pretty ? prettyBody(resp.body) : resp.body}</pre>
+                                  ) : (
+                                    <table className="kv-table readonly">
+                                      <tbody>
+                                        {resp.headers.map((h, i) => (
+                                          <tr key={i}>
+                                            <td className="hk">{h.key}</td>
+                                            <td className="hv">{h.value}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  )}
+                                </div>
+                              </>
+                            )}
 
-                        {!resp && !runErr && !sending && (
-                          <div className="response-empty">填写请求并点击 发送 查看响应</div>
+                            {sending && <div className="response-empty">请求发送中…</div>}
+                            {!resp && !sending && !runErr && <div className="response-empty">尚未发送请求</div>}
+                          </div>
                         )}
-                        {sending && <div className="response-empty">请求发送中…</div>}
                       </div>
                     </div>
                   )}
