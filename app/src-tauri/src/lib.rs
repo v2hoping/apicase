@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// 一对 HTTP 头（请求头 / 响应头通用）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,9 +41,19 @@ pub struct ApiResponse {
     pub elapsed_ms: u128,
 }
 
+/// 代理设置（前端「设置 → 代理」）：mode = system | none | custom。
+/// system=跟随系统（reqwest 默认读 HTTP(S)_PROXY 环境变量）；none=直连不走代理；custom=指定地址。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyConfig {
+    pub mode: String,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
 /// 真正发起请求的逻辑（与 Tauri 解耦，便于测试）。
 /// 由后端用 reqwest 发出，天然绕过浏览器 CORS。
-async fn perform_request(req: ApiRequest) -> Result<ApiResponse, String> {
+async fn perform_request(req: ApiRequest, proxy: Option<ProxyConfig>) -> Result<ApiResponse, String> {
     let url = req.url.trim();
     if url.is_empty() {
         return Err("URL 不能为空".to_string());
@@ -52,7 +62,31 @@ async fn perform_request(req: ApiRequest) -> Result<ApiResponse, String> {
     let method = reqwest::Method::from_bytes(req.method.trim().to_uppercase().as_bytes())
         .map_err(|_| format!("非法的 HTTP 方法: {}", req.method))?;
 
-    let client = reqwest::Client::builder()
+    // 代理：按前端设置决定 —— none 直连、custom 指定地址、其余（system/缺省）用 reqwest 默认（读系统代理环境变量）
+    let mut client_builder = reqwest::Client::builder();
+    match proxy.as_ref().map(|p| p.mode.as_str()) {
+        Some("none") => {
+            client_builder = client_builder.no_proxy();
+        }
+        Some("custom") => {
+            let purl = proxy
+                .as_ref()
+                .and_then(|p| p.url.as_deref())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            match purl {
+                Some(u) => {
+                    let px = reqwest::Proxy::all(u).map_err(|e| format!("代理地址非法: {e}"))?;
+                    client_builder = client_builder.proxy(px);
+                }
+                None => {
+                    client_builder = client_builder.no_proxy(); // custom 但未填地址 → 视为直连
+                }
+            }
+        }
+        _ => {}
+    }
+    let client = client_builder
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
@@ -102,8 +136,8 @@ async fn perform_request(req: ApiRequest) -> Result<ApiResponse, String> {
 
 /// Tauri 命令：发送单个 API 请求
 #[tauri::command]
-async fn send_request(request: ApiRequest) -> Result<ApiResponse, String> {
-    perform_request(request).await
+async fn send_request(request: ApiRequest, proxy: Option<ProxyConfig>) -> Result<ApiResponse, String> {
+    perform_request(request, proxy).await
 }
 
 /// Tauri 命令：把一个目录初始化为 apicase 工作空间。
@@ -122,6 +156,39 @@ environment:\n  default: {}\n";
         std::fs::write(&cfg, content).map_err(|e| format!("写入 application.yml 失败: {e}"))?;
     }
     Ok(())
+}
+
+/// 应用设置文件路径：应用配置目录下的 settings.json。
+/// 该目录只按应用 identifier 定位（与启动方式无关），跨 dev / 打包一致。
+/// macOS: ~/Library/Application Support/com.apicase.app/settings.json
+fn app_settings_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("获取应用配置目录失败: {e}"))?;
+    Ok(dir.join("settings.json"))
+}
+
+/// Tauri 命令：读取应用设置（原始 JSON 文本，结构交由前端）。
+/// 文件不存在返回空串（前端兜底为默认），其余 IO 错误照常返回 Err。
+#[tauri::command]
+fn read_app_settings(app: AppHandle) -> Result<String, String> {
+    let path = app_settings_path(&app)?;
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(format!("读取应用设置失败: {e}")),
+    }
+}
+
+/// Tauri 命令：写入应用设置（整份覆盖）。自动创建配置目录。
+#[tauri::command]
+fn write_app_settings(app: AppHandle, content: String) -> Result<(), String> {
+    let path = app_settings_path(&app)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建应用配置目录失败: {e}"))?;
+    }
+    std::fs::write(&path, content).map_err(|e| format!("写入应用设置失败: {e}"))
 }
 
 /// 目录项（文件树节点）
@@ -599,6 +666,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             send_request,
             init_workspace,
+            read_app_settings,
+            write_app_settings,
             list_dir,
             read_text_file,
             read_file_smart,
@@ -633,7 +702,7 @@ mod tests {
             headers: vec![],
             body: None,
         };
-        assert!(perform_request(req).await.is_err());
+        assert!(perform_request(req, None).await.is_err());
     }
 
     /// 空 URL 应报错（无需联网）
@@ -645,7 +714,7 @@ mod tests {
             headers: vec![],
             body: None,
         };
-        assert!(perform_request(req).await.is_err());
+        assert!(perform_request(req, None).await.is_err());
     }
 
     /// 真实 GET：验证 单节点 DAG 端到端链路（需联网）
@@ -657,8 +726,37 @@ mod tests {
             headers: vec![],
             body: None,
         };
-        let resp = perform_request(req).await.expect("请求应成功");
+        let resp = perform_request(req, None).await.expect("请求应成功");
         assert_eq!(resp.status, 200);
         assert!(!resp.body.is_empty());
+    }
+
+    /// 端到端（需本地 httpbin：docker run -d -p 80:80 kennethreitz/httpbin）：
+    /// proxy=none 直连本地，覆盖全部 HTTP 方法，验证「不使用代理」能穿透系统代理直达本地服务。
+    /// 依赖外部容器，默认 #[ignore]；手动运行：cargo test -- --ignored e2e_methods_via_local_httpbin
+    #[tokio::test]
+    #[ignore]
+    async fn e2e_methods_via_local_httpbin() {
+        let none = || Some(ProxyConfig { mode: "none".into(), url: None });
+        for (m, url) in [
+            ("GET", "http://127.0.0.1/get"),
+            ("POST", "http://127.0.0.1/post"),
+            ("PUT", "http://127.0.0.1/put"),
+            ("PATCH", "http://127.0.0.1/patch"),
+            ("DELETE", "http://127.0.0.1/delete"),
+            ("HEAD", "http://127.0.0.1/get"),
+            ("OPTIONS", "http://127.0.0.1/anything"),
+        ] {
+            let req = ApiRequest {
+                method: m.into(),
+                url: url.into(),
+                headers: vec![],
+                body: None,
+            };
+            let resp = perform_request(req, none())
+                .await
+                .unwrap_or_else(|e| panic!("{m} 请求失败: {e}"));
+            assert_eq!(resp.status, 200, "{m} 状态应为 200");
+        }
     }
 }

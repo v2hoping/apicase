@@ -1,18 +1,18 @@
 :root {
   /* ── 中性骨架 ── */
-  --border: #e1e1e3;
-  --border-strong: #cfcfd4; /* hover 边框 / 端口环等更实的分隔线 */
-  --bg: #fafafa; /* 页面底 */
-  --panel: #ffffff; /* 面板 / 卡片 */
-  --panel-2: #f5f5f7; /* 次级底：只读输入、表头等 */
+  --border: #ececec; /* 纯中性分隔线 */
+  --border-strong: #dcdcdc; /* hover 边框 / 端口环等更实的分隔线 */
+  --bg: #f9f9f9; /* 唯一层次色（纯中性极浅灰）：文件树侧栏 / 设置导航 / 次级面，衬托纯白主体 */
+  --panel: #ffffff; /* 主体白：顶栏 / 主工作区 / 底部栏 / 右侧栏 / 卡片 */
+  --panel-2: #f9f9f9; /* 次级面（只读输入、表头等）统一用层次色 */
   --text: #1c1c1e;
   --text-strong: #111114; /* 计数等需更黑一档 */
   --muted: #8a8a8e;
   /* 列表/按钮的交互底色：hover < selected < selected-hover，另有更深一档 hover-strong（关闭按钮等） */
-  --hover: #ededed;
-  --hover-strong: #e2e2e6;
-  --selected: #e4e4e6;
-  --selected-hover: #dbdbde;
+  --hover: #f0f0f0;
+  --hover-strong: #e8e8e8;
+  --selected: #ebebeb;
+  --selected-hover: #e3e3e3;
   --on-accent: #ffffff; /* 有色底上的文字（发送/主按钮等） */
   /* ── 语义色 ── */
   --green: #2e9b53;
@@ -21,6 +21,8 @@
   --red: #d6332f;
   --purple: #8a3ffc;
   --amber: #c79100;
+  --teal: #0f9b8e; /* OPTIONS */
+  --cyan: #1f8ac0; /* HEAD */
   /* 品牌强调色：取自 logo 的蓝色渐变，与 --blue 同值（原为橙 #ff6c37，2026-07-17 整体切蓝） */
   --accent: var(--blue);
   --accent-dark: var(--blue-dark);
@@ -46,27 +48,27 @@
   /* ── 代码面（深色底，两主题都偏深）+ 行内代码 ── */
   --code-bg: #1e1e1e;
   --code-fg: #e6e6e6;
-  --inline-code-bg: #f0f0f2;
+  --inline-code-bg: #f0f0f0;
   --inline-code-fg: #d6336c;
-  --th-bg: #f6f6f8;
-  /* ── DAG 画布 / 小地图 ── */
-  --canvas-bg: #fcfcfd;
-  --canvas-grid: #e0e0e4;
-  --edge: #c2c2c6; /* 连线默认色 */
-  --dot-idle: #d0d0d4; /* 状态点默认灰 */
+  --th-bg: #f9f9f9;
+  /* ── DAG 画布 / 小地图 ──（纯中性，与整体一致）*/
+  --canvas-bg: #fcfcfc;
+  --canvas-grid: #ececec;
+  --edge: #cccccc; /* 连线默认色 */
+  --dot-idle: #d4d4d4; /* 状态点默认灰 */
   --minimap-bg: rgba(255, 255, 255, 0.92);
-  --minimap-node: #c9c9d0;
-  /* ── AI 对话 ── */
+  --minimap-node: #cccccc;
+  /* ── AI 对话 ──（气泡底与 --panel-2 同中性浅灰；头像蓝紫为 AI 标识，保留）*/
   --ai-avatar-bg: #eceef9;
   --ai-avatar-fg: #5b6ed6;
-  --ai-bubble-bg: #f4f5f7;
-  /* ── 文件树图标 ── */
+  --ai-bubble-bg: #f9f9f9;
+  /* ── 文件树图标 ──（文件图标中性灰）*/
   --icon-folder: #6b83a8;
-  --icon-file: #9aa0ac;
+  --icon-file: #a0a0a0;
 
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     Helvetica, Arial, sans-serif;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text);
   /* 让原生控件（滚动条、input、下拉、复选框）跟随明暗 */
   color-scheme: light;
@@ -94,6 +96,8 @@
   --red: #f0554f;
   --purple: #a970ff;
   --amber: #d9a83c;
+  --teal: #35c4b5; /* OPTIONS */
+  --cyan: #4cb3e6; /* HEAD */
   --accent-tint-weak: rgba(77, 148, 255, 0.1);
   --accent-tint: rgba(77, 148, 255, 0.16);
   --accent-tint-strong: rgba(77, 148, 255, 0.22);
@@ -176,7 +180,7 @@ body,
   padding: 0 14px;
   /* 左边距16 + 红绿灯组宽(~54) + 与选择栏间距16 */
   padding-left: 86px;
-  background: var(--panel);
+  background: var(--panel); /* 顶栏用白（层次只留给文件树侧栏）*/
   border-bottom: 1px solid var(--border);
   /* 进入/退出全屏均瞬时切换，下拉直接到位，不做滑动过渡 */
   transition: none;
@@ -222,7 +226,7 @@ body,
   height: 22px;
   max-width: 240px;
   padding: 0 8px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text);
   background: transparent;
   border: none;
@@ -245,7 +249,7 @@ body,
 .workspace-caret {
   flex-shrink: 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 /* 下拉面板：白底、圆角、轻阴影 */
@@ -267,7 +271,7 @@ body,
   width: 100%;
   text-align: left;
   padding: 7px 10px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text);
   background: transparent;
   border: none;
@@ -284,7 +288,7 @@ body,
 }
 .ws-section-title {
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.3px;
   text-transform: uppercase;
   color: var(--muted);
@@ -306,7 +310,7 @@ body,
   white-space: nowrap;
 }
 .ws-recent-path {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -314,8 +318,45 @@ body,
 }
 .ws-empty {
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
+}
+/* 最近项一行：打开按钮（占满）+ 右侧删除按钮 */
+.ws-recent-row {
+  display: flex;
+  align-items: center;
+}
+.ws-recent-row .ws-recent {
+  flex: 1;
+  min-width: 0; /* 让 name/path 的省略号生效 */
+}
+/* 删除按钮：常驻占位（opacity 切换，避免出现时挤动路径文字），hover 行时淡入 */
+.ws-recent-del {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 2px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+.ws-recent-row:hover .ws-recent-del {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ws-recent-del:hover {
+  background: var(--hover-strong);
+  color: var(--text);
 }
 
 /* ── 环境切换下拉（topbar 右侧）── */
@@ -330,7 +371,7 @@ body,
   height: 22px;
   max-width: 200px;
   padding: 0 8px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text);
   background: transparent;
   border: 1px solid transparent;
@@ -364,7 +405,7 @@ body,
 .env-item .env-check {
   width: 12px;
   color: var(--accent);
-  font-size: 11px;
+  font-size: 12px;
 }
 .env-item .env-name {
   flex: 1;
@@ -377,7 +418,7 @@ body,
   color: var(--text);
 }
 .env-item .env-count {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 
@@ -396,14 +437,14 @@ body,
 /* 左侧栏（文件树占位）；宽度由 JS 控制，可拖动调节 */
 .sidebar {
   flex-shrink: 0;
-  background: var(--panel);
+  background: var(--bg); /* 层次色 #f9f9f9：文件树侧栏，与纯白内容区形成微妙层次 */
   border-right: 1px solid var(--border);
   padding: 10px;
   overflow: auto;
 }
 .sidebar-placeholder {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.6;
   border: 1px dashed var(--border);
   border-radius: 6px;
@@ -412,7 +453,7 @@ body,
 }
 /* 文件树 */
 .tree {
-  font-size: 13px;
+  font-size: 14px;
   user-select: none;
 }
 .tree-root-name {
@@ -524,7 +565,7 @@ body,
 /* 未找到工作空间提示 */
 .sidebar-empty {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.9;
   padding: 16px 12px;
   text-align: center;
@@ -616,6 +657,8 @@ body.resizing-pane .pane-resizer::after {
   flex-direction: column;
   gap: 10px;
   padding: 12px;
+  /* 主工作区用面板白：对齐 Bruno/VSCode「内容区白、外围灰」的层次，去除原先整片发灰发银 */
+  background: var(--panel);
   /* 纵向可滚，横向不出滚动条：内部分栏（request-pane 等）各自处理溢出 */
   overflow-x: hidden;
   overflow-y: auto;
@@ -626,7 +669,7 @@ body.resizing-pane .pane-resizer::after {
   display: flex;
   gap: 8px;
 }
-/* method + url 连体容器：共用一个边框，初始无阴影 */
+/* method + url 连体容器：共用一个边框、内部无分隔，初始无阴影 */
 .url-group {
   flex: 1;
   display: flex;
@@ -655,7 +698,7 @@ body.resizing-pane .pane-resizer::after {
   width: 100%;
   height: 30px;
   padding: 0 10px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text);
   background: var(--panel);
   border: 1px solid var(--border);
@@ -714,7 +757,7 @@ body.resizing-pane .pane-resizer::after {
   gap: 12px;
   width: 100%;
   padding: 7px 10px;
-  font-size: 13px;
+  font-size: 14px;
   text-align: left;
   color: var(--text);
   background: transparent;
@@ -733,7 +776,7 @@ body.resizing-pane .pane-resizer::after {
 .ui-select-check {
   flex-shrink: 0;
   color: var(--accent);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 /* 请求行方法下拉：融入 url-group，无独立边框，文字随方法配色 */
@@ -748,7 +791,6 @@ body.resizing-pane .pane-resizer::after {
   color: inherit;
   background: transparent;
   border: none;
-  border-right: 1px solid var(--border);
   border-radius: 0;
 }
 .ui-select.method-select .ui-select-caret {
@@ -762,7 +804,7 @@ body.resizing-pane .pane-resizer::after {
   flex: 1;
   height: 34px;
   padding: 0 10px;
-  font-size: 13px;
+  font-size: 14px;
   border: none;
   border-radius: 0;
   background: transparent;
@@ -803,9 +845,35 @@ body.resizing-pane .pane-resizer::after {
 .method-delete {
   color: var(--red);
 }
-.method-head,
+.method-head {
+  color: var(--cyan);
+}
 .method-options {
-  color: var(--muted);
+  color: var(--teal);
+}
+
+/* 方法下拉菜单：每个选项按其方法配色（GET 绿 / POST 橙 …）。
+   置于 .ui-select-option.is-active 之后，保证选中项也保持方法色而非回退默认色。 */
+.ui-select-option.method-get {
+  color: var(--green);
+}
+.ui-select-option.method-post {
+  color: var(--amber);
+}
+.ui-select-option.method-put {
+  color: var(--blue);
+}
+.ui-select-option.method-patch {
+  color: var(--purple);
+}
+.ui-select-option.method-delete {
+  color: var(--red);
+}
+.ui-select-option.method-head {
+  color: var(--cyan);
+}
+.ui-select-option.method-options {
+  color: var(--teal);
 }
 
 /* Tabs */
@@ -813,7 +881,6 @@ body.resizing-pane .pane-resizer::after {
   display: flex;
   align-items: center;
   gap: 2px;
-  border-bottom: 1px solid var(--border);
 }
 .tab {
   padding: 7px 14px;
@@ -821,7 +888,7 @@ body.resizing-pane .pane-resizer::after {
   border-bottom: 2px solid transparent;
   background: none;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
   cursor: pointer;
 }
 .tab.active {
@@ -831,13 +898,20 @@ body.resizing-pane .pane-resizer::after {
 }
 .tabs.sub {
   margin-top: 4px;
+  border-bottom: 1px solid var(--border); /* 响应区标签栏保留底线；请求配置标签栏则不留 */
 }
-.pretty-toggle {
+/* 响应 tabs 行的右侧组：美化开关 + 状态/耗时/大小，整体靠右 */
+.resp-tab-right {
   margin-left: auto;
   display: flex;
   align-items: center;
+  gap: 12px;
+}
+.pretty-toggle {
+  display: flex;
+  align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   cursor: pointer;
 }
@@ -854,7 +928,7 @@ body.resizing-pane .pane-resizer::after {
 .kv-table th {
   padding: 4px 6px;
   text-align: left;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--muted);
 }
@@ -868,7 +942,7 @@ body.resizing-pane .pane-resizer::after {
 .kv-table input {
   width: 100%;
   padding: 5px 8px;
-  font-size: 13px;
+  font-size: 14px;
   border: 1px solid var(--border);
   border-radius: 4px;
 }
@@ -876,11 +950,42 @@ body.resizing-pane .pane-resizer::after {
   outline: none;
   border-color: var(--accent);
 }
+/* ── Excel 风格网格（参数 / 请求头 / 表单 / 输出 / 环境变量表）──
+   连续单线网格、单元格内嵌输入（无独立边框圆角），聚焦时高亮所在单元格。 */
+.kv-table.grid th,
+.kv-table.grid td {
+  border: 1px solid var(--border);
+}
+.kv-table.grid th {
+  padding: 6px 8px;
+  background: var(--panel-2);
+}
+.kv-table.grid td {
+  padding: 0;
+}
+.kv-table.grid .ck-col {
+  width: 34px;
+  text-align: center;
+}
+.kv-table.grid .op-cell {
+  width: 34px;
+}
+.kv-table.grid input:not([type="checkbox"]) {
+  padding: 6px 8px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+.kv-table.grid input:focus {
+  outline: 1.5px solid var(--accent);
+  outline-offset: -1.5px;
+  background: var(--panel);
+}
 .kv-table.readonly td {
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: 13px;
 }
 .kv-table .hk {
   color: var(--accent-dark);
@@ -891,15 +996,20 @@ body.resizing-pane .pane-resizer::after {
   word-break: break-all;
 }
 .row-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
   border: none;
   background: none;
   color: var(--muted);
-  font-size: 16px;
-  line-height: 1;
   cursor: pointer;
 }
 .row-del:hover {
   color: var(--red);
+}
+.trash-ico {
+  display: block;
 }
 
 /* body 输入 */
@@ -908,7 +1018,7 @@ body.resizing-pane .pane-resizer::after {
   min-height: 120px;
   padding: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
+  font-size: 14px;
   border: 1px solid var(--border);
   border-radius: 6px;
   resize: vertical;
@@ -918,30 +1028,75 @@ body.resizing-pane .pane-resizer::after {
   border-color: var(--accent);
 }
 
-/* 响应区 */
+/* 响应区：与请求编辑器上下分栏，高度可拖动；折叠时仅剩一行「响应」标题 */
 .response {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  min-height: 160px;
-  padding-top: 10px;
+  min-height: 0;
   border-top: 1px solid var(--border);
 }
+.response.is-collapsed {
+  height: auto;
+}
+/* 响应标题栏：兼作上下拖动手柄；折叠态点击整行展开 */
 .response-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px;
+  height: 34px;
+  flex-shrink: 0;
+  padding-right: 2px;
+  cursor: row-resize;
+  user-select: none;
+}
+.response.is-collapsed .response-head {
+  cursor: pointer;
+}
+.response-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.response-toggle:hover {
+  color: var(--text);
 }
 .response-title {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-  text-transform: uppercase;
-  color: var(--muted);
+  color: var(--text);
+}
+.response-head-meta {
+  margin-left: auto;
+}
+/* 响应内容：展开态填充剩余高度、内部滚动 */
+.response-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.response-content .tabs.sub {
+  flex-shrink: 0;
+}
+.response-content .tab-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 .response-meta {
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 12px;
+  font-size: 13px;
 }
 .status-badge {
   padding: 2px 8px;
@@ -967,7 +1122,7 @@ body.resizing-pane .pane-resizer::after {
 .error-box {
   margin-top: 10px;
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: 14px;
   background: var(--error-bg);
   border: 1px solid var(--error-border);
   border-radius: 6px;
@@ -982,7 +1137,7 @@ body.resizing-pane .pane-resizer::after {
   gap: 12px;
   margin-top: 10px;
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: 14px;
   background: var(--warn-bg);
   border: 1px solid var(--warn-border);
   border-radius: 6px;
@@ -996,7 +1151,7 @@ body.resizing-pane .pane-resizer::after {
 .stale-btn {
   height: 26px;
   padding: 0 12px;
-  font-size: 12px;
+  font-size: 13px;
   border: 1px solid var(--warn-border);
   border-radius: 5px;
   background: var(--panel);
@@ -1017,22 +1172,20 @@ body.resizing-pane .pane-resizer::after {
 }
 .response-body {
   margin: 0;
-  max-height: 360px;
   padding: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
+  font-size: 13.5px;
   line-height: 1.5;
   background: var(--code-bg);
   color: var(--code-fg);
   border-radius: 6px;
-  overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
 }
 .response-empty {
   padding: 24px 0;
   text-align: center;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
 }
 
@@ -1053,7 +1206,11 @@ body.resizing-pane .pane-resizer::after {
   padding: 7px 10px 0;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: thin;
+  scrollbar-width: none; /* Firefox：隐藏滚动条但仍可滑动 */
+}
+/* WebKit（Tauri WKWebView）：隐藏横向滚动条，保留滚动/滑动 */
+.tab-bar::-webkit-scrollbar {
+  display: none;
 }
 /* 右侧控件：不参与滚动、不被压缩，始终完整显示 */
 .tab-controls {
@@ -1072,7 +1229,7 @@ body.resizing-pane .pane-resizer::after {
   max-width: 200px;
   height: 30px;
   padding: 0 6px 0 12px;
-  font-size: 12.5px;
+  font-size: 13.5px;
   color: var(--muted);
   background: transparent;
   border: 1px solid transparent;
@@ -1159,7 +1316,7 @@ body.resizing-pane .pane-resizer::after {
 .save-btn.ghost {
   height: 26px;
   padding: 0 14px;
-  font-size: 12px;
+  font-size: 13px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel);
@@ -1199,14 +1356,14 @@ body.resizing-pane .pane-resizer::after {
 }
 .field-row label {
   width: 80px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
 }
 .field-row input {
   flex: 1;
   height: 30px;
   padding: 0 8px;
-  font-size: 13px;
+  font-size: 14px;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--panel);
@@ -1231,7 +1388,7 @@ body.resizing-pane .pane-resizer::after {
   flex: 1;
   height: 30px;
   padding: 0 8px;
-  font-size: 13px;
+  font-size: 14px;
   border: 1px solid var(--border);
   border-radius: 4px;
 }
@@ -1241,7 +1398,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .panel-hint {
   padding: 12px 2px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
 }
 
@@ -1253,7 +1410,7 @@ body.resizing-pane .pane-resizer::after {
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
 }
 .empty-logo {
   width: 160px;
@@ -1292,7 +1449,7 @@ body.resizing-pane .pane-resizer::after {
   background: var(--selected);
 }
 .empty-sc-label {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
 }
 .empty-sc-keys {
@@ -1303,7 +1460,7 @@ body.resizing-pane .pane-resizer::after {
   min-width: 22px;
   text-align: center;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1327,7 +1484,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .binary-msg {
   max-width: 420px;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.7;
   color: var(--muted);
 }
@@ -1342,7 +1499,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .vs-btn {
   padding: 4px 12px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--muted);
   background: transparent;
@@ -1395,7 +1552,7 @@ body.resizing-pane .pane-resizer::after {
   gap: 9px;
   text-align: left;
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text);
   background: transparent;
   border: none;
@@ -1417,6 +1574,12 @@ body.resizing-pane .pane-resizer::after {
 .settings-nav-item.active .settings-nav-ico {
   color: var(--text);
 }
+/* 导航分组分割线：分隔「跟随项目」（上）与「跟随应用存储」（下）两组 */
+.settings-nav-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 10px;
+}
 .settings-panel {
   flex: 1;
   min-width: 0;
@@ -1435,7 +1598,7 @@ body.resizing-pane .pane-resizer::after {
   color: var(--text);
 }
 .settings-desc {
-  font-size: 12.5px;
+  font-size: 13.5px;
   line-height: 1.7;
   color: var(--muted);
 }
@@ -1496,7 +1659,7 @@ body.resizing-pane .pane-resizer::after {
   background: #ffffff;
 }
 .theme-swatch.is-light::before {
-  background: #f2f2f4;
+  background: #f9f9f9;
 }
 .theme-swatch.is-dark {
   background: #1a1a1d;
@@ -1508,31 +1671,80 @@ body.resizing-pane .pane-resizer::after {
   background: linear-gradient(120deg, #ffffff 0 50%, #1a1a1d 50% 100%);
 }
 .theme-swatch.is-system::before {
-  background: linear-gradient(120deg, #f2f2f4 0 50%, #232328 50% 100%);
+  background: linear-gradient(120deg, #f9f9f9 0 50%, #232328 50% 100%);
 }
 .theme-card-label {
-  font-size: 12.5px;
+  font-size: 13.5px;
   color: var(--text);
 }
 .theme-card-check {
   position: absolute;
   top: 8px;
   right: 10px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--accent);
+}
+/* 代理设置卡片（跟随系统 / 不使用代理 / 自定义）*/
+.proxy-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 6px;
+}
+.proxy-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 190px;
+  padding: 12px 14px;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.proxy-card:hover {
+  border-color: var(--border-strong);
+}
+.proxy-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.proxy-card-label {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.proxy-card-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.proxy-card-check {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.proxy-url-row {
+  margin-top: 14px;
 }
 .settings-desc code {
   padding: 1px 5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
+  font-size: 12.5px;
   color: var(--accent-dark);
   background: var(--accent-tint);
   border-radius: 4px;
 }
 .settings-empty {
   padding: 16px 0;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
 }
 .settings-section input[readonly] {
@@ -1566,12 +1778,12 @@ body.resizing-pane .pane-resizer::after {
   color: var(--text);
 }
 .about-ver {
-  font-size: 12.5px;
+  font-size: 13.5px;
   color: var(--muted);
 }
 .about-intro {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.75;
   color: var(--muted);
   white-space: nowrap;
@@ -1583,7 +1795,7 @@ body.resizing-pane .pane-resizer::after {
   margin: 0;
 }
 .about-sys-row {
-  font-size: 13px;
+  font-size: 14px;
 }
 .about-sys-k {
   margin-right: 8px;
@@ -1598,7 +1810,7 @@ body.resizing-pane .pane-resizer::after {
   align-items: center;
   gap: 7px;
   padding: 7px 16px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text);
   background: var(--panel);
   border: 1px solid var(--border);
@@ -1612,7 +1824,7 @@ body.resizing-pane .pane-resizer::after {
   background: var(--accent-tint-weak);
 }
 .about-copyright {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
 }
 /* ── 环境管理：左列表 + 右详情 ── */
@@ -1662,7 +1874,7 @@ body.resizing-pane .pane-resizer::after {
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
-  font-size: 12.5px;
+  font-size: 13.5px;
   color: var(--text);
   border-radius: 6px;
   cursor: pointer;
@@ -1718,7 +1930,7 @@ body.resizing-pane .pane-resizer::after {
   max-width: 280px;
   height: 28px;
   padding: 0 8px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text);
   background: transparent;
@@ -1745,7 +1957,7 @@ body.resizing-pane .pane-resizer::after {
   border: none;
   background: none;
   color: var(--red);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 .link-danger:hover {
@@ -1757,7 +1969,7 @@ body.resizing-pane .pane-resizer::after {
 .tab-count {
   display: inline-block;
   margin-left: 1px;
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1;
   font-weight: 600;
   color: var(--text-strong);
@@ -1781,7 +1993,7 @@ body.resizing-pane .pane-resizer::after {
 .panel-hint code {
   padding: 1px 5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
+  font-size: 12.5px;
   color: var(--accent-dark);
   background: var(--accent-tint);
   border-radius: 4px;
@@ -1799,7 +2011,7 @@ body.resizing-pane .pane-resizer::after {
 .assert-table .assert-op-select .ui-select-trigger {
   height: 28px;
   padding: 0 8px;
-  font-size: 12px;
+  font-size: 13px;
   border-radius: 4px;
 }
 .assert-badge {
@@ -1808,7 +2020,7 @@ body.resizing-pane .pane-resizer::after {
   height: 16px;
   line-height: 16px;
   text-align: center;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--on-accent);
   border-radius: 50%;
@@ -1830,7 +2042,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .text-warn {
   padding: 8px 12px;
-  font-size: 12.5px;
+  font-size: 13.5px;
   color: var(--warn-text);
   background: var(--warn-bg);
   border: 1px solid var(--warn-border);
@@ -1842,7 +2054,7 @@ body.resizing-pane .pane-resizer::after {
   min-height: 260px;
   padding: 12px 14px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
+  font-size: 13.5px;
   line-height: 1.6;
   color: var(--text);
   border: 1px solid var(--border);
@@ -1882,9 +2094,16 @@ body.resizing-pane .pane-resizer::after {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
   padding-left: 14px;
-  overflow: auto;
+  overflow: hidden;
+}
+/* 请求编辑器所在的上段：填充剩余高度、内部滚动（响应区在下方独立成段）*/
+.req-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 10px;
 }
 .structured.only-request .request-pane {
   padding-left: 0;
@@ -1905,7 +2124,7 @@ body.resizing-pane .pane-resizer::after {
   width: 150px;
   height: 28px;
   padding: 0 8px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1953,7 +2172,7 @@ body.resizing-pane .pane-resizer::after {
 .flow-tool-btn {
   height: 28px;
   padding: 0 12px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--text);
   background: var(--panel);
@@ -2128,14 +2347,14 @@ body.resizing-pane .pane-resizer::after {
 }
 .flow-node .fn-method {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.2px;
 }
 .flow-node .fn-id {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--text);
   overflow: hidden;
@@ -2206,7 +2425,7 @@ body.resizing-pane .pane-resizer::after {
   display: none;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1;
   color: var(--on-accent);
   background: var(--red);
@@ -2234,7 +2453,7 @@ body.resizing-pane .pane-resizer::after {
   width: 100%;
   padding: 6px 10px;
   text-align: left;
-  font-size: 13px;
+  font-size: 14px;
   border: none;
   border-radius: 5px;
   background: none;
@@ -2271,7 +2490,7 @@ body.resizing-pane .pane-resizer::after {
   box-shadow: 0 12px 40px var(--shadow-strong);
 }
 .modal-title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text);
   margin-bottom: 10px;
@@ -2280,7 +2499,7 @@ body.resizing-pane .pane-resizer::after {
   width: 100%;
   height: 32px;
   padding: 0 10px;
-  font-size: 13px;
+  font-size: 14px;
   border: 1px solid var(--border);
   border-radius: 6px;
   box-sizing: border-box;
@@ -2299,7 +2518,7 @@ body.resizing-pane .pane-resizer::after {
 .btn-primary {
   height: 30px;
   padding: 0 16px;
-  font-size: 13px;
+  font-size: 14px;
   border-radius: 6px;
   cursor: pointer;
 }
@@ -2354,7 +2573,7 @@ body.resizing-pane .pane-resizer::after {
   border: none;
   outline: none;
   background: none;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text);
 }
 .tree-search-clear {
@@ -2413,7 +2632,7 @@ body.resizing-pane .pane-resizer::after {
   align-items: center;
   gap: 6px;
   padding: 5px 10px;
-  font-size: 13px;
+  font-size: 14px;
   cursor: pointer;
 }
 .search-row:hover {
@@ -2435,7 +2654,7 @@ body.resizing-pane .pane-resizer::after {
 .search-path {
   min-width: 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2444,7 +2663,7 @@ body.resizing-pane .pane-resizer::after {
   padding: 16px;
   text-align: center;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 /* ── 可视化新建 case 对话框 ── */
@@ -2487,7 +2706,7 @@ body.resizing-pane .pane-resizer::after {
   margin-top: 14px;
 }
 .sc-group-name {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--muted);
   margin-bottom: 4px;
@@ -2500,7 +2719,7 @@ body.resizing-pane .pane-resizer::after {
   border-bottom: 1px solid var(--border);
 }
 .sc-label {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text);
 }
 .sc-spacer {
@@ -2514,7 +2733,7 @@ body.resizing-pane .pane-resizer::after {
   min-width: 22px;
   text-align: center;
   padding: 2px 6px;
-  font-size: 12px;
+  font-size: 13px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--text);
   background: var(--bg);
@@ -2525,7 +2744,7 @@ body.resizing-pane .pane-resizer::after {
   min-width: 52px;
   text-align: center;
   padding: 3px 8px;
-  font-size: 12px;
+  font-size: 13px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--text);
   background: var(--bg);
@@ -2543,7 +2762,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .sc-btn {
   padding: 3px 10px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text);
   background: var(--panel);
   border: 1px solid var(--border);
@@ -2706,14 +2925,14 @@ body.resizing-row {
   height: 28px;
   padding: 0 8px 0 12px;
   flex-shrink: 0;
-  background: var(--panel);
+  background: var(--panel); /* 底部栏用白 */
   border-bottom: 1px solid var(--border);
 }
 .panel-head-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--muted);
@@ -2777,7 +2996,7 @@ body.resizing-row {
   gap: 2px;
   padding: 4px;
   overflow-y: auto;
-  background: var(--panel);
+  background: var(--panel); /* 底部栏用白 */
   border-left: 1px solid var(--border);
 }
 .term-tab {
@@ -2787,7 +3006,7 @@ body.resizing-row {
   padding: 4px 4px 4px 8px;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   user-select: none;
 }
@@ -2801,7 +3020,7 @@ body.resizing-row {
 .term-tab-glyph {
   font-family: ui-monospace, Menlo, monospace;
   font-weight: 700;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .term-tab.active .term-tab-glyph {
@@ -2820,7 +3039,7 @@ body.resizing-row {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1;
   color: var(--muted);
   background: transparent;
@@ -2900,13 +3119,14 @@ body.resizing-ai .ai-resizer::after {
   height: 34px;
   padding: 0 8px 0 12px;
   flex-shrink: 0;
+  background: var(--panel); /* 右侧栏用白 */
   border-bottom: 1px solid var(--border);
 }
 .ai-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
 }
@@ -2914,7 +3134,7 @@ body.resizing-ai .ai-resizer::after {
   color: var(--accent);
 }
 .ai-clear {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   background: transparent;
   border: 1px solid transparent;
@@ -2951,7 +3171,7 @@ body.resizing-ai .ai-resizer::after {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 .ai-msg.assistant .ai-avatar {
@@ -2964,7 +3184,7 @@ body.resizing-ai .ai-resizer::after {
 }
 .ai-bubble {
   max-width: 82%;
-  font-size: 12.5px;
+  font-size: 13.5px;
   line-height: 1.55;
   color: var(--text);
   white-space: pre-wrap;
@@ -2994,7 +3214,7 @@ body.resizing-ai .ai-resizer::after {
   min-height: 34px;
   max-height: 120px;
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 13.5px;
   line-height: 1.5;
   color: var(--text);
   padding: 8px 10px;
@@ -3010,7 +3230,7 @@ body.resizing-ai .ai-resizer::after {
   flex-shrink: 0;
   height: 34px;
   padding: 0 14px;
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--on-accent);
   background: var(--accent);
@@ -3058,7 +3278,7 @@ body.resizing-ai .ai-resizer::after {
 }
 .md-mode-btn {
   padding: 4px 12px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--muted);
   background: transparent;
@@ -3095,7 +3315,7 @@ body.resizing-ai .ai-resizer::after {
   min-width: 0;
   padding: 12px 14px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
+  font-size: 13.5px;
   line-height: 1.6;
   color: var(--text);
   border: none;
@@ -3127,7 +3347,7 @@ body.resizing-ai .ai-resizer::after {
 }
 .markdown-view.is-empty {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
   padding-top: 8px;
 }
 .markdown-view .md-h {
@@ -3156,7 +3376,7 @@ body.resizing-ai .ai-resizer::after {
 }
 .markdown-view .md-h5,
 .markdown-view .md-h6 {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
 }
 .markdown-view .md-p {
@@ -3204,7 +3424,7 @@ body.resizing-ai .ai-resizer::after {
   padding: 0;
   background: transparent;
   color: var(--code-fg);
-  font-size: 12.5px;
+  font-size: 13.5px;
   line-height: 1.55;
 }
 .markdown-view .md-quote {
@@ -3224,7 +3444,7 @@ body.resizing-ai .ai-resizer::after {
 .markdown-view .md-table {
   margin: 12px 0;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 14px;
   display: block;
   overflow-x: auto;
   max-width: 100%;

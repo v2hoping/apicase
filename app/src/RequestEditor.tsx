@@ -10,9 +10,26 @@ import { MarkdownEditor } from "./markdown";
 export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const BODY_TYPES: BodyType[] = ["none", "json", "text", "form-urlencoded", "form-data"];
 const AUTH_TYPES: AuthType[] = ["none", "bearer", "basic", "apikey"];
+const PROTOCOLS = ["http"]; // 通信协议：当前仅 http，后续可扩展 grpc 等
 
 export function methodClass(m: string): string {
   return `method-${m.toLowerCase()}`;
+}
+
+// 行删除图标：线条描边垃圾桶（currentColor 跟随文字色，hover 变红由 .row-del 控制）
+function TrashIcon() {
+  return (
+    <svg className="trash-ico" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M3 4.5h10M6.5 4.5V3.4a.9.9 0 0 1 .9-.9h1.2a.9.9 0 0 1 .9.9v1.1M11.8 4.5l-.55 8.05a1 1 0 0 1-1 .95H5.75a1 1 0 0 1-1-.95L4.2 4.5M6.7 7.1v3.9M9.3 7.1v3.9"
+      />
+    </svg>
+  );
 }
 
 // 自定义下拉：替代原生 <select>，避免系统弹层盖住控件、带灰白阴影。
@@ -24,12 +41,14 @@ export function Select({
   onChange,
   className = "",
   ariaLabel,
+  optionClassName,
 }: {
   value: string;
   options: SelectOption[];
   onChange: (v: string) => void;
   className?: string;
   ariaLabel?: string;
+  optionClassName?: (value: string) => string; // 按选项值追加类名（如方法下拉逐项配色）
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -63,7 +82,7 @@ export function Select({
             <button
               type="button"
               key={o.value}
-              className={`ui-select-option ${o.value === value ? "is-active" : ""}`}
+              className={`ui-select-option ${o.value === value ? "is-active" : ""} ${optionClassName?.(o.value) ?? ""}`}
               onClick={() => {
                 onChange(o.value);
                 setOpen(false);
@@ -98,36 +117,39 @@ export function KVTable({
   namePlaceholder = "Key",
   valuePlaceholder = "Value",
   hideEnabled = false,
+  withDescription = false,
 }: {
   rows: KV[];
   onChange: (rows: KV[]) => void;
   namePlaceholder?: string;
   valuePlaceholder?: string;
   hideEnabled?: boolean; // 无启用/停用语义的场景（如环境变量）隐藏勾选列
+  withDescription?: boolean; // 多一列「描述」（数据模型支持 description 的场景，如参数/请求头/表单）
 }) {
   const display = rows.length ? rows : [{ name: "", value: "", enabled: true }];
   function update(i: number, patch: Partial<KV>) {
     const next = display.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
     const last = next[next.length - 1];
-    if (last.name || last.value) next.push({ name: "", value: "", enabled: true });
+    if (last.name || last.value || last.description) next.push({ name: "", value: "", enabled: true });
     onChange(next);
   }
   function remove(i: number) {
     onChange(display.filter((_, idx) => idx !== i));
   }
   return (
-    <table className="kv-table">
+    <table className="kv-table grid">
       <thead>
         <tr>
           {!hideEnabled && <th className="ck-col"></th>}
-          <th>键</th>
+          <th>名称</th>
           <th>值</th>
+          {withDescription && <th>描述</th>}
           <th></th>
         </tr>
       </thead>
       <tbody>
         {display.map((r, i) => {
-          const filled = !!(r.name || r.value);
+          const filled = !!(r.name || r.value || r.description);
           return (
             <tr key={i}>
               {!hideEnabled && (
@@ -141,10 +163,15 @@ export function KVTable({
               <td>
                 <input value={r.value} placeholder={valuePlaceholder} onChange={(e) => update(i, { value: e.target.value })} />
               </td>
+              {withDescription && (
+                <td>
+                  <input value={r.description || ""} placeholder="描述" onChange={(e) => update(i, { description: e.target.value })} />
+                </td>
+              )}
               <td className="op-cell">
                 {filled && (
-                  <button className="row-del" onClick={() => remove(i)}>
-                    ×
+                  <button className="row-del" title="删除" onClick={() => remove(i)}>
+                    <TrashIcon />
                   </button>
                 )}
               </td>
@@ -216,8 +243,8 @@ function AssertTable({
               </td>
               <td className="op-cell">
                 {r.target && (
-                  <button className="row-del" onClick={() => remove(i)}>
-                    ×
+                  <button className="row-del" title="删除" onClick={() => remove(i)}>
+                    <TrashIcon />
                   </button>
                 )}
               </td>
@@ -270,6 +297,8 @@ export function RequestEditor({
   onDocs,
   stepId,
   onRenameId,
+  protocol,
+  onProtocol,
 }: {
   value: ReqDraft;
   onChange: (d: ReqDraft) => void;
@@ -285,6 +314,8 @@ export function RequestEditor({
   onDocs?: (v: string) => void;
   stepId?: string;
   onRenameId?: (newId: string) => void;
+  protocol?: string; // 请求协议（当前仅 http）
+  onProtocol?: (p: string) => void;
 }) {
   const [tab, setTab] = useState<string>("params");
   const d = value;
@@ -319,7 +350,7 @@ export function RequestEditor({
                 ? "断言"
                 : t === "docs"
                   ? "文档"
-                  : "请求 ID";
+                  : "属性";
   const tabBadge = (t: string) => (t === "params" ? paramCount : t === "headers" ? headerCount : t === "outputs" ? outputCount : 0);
 
   return (
@@ -333,6 +364,7 @@ export function RequestEditor({
             options={METHODS.map((m) => ({ value: m, label: m }))}
             onChange={(v) => set({ method: v })}
             ariaLabel="请求方法"
+            optionClassName={methodClass}
           />
           <input
             className="url-input"
@@ -365,9 +397,9 @@ export function RequestEditor({
       </div>
 
       <div className="tab-panel">
-        {tab === "params" && <KVTable rows={d.query} onChange={onQueryChange} namePlaceholder="参数名" valuePlaceholder="参数值" />}
+        {tab === "params" && <KVTable rows={d.query} onChange={onQueryChange} namePlaceholder="参数名" valuePlaceholder="参数值" withDescription />}
         {tab === "headers" && (
-          <KVTable rows={d.headers} onChange={(rows) => set({ headers: rows })} namePlaceholder="请求头名称" valuePlaceholder="值" />
+          <KVTable rows={d.headers} onChange={(rows) => set({ headers: rows })} namePlaceholder="请求头名称" valuePlaceholder="值" withDescription />
         )}
         {tab === "auth" && (
           <div className="auth-panel">
@@ -453,7 +485,7 @@ export function RequestEditor({
               />
             )}
             {(d.bodyType === "form-urlencoded" || d.bodyType === "form-data") && (
-              <KVTable rows={d.bodyForm} onChange={(rows) => set({ bodyForm: rows })} namePlaceholder="字段名" valuePlaceholder="字段值" />
+              <KVTable rows={d.bodyForm} onChange={(rows) => set({ bodyForm: rows })} namePlaceholder="字段名" valuePlaceholder="字段值" withDescription />
             )}
             {d.bodyType === "form-data" && <div className="panel-hint">form-data 发送暂仅支持文本字段</div>}
           </div>
@@ -484,11 +516,22 @@ export function RequestEditor({
         )}
         {tab === "meta" && onRenameId && (
           <div className="meta-panel">
-            <div className="panel-hint">请求在用例中的唯一标识，用于流程编排与变量引用。</div>
+            <div className="panel-hint">请求在用例中的唯一标识与通信协议，用于流程编排与变量引用。</div>
             <div className="field-row">
-              <label>请求 ID</label>
+              <label>id</label>
               <StepIdField id={stepId || ""} onCommit={onRenameId} />
             </div>
+            {onProtocol && (
+              <div className="field-row">
+                <label>协议</label>
+                <Select
+                  className="field-select"
+                  value={protocol || "http"}
+                  options={PROTOCOLS.map((p) => ({ value: p, label: p }))}
+                  onChange={onProtocol}
+                />
+              </div>
+            )}
           </div>
         )}
       </div>

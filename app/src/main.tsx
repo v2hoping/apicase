@@ -1,3 +1,8 @@
+// UI 字体：Inter（离线打包，随应用分发；x 高度大、笔画均匀，比系统 SF 更"扎实"不显细）
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "@fontsource/inter/600.css";
+import "@fontsource/inter/700.css";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";

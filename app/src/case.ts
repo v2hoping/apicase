@@ -4,11 +4,12 @@
 // 每步用 `protocol:` 显式声明协议（当前仅 http），报文承载于 `request:`（对应内存 HttpSpec）。
 import { load, dump } from "js-yaml";
 
-/** 一行键值（query / headers / 表单项通用）；enabled 默认 true，为 true 时不落盘 */
+/** 一行键值（query / headers / 表单项通用）；enabled 默认 true，为 true 时不落盘；description 可选备注 */
 export interface KV {
   name: string;
   value: string;
   enabled?: boolean;
+  description?: string;
 }
 
 export type BodyType = "none" | "json" | "text" | "form-urlencoded" | "form-data";
@@ -97,6 +98,7 @@ function normalizeKV(list: unknown): KV[] {
     name: str(it.name),
     value: str(it.value),
     enabled: it.enabled === false ? false : true,
+    description: typeof it.description === "string" && it.description !== "" ? it.description : undefined,
   }));
 }
 
@@ -268,11 +270,12 @@ export function dumpApplicationConfig(baseText: string, environment: Record<stri
 function serializeKV(list: KV[]): Array<Record<string, unknown>> {
   return (list || [])
     .filter((kv) => kv.name.trim() !== "" || kv.value.trim() !== "")
-    .map((kv) =>
-      kv.enabled === false
-        ? { name: kv.name, value: kv.value, enabled: false }
-        : { name: kv.name, value: kv.value },
-    );
+    .map((kv) => {
+      const o: Record<string, unknown> = { name: kv.name, value: kv.value };
+      if (kv.enabled === false) o.enabled = false;
+      if (kv.description && kv.description.trim() !== "") o.description = kv.description;
+      return o;
+    });
 }
 
 function serializeAuth(a: AuthSpec): Record<string, unknown> | null {
