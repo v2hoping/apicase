@@ -4,9 +4,9 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Case, Request, RequestOutput, Assertion, UiNodes, analyzeCase, dumpCase, splitQueryFromUrl, parseEnvironments, dumpApplicationConfig } from "./case";
+import { Case, Request, RequestOutput, Assertion, AssertOp, UiNodes, analyzeCase, dumpCase, splitQueryFromUrl, parseEnvironments, dumpApplicationConfig } from "./case";
 import { ReqDraft, requestToDraft, draftToRequest, buildApiRequest, emptyDraft } from "./draft";
-import { RequestEditor, KVTable, METHODS, methodClass, Select } from "./RequestEditor";
+import { RequestEditor, KVTable, METHODS, methodClass, Select, OP_LABELS } from "./RequestEditor";
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
 import { TerminalPane } from "./TerminalPane";
 import { type ThemeMode, loadThemeMode, saveThemeMode, resolveTheme, applyTheme } from "./theme";
@@ -93,8 +93,7 @@ interface TabSnapshot {
   configVisual: boolean;
   runMap: Record<string, RunState>;
   outputsCtx: Record<string, Record<string, unknown>>;
-  respTab: "body" | "headers";
-  pretty: boolean;
+  respTab: "body" | "headers" | "assert";
   error: string | null;
 }
 
@@ -1224,8 +1223,8 @@ function App() {
   const [runMap, setRunMap] = useState<Record<string, RunState>>({});
   const [outputsCtx, setOutputsCtx] = useState<Record<string, Record<string, unknown>>>({});
   const [runningAll, setRunningAll] = useState(false);
-  const [respTab, setRespTab] = useState<"body" | "headers">("body");
-  const [pretty, setPretty] = useState(true);
+  const [respTab, setRespTab] = useState<"body" | "headers" | "assert">("body");
+  // 响应体恒用 prettyBody 美化（非 JSON 自动回退原文），不再提供「美化」开关
   const [error, setError] = useState<string | null>(null);
   // 响应区高度（px，可上下拖动）+ 折叠态（拖到最下收成一行「响应」）
   const [respHeight, setRespHeight] = useState(240);
@@ -1686,7 +1685,6 @@ function App() {
       runMap,
       outputsCtx,
       respTab,
-      pretty,
       error,
     };
   }
@@ -1711,7 +1709,6 @@ function App() {
     setRunMap(s.runMap);
     setOutputsCtx(s.outputsCtx);
     setRespTab(s.respTab);
-    setPretty(s.pretty);
     setError(s.error);
   }
 
@@ -2458,6 +2455,10 @@ function App() {
   const resp = run?.resp || null;
   const runErr = run?.error || null;
   const sending = run?.status === "running";
+  // 响应区「断言」栏数据：结果按序对齐已填目标的断言（evalAssertions 过滤空目标），补上期望值
+  const assertResults = run?.asserts ?? [];
+  const assertPass = assertResults.filter((r) => r.ok).length;
+  const assertDefs = (selected?.assertions || []).filter((a) => a.target.trim() !== "");
 
   // Tab 行右侧固定控件：视图切换（文本|可视/流程/请求）+ 保存。始终完整显示，不随 Tab 滚动
   const headControls =
@@ -2953,7 +2954,6 @@ function App() {
                           sendLabel="发送"
                           assertions={selected.assertions}
                           onAssertions={setAssertions}
-                          assertResults={run?.asserts}
                           outputs={isFlow ? selected.outputs : undefined}
                           onOutputs={isFlow ? setOutputs : undefined}
                           docs={selected.docs}
@@ -2995,7 +2995,48 @@ function App() {
                           >
                             <Chevron open={!respCollapsed} />
                           </button>
-                          <span className="response-title">响应</span>
+                          {resp && (
+                            <div className="resp-tabs">
+                              <button
+                                className={`tab ${respTab === "body" ? "active" : ""}`}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setRespTab("body");
+                                  setRespCollapsed(false);
+                                }}
+                              >
+                                响应体
+                              </button>
+                              <button
+                                className={`tab ${respTab === "headers" ? "active" : ""}`}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setRespTab("headers");
+                                  setRespCollapsed(false);
+                                }}
+                              >
+                                响应头 ({resp.headers.length})
+                              </button>
+                              <button
+                                className={`tab ${respTab === "assert" ? "active" : ""}`}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setRespTab("assert");
+                                  setRespCollapsed(false);
+                                }}
+                              >
+                                断言
+                                {assertResults.length > 0 && (
+                                  <span className={`tab-count ${assertPass === assertResults.length ? "all-ok" : "has-bad"}`}>
+                                    {assertPass}/{assertResults.length}
+                                  </span>
+                                )}
+                              </button>
+                            </div>
+                          )}
                           {resp && (
                             <span className="response-meta response-head-meta">
                               <span className={`status-badge ${statusClass(resp.status)}`}>
@@ -3012,28 +3053,10 @@ function App() {
                             {runErr && <div className="error-box">⚠ {runErr}</div>}
 
                             {resp && (
-                              <>
-                                <div className="tabs sub">
-                                  <button className={`tab ${respTab === "body" ? "active" : ""}`} onClick={() => setRespTab("body")}>
-                                    响应体
-                                  </button>
-                                  <button className={`tab ${respTab === "headers" ? "active" : ""}`} onClick={() => setRespTab("headers")}>
-                                    响应头 ({resp.headers.length})
-                                  </button>
-                                  {/* 右侧：美化开关（状态/耗时/大小已移到「响应」标题栏，折叠时仍可见）*/}
-                                  <div className="resp-tab-right">
-                                    {respTab === "body" && (
-                                      <label className="pretty-toggle">
-                                        <input type="checkbox" checked={pretty} onChange={(e) => setPretty(e.target.checked)} />
-                                        美化
-                                      </label>
-                                    )}
-                                  </div>
-                                </div>
                                 <div className="tab-panel">
                                   {respTab === "body" ? (
-                                    <pre className="response-body">{pretty ? prettyBody(resp.body) : resp.body}</pre>
-                                  ) : (
+                                    <pre className="response-body">{prettyBody(resp.body)}</pre>
+                                  ) : respTab === "headers" ? (
                                     <table className="kv-table readonly">
                                       <tbody>
                                         {resp.headers.map((h, i) => (
@@ -3044,9 +3067,38 @@ function App() {
                                         ))}
                                       </tbody>
                                     </table>
+                                  ) : assertResults.length ? (
+                                    <table className="kv-table readonly assert-result-table">
+                                      <thead>
+                                        <tr>
+                                          <th className="res-col"></th>
+                                          <th>目标</th>
+                                          <th>断言</th>
+                                          <th>期望值</th>
+                                          <th>实际</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {assertResults.map((r, i) => {
+                                          const noVal = r.op === "exists" || r.op === "notExists";
+                                          return (
+                                            <tr key={i}>
+                                              <td className="res-col">
+                                                <span className={`assert-badge ${r.ok ? "ok" : "bad"}`}>{r.ok ? "✓" : "✗"}</span>
+                                              </td>
+                                              <td className="ak">{r.target}</td>
+                                              <td className="ao">{OP_LABELS[r.op as AssertOp] ?? r.op}</td>
+                                              <td className="av">{noVal ? "—" : assertDefs[i]?.value || ""}</td>
+                                              <td className="aa">{r.actual}</td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  ) : (
+                                    <div className="response-empty">未设置断言</div>
                                   )}
                                 </div>
-                              </>
                             )}
 
                             {sending && <div className="response-empty">请求发送中…</div>}

@@ -4,7 +4,6 @@
 import { useEffect, useRef, useState } from "react";
 import { KV, AuthType, BodyType, Assertion, AssertOp, ASSERT_OPS, RequestOutput, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
 import { ReqDraft } from "./draft";
-import { AssertResult } from "./flow";
 import { MarkdownEditor } from "./markdown";
 
 export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
@@ -99,7 +98,7 @@ export function Select({
 }
 
 // 断言操作符的中文显示（存储仍用英文标识，保持 YAML 稳定）
-const OP_LABELS: Record<AssertOp, string> = {
+export const OP_LABELS: Record<AssertOp, string> = {
   eq: "等于",
   ne: "不等于",
   contains: "包含",
@@ -183,15 +182,13 @@ export function KVTable({
   );
 }
 
-// 断言表：目标 / 操作符 / 期望值 + 运行后逐条 ✓/✗
+// 断言表：目标 / 操作符 / 期望值（仅配置；运行结果在响应区「断言」栏展示）
 function AssertTable({
   rows,
   onChange,
-  results,
 }: {
   rows: Assertion[];
   onChange: (rows: Assertion[]) => void;
-  results?: AssertResult[];
 }) {
   const display: Assertion[] = rows.length ? rows : [{ target: "", op: "eq", value: "" }];
   function update(i: number, patch: Partial<Assertion>) {
@@ -207,7 +204,6 @@ function AssertTable({
     <table className="kv-table assert-table">
       <thead>
         <tr>
-          <th className="res-col"></th>
           <th>目标</th>
           <th className="op-col2">断言</th>
           <th>期望值</th>
@@ -216,17 +212,9 @@ function AssertTable({
       </thead>
       <tbody>
         {display.map((r, i) => {
-          const res = r.target ? results?.[i] : undefined;
           const noVal = r.op === "exists" || r.op === "notExists";
           return (
             <tr key={i}>
-              <td className="res-col">
-                {res && (
-                  <span className={`assert-badge ${res.ok ? "ok" : "bad"}`} title={`实际：${res.actual}`}>
-                    {res.ok ? "✓" : "✗"}
-                  </span>
-                )}
-              </td>
               <td>
                 <input value={r.target} placeholder="status / $.data.token / header.X" onChange={(e) => update(i, { target: e.target.value })} />
               </td>
@@ -290,7 +278,6 @@ export function RequestEditor({
   sendLabel = "发送",
   assertions,
   onAssertions,
-  assertResults,
   outputs,
   onOutputs,
   docs,
@@ -307,7 +294,6 @@ export function RequestEditor({
   sendLabel?: string;
   assertions?: Assertion[];
   onAssertions?: (a: Assertion[]) => void;
-  assertResults?: AssertResult[];
   outputs?: RequestOutput[];
   onOutputs?: (o: RequestOutput[]) => void;
   docs?: string;
@@ -328,7 +314,6 @@ export function RequestEditor({
   const headerCount = d.headers.filter((h) => h.enabled !== false && (h.name || h.value)).length;
   const outputCount = (outputs || []).filter((o) => o.name).length;
   const assertCount = (assertions || []).filter((a) => a.target).length;
-  const assertPass = (assertResults || []).filter((r) => r.ok).length;
 
   const tabs: string[] = ["params", "headers", "auth", "body"];
   if (onOutputs) tabs.push("outputs");
@@ -351,7 +336,8 @@ export function RequestEditor({
                 : t === "docs"
                   ? "文档"
                   : "属性";
-  const tabBadge = (t: string) => (t === "params" ? paramCount : t === "headers" ? headerCount : t === "outputs" ? outputCount : 0);
+  const tabBadge = (t: string) =>
+    t === "params" ? paramCount : t === "headers" ? headerCount : t === "outputs" ? outputCount : t === "assert" ? assertCount : 0;
 
   return (
     <div className="req-editor">
@@ -387,11 +373,6 @@ export function RequestEditor({
           <button key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
             {label(t)}
             {tabBadge(t) > 0 && <span className="tab-count">{tabBadge(t)}</span>}
-            {t === "assert" && assertCount > 0 && (
-              <span className={`tab-count ${assertResults && assertResults.length ? (assertPass === assertResults.length ? "all-ok" : "has-bad") : ""}`}>
-                {assertResults && assertResults.length ? `${assertPass}/${assertResults.length}` : assertCount}
-              </span>
-            )}
           </button>
         ))}
       </div>
@@ -504,9 +485,9 @@ export function RequestEditor({
         {tab === "assert" && onAssertions && (
           <div className="assert-panel">
             <div className="panel-hint">
-              目标：<code>status</code> / JSONPath（<code>$.data.token</code>）/ <code>header.名称</code>；运行后逐条校验。
+              目标：<code>status</code> / JSONPath（<code>$.data.token</code>）/ <code>header.名称</code>；运行结果见响应区「断言」栏。
             </div>
-            <AssertTable rows={assertions || []} onChange={onAssertions} results={assertResults} />
+            <AssertTable rows={assertions || []} onChange={onAssertions} />
           </div>
         )}
         {tab === "docs" && onDocs && (
