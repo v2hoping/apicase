@@ -896,26 +896,6 @@ body.resizing-pane .pane-resizer::after {
   border-bottom-color: var(--accent);
   font-weight: 600;
 }
-.tabs.sub {
-  margin-top: 4px;
-  border-bottom: 1px solid var(--border); /* 响应区标签栏保留底线；请求配置标签栏则不留 */
-}
-/* 响应 tabs 行的右侧组：美化开关 + 状态/耗时/大小，整体靠右 */
-.resp-tab-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.pretty-toggle {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--muted);
-  cursor: pointer;
-}
-
 .tab-panel {
   padding: 8px 0;
 }
@@ -1039,24 +1019,41 @@ body.resizing-pane .pane-resizer::after {
 .response.is-collapsed {
   height: auto;
 }
-/* 响应标题栏：兼作上下拖动手柄；折叠态点击整行展开 */
+/* 响应标题栏：单行——折叠钮 + 响应体/响应头/断言 tab（靠左） + 状态/耗时/大小（靠右）；
+   兼作上下拖动手柄；折叠态点击整行展开 */
 .response-head {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: stretch;
+  gap: 4px;
   height: 34px;
   flex-shrink: 0;
-  padding-right: 2px;
+  padding-right: 8px;
   cursor: row-resize;
   user-select: none;
 }
+.response:not(.is-collapsed) .response-head {
+  border-bottom: 1px solid var(--border);
+}
 .response.is-collapsed .response-head {
   cursor: pointer;
+}
+/* 标题栏内联 tab 组：靠左，撑满标题栏高度，激活下划线贴底 */
+.resp-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+.resp-tabs .tab {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 13.5px;
 }
 .response-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  align-self: center;
   width: 20px;
   height: 20px;
   padding: 0;
@@ -1068,13 +1065,9 @@ body.resizing-pane .pane-resizer::after {
 .response-toggle:hover {
   color: var(--text);
 }
-.response-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
 .response-head-meta {
   margin-left: auto;
+  align-self: center;
 }
 /* 响应内容：展开态填充剩余高度、内部滚动 */
 .response-content {
@@ -1083,9 +1076,6 @@ body.resizing-pane .pane-resizer::after {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-.response-content .tabs.sub {
-  flex-shrink: 0;
 }
 .response-content .tab-panel {
   flex: 1 1 auto;
@@ -1998,10 +1988,6 @@ body.resizing-pane .pane-resizer::after {
   background: var(--accent-tint);
   border-radius: 4px;
 }
-.assert-table .res-col {
-  width: 24px;
-  text-align: center;
-}
 .assert-table .op-col2 {
   width: 104px;
 }
@@ -2024,6 +2010,30 @@ body.resizing-pane .pane-resizer::after {
   font-weight: 700;
   color: var(--on-accent);
   border-radius: 50%;
+}
+/* ── 响应区「断言」栏：只读结果表（结果 / 目标 / 断言 / 期望值 / 实际）── */
+.assert-result-table th {
+  font-family: system-ui, sans-serif;
+}
+.assert-result-table .res-col {
+  width: 28px;
+  text-align: center;
+}
+.assert-result-table .ak {
+  color: var(--accent-dark);
+  white-space: nowrap;
+}
+.assert-result-table .ao {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.assert-result-table .av {
+  color: var(--text);
+  word-break: break-all;
+}
+.assert-result-table .aa {
+  color: var(--text);
+  word-break: break-all;
 }
 .assert-badge.ok {
   background: var(--green);
