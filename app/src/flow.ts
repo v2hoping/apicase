@@ -28,7 +28,8 @@ export function resolveString(s: string, ctx: RunContext): string {
   });
 }
 
-function resolveKV(list: KV[], ctx: RunContext): KV[] {
+// 泛型：form-data 项（KV + type: file）经此仍是 FormItem，且文件路径里的 {{var}} 随 value 一并替换
+function resolveKV<T extends KV>(list: T[], ctx: RunContext): T[] {
   return list.map((k) => ({ ...k, name: resolveString(k.name, ctx), value: resolveString(k.value, ctx) }));
 }
 
@@ -44,9 +45,16 @@ export function resolveDraft(d: ReqDraft, ctx: RunContext): ReqDraft {
     authBasicPass: resolveString(d.authBasicPass, ctx),
     authApikeyKey: resolveString(d.authApikeyKey, ctx),
     authApikeyValue: resolveString(d.authApikeyValue, ctx),
+    authDigestUser: resolveString(d.authDigestUser, ctx),
+    authDigestPass: resolveString(d.authDigestPass, ctx),
+    authOauth2TokenUrl: resolveString(d.authOauth2TokenUrl, ctx),
+    authOauth2ClientId: resolveString(d.authOauth2ClientId, ctx),
+    authOauth2ClientSecret: resolveString(d.authOauth2ClientSecret, ctx),
+    authOauth2Scope: resolveString(d.authOauth2Scope, ctx),
     bodyText: resolveString(d.bodyText, ctx),
     bodyContentType: resolveString(d.bodyContentType, ctx),
     bodyForm: resolveKV(d.bodyForm, ctx),
+    bodyFilePath: resolveString(d.bodyFilePath, ctx),
   };
 }
 

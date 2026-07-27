@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "node test/case.test.mjs && node test/markdown.test.mjs"
+    "test": "node test/case.test.mjs && node test/markdown.test.mjs && node test/auth.test.mjs && node test/body.test.mjs && node test/pathutil.test.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

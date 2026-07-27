@@ -12,24 +12,46 @@ export interface KV {
   description?: string;
 }
 
-export type BodyType = "none" | "json" | "text" | "form-urlencoded" | "form-data";
+/**
+ * form-data 的一项：在 KV 之上多一个类型。
+ * 文件路径直接存进 `value`（不另立子键）—— 行结构与 KV 一致，
+ * 禁用/备注/`{{变量}}` 替换全部复用；YAML 里 `type: file` 一眼可辨（借 Postman 的 `type: "file"`）。
+ */
+export interface FormItem extends KV {
+  type?: "text" | "file"; // 默认 text（不落盘）；file 时 value 为本地文件路径
+}
+
+/** 请求体类型；平铺到一级（借 Apifox），不做 Postman 那层 raw + 语言二级下拉 */
+export type BodyType = "none" | "json" | "xml" | "text" | "form-urlencoded" | "form-data" | "binary";
 
 export interface BodySpec {
   type: BodyType;
   json?: unknown; // type=json：结构化对象（diff 友好）
+  xml?: string; // type=xml
   text?: string; // type=text
-  contentType?: string; // type=text 可选覆盖 Content-Type
+  contentType?: string; // type=text | binary 可选覆盖 Content-Type
   urlencoded?: KV[]; // type=form-urlencoded
-  formData?: KV[]; // type=form-data（本次仅 text 字段，file 后续）
+  formData?: FormItem[]; // type=form-data：文本字段 + 文件字段（type: file）
+  filePath?: string; // type=binary：以原始字节发送的文件路径（由后端读盘）
 }
 
-export type AuthType = "none" | "bearer" | "basic" | "apikey";
+/** 认证方式；命名对齐 Postman / Insomnia / Bruno 的通行叫法（见 auth.ts 的显示名） */
+export type AuthType = "none" | "bearer" | "basic" | "apikey" | "digest" | "oauth2";
 
 export interface AuthSpec {
   type: AuthType;
   bearer?: { token: string };
   basic?: { username: string; password: string };
   apikey?: { key: string; value: string; in: "header" | "query" };
+  digest?: { username: string; password: string }; // RFC 7616：发送时按 401 challenge 现算
+  oauth2?: {
+    // 仅客户端凭据模式（client_credentials）——自动化调试最常用的一支
+    tokenUrl: string;
+    clientId: string;
+    clientSecret: string;
+    scope?: string;
+    clientAuth?: "header" | "body"; // 凭据放 Basic 头还是表单体
+  };
 }
 
 /** HTTP 请求报文规格（单/多请求复用）；未来多协议可另立 GrpcSpec 等，并列于 Request 之下。 */
@@ -92,14 +114,28 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 const str = (v: unknown): string => (v == null ? "" : String(v));
 
 // ── 解析（YAML → 规范化内存模型）─────────────────────
-function normalizeKV(list: unknown): KV[] {
-  if (!Array.isArray(list)) return [];
-  return list.filter(isPlainObject).map((it) => ({
+function normalizeKVRow(it: Record<string, unknown>): KV {
+  return {
     name: str(it.name),
     value: str(it.value),
     enabled: it.enabled === false ? false : true,
     description: typeof it.description === "string" && it.description !== "" ? it.description : undefined,
-  }));
+  };
+}
+
+function normalizeKV(list: unknown): KV[] {
+  if (!Array.isArray(list)) return [];
+  return list.filter(isPlainObject).map(normalizeKVRow);
+}
+
+/** form-data 项：在 KV 之上认 `type: file`（其余一律视作 text，不写回该字段）。 */
+function normalizeFormData(list: unknown): FormItem[] {
+  if (!Array.isArray(list)) return [];
+  return list.filter(isPlainObject).map((it) => {
+    const row: FormItem = normalizeKVRow(it);
+    if (it.type === "file") row.type = "file";
+    return row;
+  });
 }
 
 function normalizeAuth(a: unknown): AuthSpec {
@@ -120,18 +156,36 @@ function normalizeAuth(a: unknown): AuthSpec {
       apikey: { key: str(k?.key), value: str(k?.value), in: k?.in === "query" ? "query" : "header" },
     };
   }
+  if (type === "digest") {
+    const d = a.digest as Record<string, unknown> | undefined;
+    return { type, digest: { username: str(d?.username), password: str(d?.password) } };
+  }
+  if (type === "oauth2") {
+    const o = a.oauth2 as Record<string, unknown> | undefined;
+    return {
+      type,
+      oauth2: {
+        tokenUrl: str(o?.tokenUrl),
+        clientId: str(o?.clientId),
+        clientSecret: str(o?.clientSecret),
+        scope: o?.scope === undefined || o?.scope === null || str(o?.scope) === "" ? undefined : str(o.scope),
+        clientAuth: o?.clientAuth === "body" ? "body" : "header",
+      },
+    };
+  }
   return { type: "none" };
 }
 
 function normalizeBody(b: unknown): BodySpec {
   if (!isPlainObject(b) || typeof b.type !== "string") return { type: "none" };
   const type = b.type as BodyType;
+  const ct = typeof b.contentType === "string" && b.contentType !== "" ? b.contentType : undefined;
   if (type === "json") return { type, json: b.json };
-  if (type === "text") {
-    return { type, text: str(b.text), contentType: typeof b.contentType === "string" ? b.contentType : undefined };
-  }
+  if (type === "xml") return { type, xml: str(b.xml) };
+  if (type === "text") return { type, text: str(b.text), contentType: ct };
   if (type === "form-urlencoded") return { type, urlencoded: normalizeKV(b.urlencoded) };
-  if (type === "form-data") return { type, formData: normalizeKV(b.formData) };
+  if (type === "form-data") return { type, formData: normalizeFormData(b.formData) };
+  if (type === "binary") return { type, filePath: str(b.filePath), contentType: ct };
   return { type: "none" };
 }
 
@@ -278,6 +332,20 @@ function serializeKV(list: KV[]): Array<Record<string, unknown>> {
     });
 }
 
+/** form-data 项：同 KV，额外落 `type: file`（text 是默认值，不落盘）。 */
+function serializeFormData(list: FormItem[]): Array<Record<string, unknown>> {
+  return (list || [])
+    .filter((it) => it.name.trim() !== "" || it.value.trim() !== "")
+    .map((it) => {
+      const o: Record<string, unknown> = { name: it.name };
+      if (it.type === "file") o.type = "file";
+      o.value = it.value;
+      if (it.enabled === false) o.enabled = false;
+      if (it.description && it.description.trim() !== "") o.description = it.description;
+      return o;
+    });
+}
+
 function serializeAuth(a: AuthSpec): Record<string, unknown> | null {
   if (!a || a.type === "none") return null;
   if (a.type === "bearer") return { type: "bearer", bearer: { token: a.bearer?.token || "" } };
@@ -288,6 +356,21 @@ function serializeAuth(a: AuthSpec): Record<string, unknown> | null {
       type: "apikey",
       apikey: { key: a.apikey?.key || "", value: a.apikey?.value || "", in: a.apikey?.in || "header" },
     };
+  if (a.type === "digest")
+    return {
+      type: "digest",
+      digest: { username: a.digest?.username || "", password: a.digest?.password || "" },
+    };
+  if (a.type === "oauth2") {
+    const o: Record<string, unknown> = {
+      tokenUrl: a.oauth2?.tokenUrl || "",
+      clientId: a.oauth2?.clientId || "",
+      clientSecret: a.oauth2?.clientSecret || "",
+    };
+    if (a.oauth2?.scope) o.scope = a.oauth2.scope;
+    if (a.oauth2?.clientAuth === "body") o.clientAuth = "body"; // header 为默认值，不落盘
+    return { type: "oauth2", oauth2: o };
+  }
   return null;
 }
 
@@ -297,18 +380,27 @@ function serializeBody(b: BodySpec): Record<string, unknown> | null {
     if (b.json === undefined || b.json === null || b.json === "") return null;
     return { type: "json", json: b.json };
   }
+  if (b.type === "xml") {
+    return b.xml ? { type: "xml", xml: b.xml } : null;
+  }
   if (b.type === "text") {
     if (!b.text) return null;
     return b.contentType
       ? { type: "text", contentType: b.contentType, text: b.text }
       : { type: "text", text: b.text };
   }
+  if (b.type === "binary") {
+    if (!b.filePath) return null;
+    return b.contentType
+      ? { type: "binary", contentType: b.contentType, filePath: b.filePath }
+      : { type: "binary", filePath: b.filePath };
+  }
   if (b.type === "form-urlencoded") {
     const u = serializeKV(b.urlencoded || []);
     return u.length ? { type: "form-urlencoded", urlencoded: u } : null;
   }
   if (b.type === "form-data") {
-    const f = serializeKV(b.formData || []);
+    const f = serializeFormData(b.formData || []);
     return f.length ? { type: "form-data", formData: f } : null;
   }
   return null;

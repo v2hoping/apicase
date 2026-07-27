@@ -2,10 +2,11 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Case, Request, RequestOutput, Assertion, AssertOp, UiNodes, analyzeCase, dumpCase, splitQueryFromUrl, parseEnvironments, dumpApplicationConfig } from "./case";
-import { ReqDraft, requestToDraft, draftToRequest, buildApiRequest, emptyDraft } from "./draft";
+import { ReqDraft, requestToDraft, draftToRequest, emptyDraft } from "./draft";
+import { sendWithAuth } from "./auth";
 import { RequestEditor, KVTable, METHODS, methodClass, Select, OP_LABELS } from "./RequestEditor";
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
 import { TerminalPane } from "./TerminalPane";
@@ -15,6 +16,7 @@ import { type ProxyConfig, type ProxyMode, loadProxyConfig, saveProxyConfig, pro
 import { AiChat } from "./AiChat";
 import { MarkdownEditor } from "./markdown";
 import { RunContext, AssertResult, resolveDraft, extractOutputs, evalAssertions } from "./flow";
+import { baseName, dirName, joinPath, relPath, isUnder, retargetPath, uniqueName } from "./pathutil";
 import {
   ACTIONS,
   ACTION_MAP,
@@ -112,28 +114,7 @@ function prettyBody(body: string): string {
   }
 }
 
-function baseName(p: string): string {
-  const parts = p.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] || p;
-}
-
-function dirName(p: string): string {
-  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  return idx <= 0 ? p : p.slice(0, idx);
-}
-
-function joinPath(dir: string, name: string): string {
-  const sep = dir.includes("\\") ? "\\" : "/";
-  return dir.endsWith(sep) ? dir + name : dir + sep + name;
-}
-
-// 相对工作空间根的路径（搜索结果展示用）
-function relPath(root: string, p: string): string {
-  if (p.startsWith(root)) {
-    return p.slice(root.length).replace(/^[\\/]+/, "") || baseName(p);
-  }
-  return p;
-}
+// 路径工具（baseName / dirName / joinPath / relPath / isUnder / retargetPath / uniqueName）见 pathutil.ts
 
 // 可在编辑器打开的 yml/yaml（case 渲染结构化，其余落文本）
 function isYamlFile(path: string): boolean {
@@ -177,13 +158,28 @@ function isBinaryExt(path: string): boolean {
 }
 
 // ── 文件树图标（SVG，currentColor 由 CSS 控色）──
-function FolderIcon() {
+function FolderIcon({ className = "tree-ico ico-folder", size = 15 }: { className?: string; size?: number } = {}) {
   return (
-    <svg className="tree-ico ico-folder" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+    <svg className={className} viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
       <path
         fill="currentColor"
         d="M1.75 4c0-.69.56-1.25 1.25-1.25h3.09c.4 0 .78.19 1.02.51l.63.84c.05.06.12.1.2.1h5.06c.69 0 1.25.56 1.25 1.25v6.05c0 .69-.56 1.25-1.25 1.25H3c-.69 0-1.25-.56-1.25-1.25z"
       />
+    </svg>
+  );
+}
+// 「打开工作空间」动作专用：线描边文件夹 + 加号，与列表里的实心文件夹作区分
+function FolderPlusIcon({ className = "ws-item-glyph", size = 15 }: { className?: string; size?: number } = {}) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+        d="M1.75 4.25c0-.55.45-1 1-1h2.86c.33 0 .64.16.83.44l.5.72c.19.28.5.44.83.44h4.48c.55 0 1 .45 1 1v5.96c0 .55-.45 1-1 1H2.75c-.55 0-1-.45-1-1z"
+      />
+      <path fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" d="M8 8.1v3M6.5 9.6h3" />
     </svg>
   );
 }
@@ -361,25 +357,40 @@ function topoOrder(sds: RequestDraft[]): RequestDraft[] {
   return out;
 }
 
-// 文件树节点（递归渲染，支持展开/折叠 + 右键菜单）
+// 行内「更多」按钮图标：水平三点（同 VSCode 文件树行尾的 ⋯）
+function MoreIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="currentColor">
+      <circle cx="3.5" cy="8" r="1.3" />
+      <circle cx="8" cy="8" r="1.3" />
+      <circle cx="12.5" cy="8" r="1.3" />
+    </svg>
+  );
+}
+
+// 文件树节点（递归渲染，支持展开/折叠 + 右键菜单 + 行尾「⋯」菜单）
 function TreeNode({
   entry,
   depth,
   expanded,
   childrenMap,
   selectedPath,
+  menuPath,
   onToggle,
   onSelect,
   onContext,
+  onMore,
 }: {
   entry: DirEntry;
   depth: number;
   expanded: Set<string>;
   childrenMap: Record<string, DirEntry[]>;
   selectedPath: string;
+  menuPath: string; // 菜单正打开的那一行：「⋯」保持显形，否则鼠标移到菜单上按钮会闪掉
   onToggle: (entry: DirEntry) => void;
   onSelect: (path: string) => void;
   onContext: (e: React.MouseEvent, entry: DirEntry) => void;
+  onMore: (e: React.MouseEvent, entry: DirEntry) => void;
 }) {
   const isOpen = expanded.has(entry.path);
   const children = childrenMap[entry.path];
@@ -393,7 +404,7 @@ function TreeNode({
     <div className="tree-node">
       <div
         ref={rowRef}
-        className={`tree-row ${isSelected ? "selected" : ""}`}
+        className={`tree-row ${isSelected ? "selected" : ""} ${menuPath === entry.path ? "menu-open" : ""}`}
         style={{ paddingLeft: 6 + depth * 14 }}
         title={entry.name}
         onClick={() => (entry.isDir ? onToggle(entry) : onSelect(entry.path))}
@@ -402,9 +413,29 @@ function TreeNode({
         <span className={`tree-caret ${entry.isDir ? "" : "tree-caret-empty"}`}>{entry.isDir && <Chevron open={isOpen} />}</span>
         {entry.isDir ? <FolderIcon /> : <FileTypeIcon path={entry.path} />}
         <span className="tree-name">{entry.name}</span>
+        <button
+          type="button"
+          className="tree-more"
+          title="更多操作"
+          aria-label="更多操作"
+          // 行本身点了会展开/打开，这里必须拦住
+          onClick={(e) => {
+            e.stopPropagation();
+            onMore(e, entry);
+          }}
+        >
+          <MoreIcon />
+        </button>
       </div>
       {entry.isDir && isOpen && children && (
-        <div className="tree-children">
+        // --tree-depth 供 ::before 的缩进参考线定位（对齐本行的折叠箭头中线）
+        <div className="tree-children" style={{ "--tree-depth": depth } as React.CSSProperties}>
+          {/* 43 = 箭头 16 + 图标 15 + 两处 6px 间距，让提示文字与同级文件名左对齐 */}
+          {children.length === 0 && (
+            <div className="tree-empty" style={{ paddingLeft: 6 + (depth + 1) * 14 + 43 }}>
+              空文件夹
+            </div>
+          )}
           {children.map((c) => (
             <TreeNode
               key={c.path}
@@ -413,9 +444,11 @@ function TreeNode({
               expanded={expanded}
               childrenMap={childrenMap}
               selectedPath={selectedPath}
+              menuPath={menuPath}
               onToggle={onToggle}
               onSelect={onSelect}
               onContext={onContext}
+              onMore={onMore}
             />
           ))}
         </div>
@@ -424,7 +457,12 @@ function TreeNode({
   );
 }
 
-// 右键菜单
+// 菜单项：sep=true 为分组分隔线（无 label / onClick）；disabled 项灰显不可点（如剪贴板为空时的「粘贴」）
+type CtxItem =
+  | { label: string; onClick: () => void; danger?: boolean; disabled?: boolean; sep?: false }
+  | { sep: true };
+
+// 右键菜单（文件树行、行尾「⋯」、标签页共用）
 function ContextMenu({
   x,
   y,
@@ -433,9 +471,20 @@ function ContextMenu({
 }: {
   x: number;
   y: number;
-  items: { label: string; onClick: () => void; danger?: boolean }[];
+  items: CtxItem[];
   onClose: () => void;
 }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // 贴边翻转：菜单项变多后（目录 9 项），靠近窗口右/下缘时会被截断
+  const [pos, setPos] = useState({ left: x, top: y });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    const left = x + width > window.innerWidth - 8 ? Math.max(8, x - width) : x;
+    const top = y + height > window.innerHeight - 8 ? Math.max(8, window.innerHeight - height - 8) : y;
+    setPos({ left, top });
+  }, [x, y, items.length]);
   useEffect(() => {
     function close() {
       onClose();
@@ -448,19 +497,24 @@ function ContextMenu({
     };
   }, [onClose]);
   return (
-    <div className="ctx-menu" style={{ left: x, top: y }} onMouseDown={(e) => e.stopPropagation()}>
-      {items.map((it, i) => (
-        <button
-          key={i}
-          className={`ctx-item ${it.danger ? "danger" : ""}`}
-          onClick={() => {
-            onClose();
-            it.onClick();
-          }}
-        >
-          {it.label}
-        </button>
-      ))}
+    <div ref={ref} className="ctx-menu" style={{ left: pos.left, top: pos.top }} onMouseDown={(e) => e.stopPropagation()}>
+      {items.map((it, i) =>
+        it.sep ? (
+          <div key={i} className="ctx-sep" />
+        ) : (
+          <button
+            key={i}
+            className={`ctx-item ${it.danger ? "danger" : ""}`}
+            disabled={it.disabled}
+            onClick={() => {
+              onClose();
+              it.onClick();
+            }}
+          >
+            {it.label}
+          </button>
+        ),
+      )}
     </div>
   );
 }
@@ -1115,7 +1169,9 @@ function App() {
   const [wsMenuOpen, setWsMenuOpen] = useState(false);
   const wsMenuRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [sidebarWidth, setSidebarWidth] = useState(200);
+  // 默认 260：够放下「05-延迟与重定向」这类目录名，不用一上来就拖宽
+  // （拖动范围仍是 160~480，见下方 onMove）
+  const [sidebarWidth, setSidebarWidth] = useState(260);
   const resizingRef = useRef(false);
   // 三栏布局显隐（顶栏切换）：左=文件树 / 底=终端 / 右=AI 对话；仅本次运行内记忆
   const [layout, setLayout] = useState<LayoutFlags>(() => loadLayout());
@@ -1188,8 +1244,13 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<DirEntry[]>([]);
   const [newCaseDir, setNewCaseDir] = useState<string | null>(null);
+  // 文件树选中项：与「当前打开文件」分开——目录也要能被选中（粘贴要落到它里面）
+  const [treeSel, setTreeSel] = useState<{ path: string; isDir: boolean } | null>(null);
+  // 文件树剪贴板（应用内语义，不走系统剪贴板）：复制后可连续粘贴，粘贴不清空
+  const [clip, setClip] = useState<{ path: string; isDir: boolean } | null>(null);
   // 右键菜单 / 输入对话框
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: DirEntry | null } | null>(null);
+  // newOnly：工具栏「+」弹的菜单，只有新建两项（与根行的「⋯」菜单区分开）
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: DirEntry | null; newOnly?: boolean } | null>(null);
   const [promptState, setPromptState] = useState<{ title: string; initial: string; onOk: (v: string) => void } | null>(null);
 
   // 多标签页：打开顺序 + 非活动标签的状态快照（活动标签用下方 live state）
@@ -1532,7 +1593,13 @@ function App() {
     paths.forEach((p) => selfWritesRef.current.set(p, now));
   }
 
+  // 切标签 / 从搜索结果打开时，树选中项跟随当前文件（视觉上与「选中即当前打开文件」一致）
+  useEffect(() => {
+    if (currentCasePath) setTreeSel({ path: currentCasePath, isDir: false });
+  }, [currentCasePath]);
+
   function toggleDir(entry: DirEntry) {
+    setTreeSel({ path: entry.path, isDir: true }); // 点目录既展开/折叠，也成为选中项（粘贴要落到它里面）
     const isOpen = expanded.has(entry.path);
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -1797,6 +1864,7 @@ function App() {
   }
 
   function onSelectFile(path: string) {
+    setTreeSel({ path, isDir: false });
     openTab(path); // 任意文件都打开：case 渲染结构、其余落文本、二进制读取失败给提示
   }
 
@@ -2272,7 +2340,11 @@ function App() {
   async function runRequestWithCtx(sd: RequestDraft, ctx: RunContext): Promise<{ state: RunState; outputs: Record<string, unknown> }> {
     try {
       const resolved = resolveDraft(sd.req, ctx);
-      const result = await invoke<ApiResponse>("send_request", { request: buildApiRequest(resolved), proxy: proxyPayload(proxyConfig) });
+      // 经 sendWithAuth 走一层：Digest 的 401 重发、OAuth 2.0 的 token 交换都在其中，
+      // 且共用同一个后端通道，代理设置对它们一样生效。
+      const result = await sendWithAuth(resolved, (request) =>
+        invoke<ApiResponse>("send_request", { request, proxy: proxyPayload(proxyConfig) }),
+      );
       const outputs = extractOutputs(sd.outputs, result.body);
       const asserts = evalAssertions(sd.assertions, result);
       const pass = asserts.every((a) => a.ok);
@@ -2366,6 +2438,33 @@ function App() {
     });
   }
 
+  /**
+   * from 改名 / 移动到 to 后，把界面里记着旧路径的地方一并迁移：
+   * 标签（含目录之下的所有已打开文件）、当前文件、树选中项、展开态与已加载的子项缓存。
+   */
+  function retargetPaths(from: string, to: string) {
+    const cache = tabCacheRef.current;
+    for (const p of Object.keys(cache)) {
+      const np = retargetPath(p, from, to);
+      if (np !== p) {
+        cache[np] = { ...cache[p], path: np };
+        delete cache[p];
+      }
+    }
+    setTabOrder((prev) => prev.map((p) => retargetPath(p, from, to)));
+    setCurrentCasePath((prev) => retargetPath(prev, from, to));
+    setTreeSel((prev) => (prev ? { ...prev, path: retargetPath(prev.path, from, to) } : prev));
+    setExpanded((prev) => new Set(Array.from(prev, (p) => retargetPath(p, from, to))));
+    setChildrenMap((prev) => {
+      const next: Record<string, DirEntry[]> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        const nk = retargetPath(k, from, to);
+        next[nk] = nk === k ? v : v.map((e) => ({ ...e, path: retargetPath(e.path, from, to) }));
+      }
+      return next;
+    });
+  }
+
   function renameEntry(entry: DirEntry) {
     setPromptState({
       title: "重命名",
@@ -2378,16 +2477,8 @@ function App() {
           noteSelfWrite(entry.path, to);
           await invoke("rename_path", { from: entry.path, to });
           await loadDir(dir);
-          // 同步已打开的标签（精确文件改名）
-          if (tabOrder.includes(entry.path)) {
-            setTabOrder((prev) => prev.map((p) => (p === entry.path ? to : p)));
-            const cached = tabCacheRef.current[entry.path];
-            if (cached) {
-              tabCacheRef.current[to] = { ...cached, path: to };
-              delete tabCacheRef.current[entry.path];
-            }
-          }
-          if (currentCasePath === entry.path) setCurrentCasePath(to);
+          // 目录改名时其下已打开文件的标签路径也一并跟随（否则会指向失效路径）
+          retargetPaths(entry.path, to);
         } catch (e) {
           setError(typeof e === "string" ? e : String(e));
         }
@@ -2402,8 +2493,11 @@ function App() {
       noteSelfWrite(entry.path);
       await invoke("delete_path", { path: entry.path });
       await loadDir(dir);
+      // 选中项 / 剪贴板若指向已删除的路径，一并作废
+      if (treeSel && isUnder(entry.path, treeSel.path)) setTreeSel(null);
+      if (clip && isUnder(entry.path, clip.path)) setClip(null);
       // 关闭被删文件/目录下的所有标签
-      const under = (p: string) => p === entry.path || p.startsWith(entry.path + "/") || p.startsWith(entry.path + "\\");
+      const under = (p: string) => isUnder(entry.path, p);
       const affected = tabOrder.filter(under);
       if (affected.length) {
         affected.forEach((p) => delete tabCacheRef.current[p]);
@@ -2424,23 +2518,146 @@ function App() {
     }
   }
 
-  function ctxItems(entry: DirEntry | null) {
-    const dir = entry ? (entry.isDir ? entry.path : dirName(entry.path)) : workspace;
-    const items: { label: string; onClick: () => void; danger?: boolean }[] = [
+  // ── 文件树：克隆 / 复制 / 剪切 / 粘贴 ─────────────
+  /** 目标目录已占用的名称：直接问后端，不用可能过期的 childrenMap。 */
+  async function takenNamesIn(dir: string): Promise<Set<string>> {
+    const entries = await invoke<DirEntry[]>("list_dir", { path: dir });
+    return new Set(entries.map((e) => e.name));
+  }
+
+  /** 克隆：同目录复制一份，重名自动排号（用例.yml → 用例 副本.yml → 用例 副本 2.yml）。 */
+  async function cloneEntry(entry: DirEntry) {
+    const dir = dirName(entry.path);
+    try {
+      const taken = await takenNamesIn(dir);
+      const to = joinPath(dir, uniqueName(entry.name, (n) => taken.has(n)));
+      noteSelfWrite(to);
+      await invoke("copy_path", { from: entry.path, to });
+      await loadDir(dir);
+      setExpanded((prev) => new Set(prev).add(dir));
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  /** 粘贴目标目录：选中目录 → 其自身；选中文件 → 其所在目录；没有选中 → 工作空间根。 */
+  function pasteTargetDir(): string {
+    if (treeSel) return treeSel.isDir ? treeSel.path : dirName(treeSel.path);
+    return workspace;
+  }
+
+  async function pasteInto(targetDir: string) {
+    if (!clip || !targetDir) return;
+    const { path: from, isDir } = clip;
+    try {
+      if (!(await pathExists(from))) {
+        setError(`剪贴板中的「${baseName(from)}」已不存在`);
+        setClip(null);
+        return;
+      }
+      // 目录粘进自身或自己的子目录：会无限递归
+      if (isDir && isUnder(from, targetDir)) {
+        setError("不能把目录粘贴到它自己或它的子目录中");
+        return;
+      }
+      const taken = await takenNamesIn(targetDir);
+      const to = joinPath(targetDir, uniqueName(baseName(from), (n) => taken.has(n)));
+      noteSelfWrite(to);
+      await invoke("copy_path", { from, to });
+      await loadDir(targetDir);
+      setExpanded((prev) => new Set(prev).add(targetDir));
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  /** 在系统文件管理器中定位该文件 / 目录（打开父目录并选中它）。 */
+  async function revealEntry(path: string) {
+    try {
+      await revealItemInDir(path);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  /** 工具栏「+」的菜单：只管新建，不掺粘贴 / 显示位置那些针对具体项的操作。 */
+  function newItems(dir: string): CtxItem[] {
+    return [
       { label: "新建用例", onClick: () => newCaseIn(dir) },
       { label: "新建文件夹", onClick: () => newFolderIn(dir) },
     ];
+  }
+
+  function ctxItems(entry: DirEntry | null): CtxItem[] {
+    const dir = entry ? (entry.isDir ? entry.path : dirName(entry.path)) : workspace;
+    const items: CtxItem[] = [];
+    // 新建只对目录 / 工作空间根（文件行新建到它所在目录反而容易误解）
+    if (!entry || entry.isDir) items.push(...newItems(dir));
     if (entry) {
+      if (items.length) items.push({ sep: true });
+      items.push({ label: "克隆", onClick: () => cloneEntry(entry) });
+      items.push({ label: "复制", onClick: () => setClip({ path: entry.path, isDir: entry.isDir }) });
+    }
+    // 粘贴常驻在能收东西的位置（目录 / 根），剪贴板为空时禁用而非隐藏——固定位置比忽隐忽现好找
+    if (!entry || entry.isDir) {
+      items.push({
+        label: clip ? `粘贴「${baseName(clip.path)}」` : "粘贴",
+        onClick: () => pasteInto(dir),
+        disabled: !clip,
+      });
+    }
+    if (entry) {
+      items.push({ sep: true });
       items.push({ label: "重命名", onClick: () => renameEntry(entry) });
+    } else {
+      items.push({ sep: true });
+    }
+    items.push({ label: "显示文件所在位置", onClick: () => revealEntry(entry ? entry.path : workspace) });
+    if (entry) {
+      items.push({ sep: true });
       items.push({ label: "删除", onClick: () => deleteEntry(entry), danger: true });
     }
     return items;
   }
 
+  /** 选中工作空间根（根行点击 / 右键 / 「⋯」都落到它，粘贴目标即工作空间根）。 */
+  function selectRoot() {
+    if (workspace) setTreeSel({ path: workspace, isDir: true });
+  }
+
   function openContext(e: React.MouseEvent, entry: DirEntry | null) {
     e.preventDefault();
     e.stopPropagation();
+    // 菜单与选中态始终一致（同 VSCode）：entry=null 即针对工作空间根
+    if (entry) setTreeSel({ path: entry.path, isDir: entry.isDir });
+    else selectRoot();
     setCtxMenu({ x: e.clientX, y: e.clientY, entry });
+  }
+
+  /** 行尾「⋯」：与右键同一份菜单，锚定按钮左下角。 */
+  function openMoreMenu(e: React.MouseEvent, entry: DirEntry) {
+    e.preventDefault();
+    e.stopPropagation();
+    setTreeSel({ path: entry.path, isDir: entry.isDir });
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setCtxMenu({ x: r.left, y: r.bottom + 4, entry });
+  }
+
+  /** 文件树内的 Ctrl/⌘+C、Ctrl/⌘+V（只在侧栏有焦点时生效，不劫持编辑区的复制粘贴）。 */
+  function onTreeKeyDown(e: React.KeyboardEvent) {
+    if (!workspace || !(e.metaKey || e.ctrlKey) || e.altKey) return;
+    const t = e.target as HTMLElement;
+    if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return; // 搜索框等照常
+    const k = e.key.toLowerCase();
+    if (k === "c") {
+      if (!treeSel) return;
+      e.preventDefault();
+      setClip({ path: treeSel.path, isDir: treeSel.isDir });
+    } else if (k === "v") {
+      if (!clip) return;
+      e.preventDefault();
+      pasteInto(pasteTargetDir());
+    }
   }
 
   // 画布节点数据
@@ -2459,6 +2676,17 @@ function App() {
   const assertResults = run?.asserts ?? [];
   const assertPass = assertResults.filter((r) => r.ok).length;
   const assertDefs = (selected?.assertions || []).filter((a) => a.target.trim() !== "");
+
+  // URL 里 {{变量}} 的高亮判定：当前环境变量 + case 级 vars（case 覆盖 env），值非空即视为「已设值」
+  const definedVars: Record<string, unknown> = { ...(environments[activeEnv] || {}), ...(caseVars || {}) };
+  const isVarSet = (expr: string): boolean => {
+    const name = expr.trim();
+    if (!name) return false; // 空占位 {{}}
+    if (/^(?:requests|steps)\./.test(name)) return true; // 运行期步骤输出，编辑期不判定
+    const key = name.startsWith("vars.") ? name.slice(5) : name;
+    const v = definedVars[key];
+    return v !== undefined && v !== null && String(v).trim() !== "";
+  };
 
   // Tab 行右侧固定控件：视图切换（文本|可视/流程/请求）+ 保存。始终完整显示，不随 Tab 滚动
   const headControls =
@@ -2513,6 +2741,7 @@ function App() {
             className={`workspace-trigger ${workspace ? "" : "is-placeholder"} ${wsMenuOpen ? "is-open" : ""}`}
             onClick={() => setWsMenuOpen((v) => !v)}
           >
+            <FolderIcon className="ws-glyph" size={14} />
             <span className="workspace-label" title={workspace || undefined}>
               {workspace ? baseName(workspace) : "选择工作空间"}
             </span>
@@ -2521,6 +2750,7 @@ function App() {
           {wsMenuOpen && (
             <div className="workspace-dropdown">
               <button className="ws-item" onClick={openOrCreateWorkspace}>
+                <FolderPlusIcon className="ws-item-glyph" size={15} />
                 打开工作空间
               </button>
               <div className="ws-divider" />
@@ -2532,8 +2762,11 @@ function App() {
                   recentWorkspaces.map((ws) => (
                     <div key={ws} className="ws-recent-row">
                       <button className="ws-item ws-recent" title={ws} onClick={() => selectWorkspace(ws)}>
-                        <span className="ws-recent-name">{baseName(ws)}</span>
-                        <span className="ws-recent-path">{ws}</span>
+                        <FolderIcon className="ws-item-glyph" size={15} />
+                        <span className="ws-recent-text">
+                          <span className="ws-recent-name">{baseName(ws)}</span>
+                          <span className="ws-recent-path">{ws}</span>
+                        </span>
                       </button>
                       <button
                         className="ws-recent-del"
@@ -2645,6 +2878,9 @@ function App() {
         <aside
           className="sidebar"
           style={{ width: sidebarWidth }}
+          // tabIndex=-1：点击可聚焦（Ctrl/⌘+C·V 只在树内生效），但不打乱 Tab 顺序
+          tabIndex={-1}
+          onKeyDown={onTreeKeyDown}
           onContextMenu={(e) => {
             if (workspace) openContext(e, null);
           }}
@@ -2672,7 +2908,7 @@ function App() {
                   title="新建"
                   onClick={(e) => {
                     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    setCtxMenu({ x: r.left, y: r.bottom + 4, entry: null });
+                    setCtxMenu({ x: r.left, y: r.bottom + 4, entry: null, newOnly: true });
                   }}
                 >
                   +
@@ -2706,9 +2942,29 @@ function App() {
                 </div>
               ) : (
                 <div className="tree">
-                  <div className="tree-root-name" title={workspace}>
+                  {/* 工作空间根：与普通行同样可点选、可悬浮出「⋯」，菜单走 entry=null 那套（新建 / 粘贴 / 显示位置） */}
+                  <div
+                    className={`tree-root-name ${treeSel?.path === workspace ? "selected" : ""}`}
+                    title={workspace}
+                    onClick={() => selectRoot()}
+                    onContextMenu={(e) => openContext(e, null)}
+                  >
                     <FolderIcon />
                     <span className="tree-name">{baseName(workspace)}</span>
+                    <button
+                      type="button"
+                      className="tree-more"
+                      title="更多操作"
+                      aria-label="更多操作"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        selectRoot();
+                        setCtxMenu({ x: r.left, y: r.bottom + 4, entry: null });
+                      }}
+                    >
+                      <MoreIcon />
+                    </button>
                   </div>
                   {(childrenMap[workspace] || []).map((c) => (
                     <TreeNode
@@ -2717,10 +2973,12 @@ function App() {
                       depth={0}
                       expanded={expanded}
                       childrenMap={childrenMap}
-                      selectedPath={currentCasePath}
+                      selectedPath={treeSel?.path || ""}
+                      menuPath={ctxMenu?.entry?.path || ""}
                       onToggle={toggleDir}
                       onSelect={onSelectFile}
                       onContext={openContext}
+                      onMore={openMoreMenu}
                     />
                   ))}
                 </div>
@@ -2962,27 +3220,32 @@ function App() {
                           onRenameId={(v) => renameRequest(selected.id, v)}
                           protocol={selected.protocol}
                           onProtocol={setProtocol}
+                          isVarSet={isVarSet}
                         />
                       </div>
 
-                      {/* 响应区：与请求编辑器上下分栏，拖动标题栏调高；拖到最下折叠为一行 */}
+                      {/* 响应区顶边拖动条：细命中区（6px）+ 悬停/拖动显示蓝线，参照 sidebar-resizer；折叠态隐藏 */}
+                      {!respCollapsed && (
+                        <div
+                          className="panel-resizer-h"
+                          title="拖动调整响应区高度"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            respResizingRef.current = true;
+                            document.body.classList.add("resizing-row");
+                          }}
+                        />
+                      )}
+
+                      {/* 响应区：与请求编辑器上下分栏；顶边拖动条调高，拖到最下折叠为一行 */}
                       <div
                         className={`response ${respCollapsed ? "is-collapsed" : ""}`}
                         style={respCollapsed ? undefined : { height: respHeight }}
                       >
                         <div
                           className="response-head"
-                          onMouseDown={
-                            respCollapsed
-                              ? undefined
-                              : (e) => {
-                                  e.preventDefault();
-                                  respResizingRef.current = true;
-                                  document.body.classList.add("resizing-row");
-                                }
-                          }
                           onClick={respCollapsed ? () => setRespCollapsed(false) : undefined}
-                          title={respCollapsed ? "点击展开响应" : "拖动调整响应区高度"}
+                          title={respCollapsed ? "点击展开响应" : undefined}
                         >
                           <button
                             className="response-toggle"
@@ -3053,11 +3316,17 @@ function App() {
                             {runErr && <div className="error-box">⚠ {runErr}</div>}
 
                             {resp && (
-                                <div className="tab-panel">
+                                <div className={`tab-panel${respTab === "body" ? " body" : ""}`}>
                                   {respTab === "body" ? (
                                     <pre className="response-body">{prettyBody(resp.body)}</pre>
                                   ) : respTab === "headers" ? (
-                                    <table className="kv-table readonly">
+                                    <table className="kv-table grid readonly">
+                                      <thead>
+                                        <tr>
+                                          <th>名称</th>
+                                          <th>值</th>
+                                        </tr>
+                                      </thead>
                                       <tbody>
                                         {resp.headers.map((h, i) => (
                                           <tr key={i}>
@@ -3068,7 +3337,7 @@ function App() {
                                       </tbody>
                                     </table>
                                   ) : assertResults.length ? (
-                                    <table className="kv-table readonly assert-result-table">
+                                    <table className="kv-table grid readonly assert-result-table">
                                       <thead>
                                         <tr>
                                           <th className="res-col"></th>
@@ -3088,7 +3357,7 @@ function App() {
                                               </td>
                                               <td className="ak">{r.target}</td>
                                               <td className="ao">{OP_LABELS[r.op as AssertOp] ?? r.op}</td>
-                                              <td className="av">{noVal ? "—" : assertDefs[i]?.value || ""}</td>
+                                              <td className={`av${noVal ? " na-cell" : ""}`}>{noVal ? "—" : assertDefs[i]?.value || ""}</td>
                                               <td className="aa">{r.actual}</td>
                                             </tr>
                                           );
@@ -3102,7 +3371,6 @@ function App() {
                             )}
 
                             {sending && <div className="response-empty">请求发送中…</div>}
-                            {!resp && !sending && !runErr && <div className="response-empty">尚未发送请求</div>}
                           </div>
                         )}
                       </div>
@@ -3200,7 +3468,14 @@ function App() {
         )}
       </div>
 
-      {ctxMenu && <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={ctxItems(ctxMenu.entry)} onClose={() => setCtxMenu(null)} />}
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          items={ctxMenu.newOnly ? newItems(workspace) : ctxItems(ctxMenu.entry)}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
       {tabMenu && (
         <ContextMenu
           x={tabMenu.x}

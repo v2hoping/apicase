@@ -65,6 +65,9 @@
   /* ── 文件树图标 ──（文件图标中性灰）*/
   --icon-folder: #6b83a8;
   --icon-file: #a0a0a0;
+  /* 缩进参考线：要能看见层级、又不能抢内容。比 --border 略重（后者落在 --bg 上几乎不可见），
+     比 --border-strong 轻（那个当线用会显得脏）。 */
+  --indent-guide: #e0e0e0;
 
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     Helvetica, Arial, sans-serif;
@@ -131,6 +134,7 @@
   --ai-bubble-bg: #2a2a31;
   --icon-folder: #7f97bd;
   --icon-file: #8b91a1;
+  --indent-guide: #3a3a43;
 }
 
 * {
@@ -243,6 +247,11 @@ body,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 触发按钮左侧文件夹图标 */
+.ws-glyph {
+  flex-shrink: 0;
+  color: var(--muted);
+}
 .workspace-trigger.is-placeholder .workspace-label {
   color: var(--muted);
 }
@@ -267,7 +276,9 @@ body,
   z-index: 100;
 }
 .ws-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   text-align: left;
   padding: 7px 10px;
@@ -280,6 +291,11 @@ body,
 }
 .ws-item:hover {
   background: var(--hover);
+}
+/* 下拉项左侧图标：文件夹 / 文件夹+加号，统一弱化色 */
+.ws-item-glyph {
+  flex-shrink: 0;
+  color: var(--muted);
 }
 .ws-divider {
   height: 1px;
@@ -300,8 +316,17 @@ body,
 }
 .ws-recent {
   display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+/* 文件夹图标右侧的 名称/路径 两行文本列 */
+.ws-recent-text {
+  display: flex;
   flex-direction: column;
   gap: 1px;
+  min-width: 0;
   overflow: hidden;
 }
 .ws-recent-name {
@@ -456,15 +481,26 @@ body,
   font-size: 14px;
   user-select: none;
 }
+/* 工作空间根行：与 .tree-row 同一套盒模型与交互反馈（行高 / 圆角 / 小手 / hover 底色 / 选中态），
+   仅字重加粗以示层级；原先靠 padding 撑出的下间距改用 margin，免得 hover 底色比别的行高一截。 */
 .tree-root-name {
+  position: relative; /* 选中时左侧橙条用 ::before 绝对定位 */
   display: flex;
   align-items: center;
   gap: 6px;
+  height: 26px;
+  padding: 0 8px 0 6px;
+  margin-bottom: 4px;
   font-weight: 600;
-  padding: 4px 6px 8px;
   color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
   overflow: hidden;
   white-space: nowrap;
+  transition: background 0.1s;
+}
+.tree-root-name:hover {
+  background: var(--hover);
 }
 .tree-root-name .tree-ico {
   color: var(--muted);
@@ -485,11 +521,13 @@ body,
 .tree-row:hover {
   background: var(--hover);
 }
-.tree-row.selected {
+.tree-row.selected,
+.tree-root-name.selected {
   background: var(--selected);
 }
-/* 选中左侧橙色强调条 */
-.tree-row.selected::before {
+/* 选中行左侧的强调色竖条（accent，2026-07-17 起为蓝） */
+.tree-row.selected::before,
+.tree-root-name.selected::before {
   content: "";
   position: absolute;
   left: 0;
@@ -502,6 +540,40 @@ body,
 .tree-row.selected .tree-name {
   color: var(--text);
   font-weight: 500;
+}
+/* 行尾「⋯」更多操作：悬浮 / 选中 / 该行菜单打开时显形（菜单打开后不能消失，否则鼠标移向菜单会闪） */
+.tree-more {
+  flex-shrink: 0;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  opacity: 0;
+  cursor: pointer;
+}
+.tree-row:hover .tree-more,
+.tree-row.selected .tree-more,
+.tree-row.menu-open .tree-more,
+.tree-root-name:hover .tree-more,
+.tree-root-name.selected .tree-more {
+  opacity: 1;
+}
+.tree-more:hover {
+  background: var(--selected);
+  color: var(--text);
+}
+/* 键盘/程序聚焦时也显形，纯鼠标点击不留残影 */
+.tree-more:focus-visible {
+  opacity: 1;
+  outline: 1.5px solid var(--accent);
+  outline-offset: -1.5px;
 }
 .tree-caret {
   flex-shrink: 0;
@@ -535,6 +607,33 @@ body,
 .env-trigger:hover .caret-down,
 .env-trigger.is-open .caret-down {
   color: var(--text);
+}
+/* 子级容器的缩进参考线（借 Postman / VSCode）：一条贯穿子列表的细竖线，
+   落在父行折叠箭头的中线上（6px 行内左边距 + 父级缩进 + 箭头半宽 8px），
+   层级一眼可辨。--tree-depth 由 TreeNode 以内联变量传入（父行的 depth）。 */
+.tree-children {
+  position: relative;
+}
+.tree-children::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(6px + var(--tree-depth, 0) * 14px + 8px);
+  width: 1px;
+  background: var(--indent-guide);
+  /* 压过行的 hover / 选中底色：线断在选中行上会割裂层级感（VSCode 同此） */
+  z-index: 1;
+  pointer-events: none;
+}
+/* 展开后空空如也时给一句话，免得看起来像「点了没反应」 */
+.tree-empty {
+  height: 26px;
+  display: flex;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--muted);
+  font-style: italic;
 }
 .tree-name {
   overflow: hidden;
@@ -803,12 +902,54 @@ body.resizing-pane .pane-resizer::after {
 .url-input {
   flex: 1;
   height: 34px;
+  line-height: 34px; /* 使 VarInput 背板单行文字与输入框垂直居中一致 */
   padding: 0 10px;
   font-size: 14px;
   border: none;
   border-radius: 0;
   background: transparent;
   outline: none;
+}
+/* ── {{var}} 高亮输入：透明输入框叠在高亮背板上，背板随输入横向滚动同步 ── */
+.var-input {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+.var-input.grow {
+  flex: 1;
+}
+.var-input-back {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  white-space: pre;
+  color: var(--text);
+  pointer-events: none;
+}
+.var-input-field {
+  position: relative;
+  z-index: 1;
+  color: transparent; /* 文字由背板显示，输入框仅保留光标 */
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--text);
+  background: transparent;
+}
+/* 占位符不受透明文字影响（空值时背板亦为空，无重叠） */
+.var-input-field::placeholder {
+  color: var(--muted);
+  -webkit-text-fill-color: var(--muted);
+  opacity: 1;
+}
+/* 已设值的变量：好看的蓝色 */
+.var-token.ok {
+  color: var(--accent);
+}
+/* 未设值 / 空 {{}}：警告色 */
+.var-token.warn {
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border-radius: 3px;
 }
 .send-btn {
   height: 34px;
@@ -961,6 +1102,73 @@ body.resizing-pane .pane-resizer::after {
   outline-offset: -1.5px;
   background: var(--panel);
 }
+/* form-data 的「类型」列：窄列 + 单元格内嵌下拉（同断言表的做法，下拉不带自身边框）*/
+.kv-table.grid .type-col {
+  width: 76px;
+}
+.kv-table.grid .form-type-select {
+  width: 100%;
+}
+.kv-table.grid .form-type-select .ui-select-trigger {
+  height: auto;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 14px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+.kv-table.grid .form-type-select .ui-select-trigger:hover {
+  background: var(--hover);
+}
+.kv-table.grid .form-type-select.is-open .ui-select-trigger {
+  background: var(--panel);
+  outline: 1.5px solid var(--accent);
+  outline-offset: -1.5px;
+}
+/* 文件行的值单元格：选择按钮 + 路径（过长时截前保后）+ 清除 */
+.kv-table.grid .file-cell {
+  padding: 4px 6px; /* 单元格内不是 input，补垂直内边距对齐同行其它单元格的高度 */
+}
+.cell-file {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+.cell-file-btn {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cell-file-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--hover);
+}
+.cell-file-path {
+  min-width: 0;
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* 同 binary：截前保后，文件名比目录前缀重要 */
+  text-align: left;
+}
+.cell-file-empty {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.cell-file .row-del {
+  flex-shrink: 0;
+}
 .kv-table.readonly td {
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
@@ -968,7 +1176,7 @@ body.resizing-pane .pane-resizer::after {
   font-size: 13px;
 }
 .kv-table .hk {
-  color: var(--accent-dark);
+  color: var(--text);
   white-space: nowrap;
 }
 .kv-table .hv {
@@ -995,13 +1203,15 @@ body.resizing-pane .pane-resizer::after {
 /* body 输入 */
 .body-input {
   width: 100%;
+  /* 铺满剩余高度；120px 仅作最小地板值，窗口再小也可读 */
+  flex: 1;
   min-height: 120px;
   padding: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 14px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  resize: vertical;
+  resize: none;
 }
 .body-input:focus {
   outline: none;
@@ -1028,11 +1238,7 @@ body.resizing-pane .pane-resizer::after {
   height: 34px;
   flex-shrink: 0;
   padding-right: 8px;
-  cursor: row-resize;
   user-select: none;
-}
-.response:not(.is-collapsed) .response-head {
-  border-bottom: 1px solid var(--border);
 }
 .response.is-collapsed .response-head {
   cursor: pointer;
@@ -1082,6 +1288,10 @@ body.resizing-pane .pane-resizer::after {
   min-height: 0;
   overflow: auto;
 }
+/* 响应体 tab：去掉外层留白，让响应体铺满整个展示区 */
+.response-content .tab-panel.body {
+  padding: 0;
+}
 .response-meta {
   display: flex;
   align-items: center;
@@ -1092,19 +1302,23 @@ body.resizing-pane .pane-resizer::after {
   padding: 2px 8px;
   border-radius: 4px;
   font-weight: 700;
-  color: var(--on-accent);
 }
+/* 状态码徽标：文字用语义色，底用同色浅色调（color-mix 派生，浅/深主题各自适配）*/
 .status-2xx {
-  background: var(--green);
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 16%, transparent);
 }
 .status-3xx {
-  background: var(--blue);
+  color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 16%, transparent);
 }
 .status-4xx {
-  background: var(--amber);
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 16%, transparent);
 }
 .status-5xx {
-  background: var(--red);
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 16%, transparent);
 }
 .meta-item {
   color: var(--muted);
@@ -1163,12 +1377,13 @@ body.resizing-pane .pane-resizer::after {
 .response-body {
   margin: 0;
   padding: 12px;
+  box-sizing: border-box;
+  min-height: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13.5px;
   line-height: 1.5;
-  background: var(--code-bg);
-  color: var(--code-fg);
-  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1181,12 +1396,12 @@ body.resizing-pane .pane-resizer::after {
 
 /* ── 标签页栏（多文件打开）── */
 /* Tab 行：左侧可滚动的标签条 + 右侧固定的视图切换/保存控件，占满一行并贴齐工作区边缘 */
+/* 与下方编辑区之间不画分割线，靠 .workspace 的 10px gap 留白 + 活动标签边框维持层次 */
 .tab-row {
   display: flex;
   align-items: stretch;
   flex-shrink: 0;
   margin: -12px -12px 0;
-  border-bottom: 1px solid var(--border);
 }
 .tab-bar {
   flex: 1;
@@ -1203,13 +1418,14 @@ body.resizing-pane .pane-resizer::after {
   display: none;
 }
 /* 右侧控件：不参与滚动、不被压缩，始终完整显示 */
+/* 与左侧多文件标签栏之间不画分割线，靠两侧内边距的留白维持分割效果 */
+/* 顶部 7px 与 .tab-bar 一致：让视图切换/保存的竖直中心与文件标签对齐（标签因 tab-bar 上 7 下 0 而偏下） */
 .tab-controls {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 12px;
-  border-left: 1px solid var(--border);
+  padding: 7px 12px 0;
 }
 .file-tab {
   position: relative;
@@ -1338,6 +1554,9 @@ body.resizing-pane .pane-resizer::after {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* 填满 tab-panel，使下方文本框/表格铺开到底 */
+  flex: 1;
+  min-height: 0;
 }
 .field-row {
   display: flex;
@@ -1366,13 +1585,130 @@ body.resizing-pane .pane-resizer::after {
   flex: 1;
   max-width: 220px;
 }
-.body-type-bar {
+/* ── 认证面板 ──
+   字段值可能是 {{变量}}，故输入层用 VarInput：边框画在外层容器上，
+   内部两层（透明输入 + 高亮背板）共用 .auth-input 保证排版严丝合缝。 */
+.auth-type-row {
+  padding-bottom: 2px;
+}
+.auth-type-zh {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.auth-panel .field-row > .var-input,
+.auth-panel .secret-field {
+  flex: 1;
+  height: 30px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.auth-panel .field-row > .var-input:focus-within,
+.auth-panel .secret-field:focus-within {
+  border-color: var(--accent);
+}
+.auth-panel .auth-input {
+  width: 100%;
+  height: 28px;
+  line-height: 28px; /* 与背板单行文字对齐 */
+  padding: 0 8px;
+  font-size: 14px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  outline: none;
+}
+.secret-field {
   display: flex;
   align-items: center;
-  gap: 8px;
+  min-width: 0;
 }
-.bodytype-select .ui-select-trigger {
-  min-width: 160px;
+.secret-field .var-input {
+  flex: 1;
+  min-width: 0;
+}
+.secret-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 28px;
+  padding: 0;
+  color: var(--muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.secret-toggle:hover {
+  color: var(--accent);
+}
+/* 单行预览：把认证最终落到报文上的样子摊开给用户看 */
+.auth-preview {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 4px;
+  padding: 7px 10px;
+  background: var(--panel-2);
+  border-radius: 6px;
+}
+.auth-preview-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.auth-preview code {
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  color: var(--text);
+  word-break: break-all;
+}
+/* ── 请求体类型：平铺 chip 组（窄面板自动换行）── */
+.body-type-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.body-type-chip {
+  padding: 4px 10px;
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.body-type-chip:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+.body-type-chip.active {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+/* Content-Type 行：text/binary 可改，其余只读展示实际会发的值 */
+.body-ct-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.body-ct-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.body-ct-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  color: var(--text);
 }
 .ct-input {
   flex: 1;
@@ -1385,6 +1721,43 @@ body.resizing-pane .pane-resizer::after {
 .ct-input:focus {
   outline: none;
   border-color: var(--accent);
+}
+/* binary：文件选择行 */
+.binary-picker {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.file-pick-btn {
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.file-pick-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--hover);
+}
+.binary-path {
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* 路径过长时截前保后——文件名比目录前缀重要 */
+  text-align: left;
+}
+.binary-empty {
+  font-size: 13px;
+  color: var(--muted);
 }
 .panel-hint {
   padding: 12px 2px;
@@ -1988,17 +2361,33 @@ body.resizing-pane .pane-resizer::after {
   background: var(--accent-tint);
   border-radius: 4px;
 }
+/* 配置用断言表沿用 .kv-table.grid 网格：下拉去掉自身边框，作为单元格内容内嵌 */
 .assert-table .op-col2 {
-  width: 104px;
+  width: 112px;
 }
 .assert-table .assert-op-select {
   width: 100%;
 }
 .assert-table .assert-op-select .ui-select-trigger {
-  height: 28px;
-  padding: 0 8px;
-  font-size: 13px;
-  border-radius: 4px;
+  height: auto;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 14px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+.assert-table .assert-op-select .ui-select-trigger:hover {
+  background: var(--hover);
+}
+.assert-table .assert-op-select.is-open .ui-select-trigger {
+  background: var(--panel);
+  outline: 1.5px solid var(--accent);
+  outline-offset: -1.5px;
+}
+/* exists / notExists 行的期望值单元格：无需填值，置灰示意（配置表与结果表共用）*/
+.kv-table .na-cell {
+  background: var(--panel-2);
 }
 .assert-badge {
   display: inline-block;
@@ -2011,28 +2400,28 @@ body.resizing-pane .pane-resizer::after {
   color: var(--on-accent);
   border-radius: 50%;
 }
-/* ── 响应区「断言」栏：只读结果表（结果 / 目标 / 断言 / 期望值 / 实际）── */
-.assert-result-table th {
-  font-family: system-ui, sans-serif;
+/* ── 响应区「断言」栏：只读结果表（结果 / 目标 / 断言 / 期望值 / 实际）──
+   排版对齐配置用断言表：同样的网格、行高与字号，只是单元格里是文本而非输入框。 */
+/* 特异性需压过 .kv-table.readonly td 的等宽小字排版 */
+.kv-table.readonly.assert-result-table td {
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text);
 }
 .assert-result-table .res-col {
-  width: 28px;
+  width: 34px;
   text-align: center;
 }
 .assert-result-table .ak {
-  color: var(--accent-dark);
   white-space: nowrap;
 }
 .assert-result-table .ao {
-  color: var(--muted);
+  width: 112px;
   white-space: nowrap;
 }
-.assert-result-table .av {
-  color: var(--text);
-  word-break: break-all;
-}
+.assert-result-table .av,
 .assert-result-table .aa {
-  color: var(--text);
   word-break: break-all;
 }
 .assert-badge.ok {
@@ -2085,6 +2474,12 @@ body.resizing-pane .pane-resizer::after {
   min-height: 0;
   min-width: 0;
   gap: 0;
+  /* 抵消 workspace 右侧 12px 内边距：请求/响应段右缘（含响应区分割线）铺到工作区边缘，与顶部标签栏对齐 */
+  margin-right: -12px;
+}
+/* 仅请求模式：左侧也抵消，响应区分割线左右满铺；分栏时左侧留给流程面板，故不动 */
+.structured.only-request {
+  margin-left: -12px;
 }
 .flow-pane {
   flex: 0 0 44%;
@@ -2105,7 +2500,7 @@ body.resizing-pane .pane-resizer::after {
   display: flex;
   flex-direction: column;
   gap: 0;
-  padding-left: 14px;
+  /* 左缩进只给请求编辑器（.req-scroll），响应区与其分割条保持左右满铺 */
   overflow: hidden;
 }
 /* 请求编辑器所在的上段：填充剩余高度、内部滚动（响应区在下方独立成段）*/
@@ -2114,14 +2509,30 @@ body.resizing-pane .pane-resizer::after {
   min-height: 0;
   overflow-y: auto;
   padding-bottom: 10px;
+  /* 段已铺满工作区，这里把编辑器内容的右边距补回来（响应区不加，保持满铺到边）*/
+  padding-right: 12px;
 }
-.structured.only-request .request-pane {
-  padding-left: 0;
+/* 分栏（流程 + 请求）时，请求编辑器左缩进 14px 与流程面板拉开；响应区/分割线仍满铺左右 */
+.structured.split .req-scroll {
+  padding-left: 14px;
+}
+/* 仅请求模式：编辑器左边距补回 12px，与响应区满铺形成对比 */
+.structured.only-request .req-scroll {
+  padding-left: 12px;
 }
 .req-editor {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* 至少铺满滚动区：让下方的 tab-panel（body/docs 文本框）能撑开到底 */
+  min-height: 100%;
+}
+/* 请求编辑器的标签内容区填充剩余高度（响应区共用的 .tab-panel 基类不动）*/
+.req-editor > .tab-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ── 请求 ID Tab（属性面板）── */
@@ -2474,12 +2885,27 @@ body.resizing-pane .pane-resizer::after {
   background: var(--hover);
   color: var(--text);
 }
+/* 禁用项（剪贴板为空时的「粘贴」）：保留占位、不可点 */
+.ctx-item:disabled {
+  color: var(--muted);
+  opacity: 0.55;
+  cursor: default;
+}
+.ctx-item:disabled:hover {
+  background: none;
+}
 .ctx-item.danger {
   color: var(--red);
 }
 .ctx-item.danger:hover {
   background: rgba(214, 51, 47, 0.1);
   color: var(--red);
+}
+/* 分组分隔线（新建 | 克隆·复制·剪切·粘贴 | 重命名·系统操作 | 删除） */
+.ctx-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
 }
 
 /* ── 输入对话框 ── */
@@ -3477,5 +3903,6 @@ body.resizing-ai .ai-resizer::after {
 /* 请求编辑器「文档」标签容器 */
 .docs-panel {
   display: flex;
+  flex: 1;
   min-height: 0;
 }

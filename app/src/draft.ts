@@ -2,7 +2,8 @@
 // 为什么要独立草稿：编辑 JSON body 时允许中途非法文本（不即时 parse），
 // 故用字符串保存 body 文本，仅在保存/发送边界才校验并转回 HttpSpec。
 // 单请求与多请求 flow 的每个请求都复用同一份 ReqDraft，请求编辑器因而完全通用。
-import { HttpSpec, AuthSpec, AuthType, BodySpec, BodyType, KV, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
+import { HttpSpec, AuthSpec, AuthType, BodySpec, BodyType, KV, FormItem, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
+import { baseName } from "./pathutil";
 
 export interface ReqDraft {
   method: string;
@@ -16,11 +17,75 @@ export interface ReqDraft {
   authApikeyKey: string;
   authApikeyValue: string;
   authApikeyIn: "header" | "query";
+  authDigestUser: string;
+  authDigestPass: string;
+  authOauth2TokenUrl: string;
+  authOauth2ClientId: string;
+  authOauth2ClientSecret: string;
+  authOauth2Scope: string;
+  authOauth2ClientAuth: "header" | "body";
   bodyType: BodyType;
-  bodyText: string; // json / text 类型的编辑文本
-  bodyContentType: string;
-  bodyForm: KV[];
+  bodyText: string; // json / xml / text 类型的编辑文本
+  bodyContentType: string; // text / binary 可选覆盖 Content-Type
+  bodyForm: FormItem[]; // form-urlencoded / form-data 共用；仅后者认 type: file
+  bodyFilePath: string; // binary：以原始字节发送的文件路径
 }
+
+/** 各请求体类型默认带的 Content-Type；form-data 由后端 reqwest 生成（含 boundary），故为空。
+ *  文本类显式带 charset=utf-8（对齐新版 Postman）：body 本就以 UTF-8 字节发送，
+ *  声明 charset 可规避 xml/text 「无 charset 默认非 UTF-8」的历史坑，接收端稳解中文。 */
+export const DEFAULT_CONTENT_TYPE: Partial<Record<BodyType, string>> = {
+  json: "application/json; charset=utf-8",
+  xml: "application/xml; charset=utf-8",
+  text: "text/plain; charset=utf-8",
+  "form-urlencoded": "application/x-www-form-urlencoded",
+};
+
+// 文件扩展名 → MIME（对齐 Postman：binary 选文件后按类型自动定 Content-Type）
+const EXT_CONTENT_TYPE: Record<string, string> = {
+  json: "application/json",
+  xml: "application/xml",
+  txt: "text/plain",
+  csv: "text/csv",
+  html: "text/html",
+  htm: "text/html",
+  css: "text/css",
+  js: "text/javascript",
+  md: "text/markdown",
+  pdf: "application/pdf",
+  zip: "application/zip",
+  gz: "application/gzip",
+  tar: "application/x-tar",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+
+/** binary 请求体：按文件扩展名推断 Content-Type，推不出兜底 application/octet-stream（同 Postman）。 */
+export function guessContentType(path: string): string {
+  const m = /\.([A-Za-z0-9]+)\s*$/.exec(path.trim());
+  const ext = m ? m[1].toLowerCase() : "";
+  return EXT_CONTENT_TYPE[ext] || "application/octet-stream";
+}
+
+// multipart 文件 part 的 filename 取路径最后一段，与文件树共用同一份实现（见 pathutil.ts）
+export { baseName };
 
 export function emptyDraft(method = "GET", url = ""): ReqDraft {
   return {
@@ -35,10 +100,18 @@ export function emptyDraft(method = "GET", url = ""): ReqDraft {
     authApikeyKey: "",
     authApikeyValue: "",
     authApikeyIn: "header",
+    authDigestUser: "",
+    authDigestPass: "",
+    authOauth2TokenUrl: "",
+    authOauth2ClientId: "",
+    authOauth2ClientSecret: "",
+    authOauth2Scope: "",
+    authOauth2ClientAuth: "header",
     bodyType: "none",
     bodyText: "",
     bodyContentType: "",
     bodyForm: [],
+    bodyFilePath: "",
   };
 }
 
@@ -58,17 +131,27 @@ export function requestToDraft(r: HttpSpec): ReqDraft {
     authApikeyKey: r.auth.apikey?.key || "",
     authApikeyValue: r.auth.apikey?.value || "",
     authApikeyIn: r.auth.apikey?.in || "header",
+    authDigestUser: r.auth.digest?.username || "",
+    authDigestPass: r.auth.digest?.password || "",
+    authOauth2TokenUrl: r.auth.oauth2?.tokenUrl || "",
+    authOauth2ClientId: r.auth.oauth2?.clientId || "",
+    authOauth2ClientSecret: r.auth.oauth2?.clientSecret || "",
+    authOauth2Scope: r.auth.oauth2?.scope || "",
+    authOauth2ClientAuth: r.auth.oauth2?.clientAuth || "header",
     bodyType: r.body.type,
     bodyText:
       r.body.type === "json"
         ? r.body.json === undefined
           ? ""
           : JSON.stringify(r.body.json, null, 2)
-        : r.body.type === "text"
-          ? r.body.text || ""
-          : "",
+        : r.body.type === "xml"
+          ? r.body.xml || ""
+          : r.body.type === "text"
+            ? r.body.text || ""
+            : "",
     bodyContentType: r.body.contentType || "",
     bodyForm: r.body.type === "form-urlencoded" ? r.body.urlencoded || [] : r.body.type === "form-data" ? r.body.formData || [] : [],
+    bodyFilePath: r.body.filePath || "",
   };
 }
 
@@ -77,6 +160,19 @@ function draftAuth(d: ReqDraft): AuthSpec {
   if (d.authType === "basic") return { type: "basic", basic: { username: d.authBasicUser, password: d.authBasicPass } };
   if (d.authType === "apikey")
     return { type: "apikey", apikey: { key: d.authApikeyKey, value: d.authApikeyValue, in: d.authApikeyIn } };
+  if (d.authType === "digest")
+    return { type: "digest", digest: { username: d.authDigestUser, password: d.authDigestPass } };
+  if (d.authType === "oauth2")
+    return {
+      type: "oauth2",
+      oauth2: {
+        tokenUrl: d.authOauth2TokenUrl,
+        clientId: d.authOauth2ClientId,
+        clientSecret: d.authOauth2ClientSecret,
+        scope: d.authOauth2Scope || undefined,
+        clientAuth: d.authOauth2ClientAuth,
+      },
+    };
   return { type: "none" };
 }
 
@@ -92,8 +188,12 @@ export function draftToRequest(d: ReqDraft): { request?: HttpSpec; error?: strin
         return { error: "Body JSON 格式非法，无法保存" };
       }
     }
+  } else if (d.bodyType === "xml") {
+    body = { type: "xml", xml: d.bodyText };
   } else if (d.bodyType === "text") {
     body = { type: "text", text: d.bodyText, contentType: d.bodyContentType || undefined };
+  } else if (d.bodyType === "binary") {
+    body = { type: "binary", filePath: d.bodyFilePath, contentType: d.bodyContentType || undefined };
   } else if (d.bodyType === "form-urlencoded") {
     body = { type: "form-urlencoded", urlencoded: d.bodyForm };
   } else if (d.bodyType === "form-data") {
@@ -117,13 +217,32 @@ export interface HeaderEntry {
   key: string;
   value: string;
 }
+/** multipart 的一个 part：filePath 存在即文件字段（后端读盘），否则是文本字段。 */
+export interface FormDataEntry {
+  name: string;
+  value?: string;
+  filePath?: string;
+  fileName?: string; // 文件字段的 filename，取路径 basename
+  contentType?: string; // 该 part 的 Content-Type，按扩展名推断
+}
 export interface ApiRequestPayload {
   method: string;
   url: string;
   headers: HeaderEntry[];
   body: string | null;
+  bodyFile?: string; // binary：文件路径交给后端读盘，不把字节塞进 IPC
+  formData?: FormDataEntry[]; // form-data：由后端组 multipart（Content-Type 含 boundary）
 }
 
+/** UTF-8 安全的 base64：btoa 只吃 Latin-1，含中文的用户名/密码会直接抛错。 */
+export function utf8Base64(s: string): string {
+  let bin = "";
+  for (const b of new TextEncoder().encode(s)) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+// digest / oauth2 不在这里注入 Authorization：前者要先拿服务端 401 challenge，
+// 后者要先换 access_token，都需要异步——统一在 auth.ts 的 sendWithAuth 里补齐。
 export function buildApiRequest(d: ReqDraft): ApiRequestPayload {
   let finalUrl = d.url.trim();
   const hdrs: HeaderEntry[] = d.headers
@@ -134,7 +253,7 @@ export function buildApiRequest(d: ReqDraft): ApiRequestPayload {
   if (d.authType === "bearer" && d.authBearerToken) {
     hdrs.push({ key: "Authorization", value: `Bearer ${d.authBearerToken}` });
   } else if (d.authType === "basic") {
-    hdrs.push({ key: "Authorization", value: `Basic ${btoa(`${d.authBasicUser}:${d.authBasicPass}`)}` });
+    hdrs.push({ key: "Authorization", value: `Basic ${utf8Base64(`${d.authBasicUser}:${d.authBasicPass}`)}` });
   } else if (d.authType === "apikey" && d.authApikeyKey) {
     if (d.authApikeyIn === "header") {
       hdrs.push({ key: d.authApikeyKey, value: d.authApikeyValue });
@@ -143,21 +262,46 @@ export function buildApiRequest(d: ReqDraft): ApiRequestPayload {
       finalUrl = mergeQueryIntoUrl(finalUrl, [...cur.query, { name: d.authApikeyKey, value: d.authApikeyValue, enabled: true }]);
     }
   }
-  // body
+  // body：文本类（json/xml/text/form-urlencoded）走 body 字符串，
+  // binary 走 bodyFile（后端读盘）、form-data 走 formData（后端组 multipart）
   let bodyStr: string | null = null;
-  if (d.bodyType === "json" && d.bodyText.trim() !== "") {
+  let bodyFile: string | undefined;
+  let formData: FormDataEntry[] | undefined;
+  // 手填的 Content-Type 优先级最高，默认值仅在未手填时补
+  const setCT = (v: string) => {
+    if (v && !hasContentType()) hdrs.push({ key: "Content-Type", value: v });
+  };
+  if ((d.bodyType === "json" || d.bodyType === "xml") && d.bodyText.trim() !== "") {
     bodyStr = d.bodyText;
-    if (!hasContentType()) hdrs.push({ key: "Content-Type", value: "application/json" });
+    setCT(DEFAULT_CONTENT_TYPE[d.bodyType] || "");
   } else if (d.bodyType === "text" && d.bodyText !== "") {
     bodyStr = d.bodyText;
-    if (d.bodyContentType && !hasContentType()) hdrs.push({ key: "Content-Type", value: d.bodyContentType });
+    setCT(d.bodyContentType || DEFAULT_CONTENT_TYPE.text || "");
   } else if (d.bodyType === "form-urlencoded") {
     const pairs = d.bodyForm.filter((k) => k.enabled !== false && k.name.trim() !== "");
     if (pairs.length) {
       bodyStr = pairs.map((k) => `${encodeURIComponent(k.name)}=${encodeURIComponent(k.value)}`).join("&");
-      if (!hasContentType()) hdrs.push({ key: "Content-Type", value: "application/x-www-form-urlencoded" });
+      setCT(DEFAULT_CONTENT_TYPE["form-urlencoded"] || "");
     }
+  } else if (d.bodyType === "form-data") {
+    // 文件行未选文件（路径空）直接跳过——发下去只会让后端报读盘失败
+    const pairs = d.bodyForm.filter(
+      (k) => k.enabled !== false && k.name.trim() !== "" && (k.type !== "file" || k.value.trim() !== ""),
+    );
+    // Content-Type 不能手工设：multipart 的 boundary 由后端 reqwest 生成
+    // 文件 part 的 filename 与 Content-Type 在前端算好（复用 binary 那份扩展名表），后端只管读盘
+    if (pairs.length) {
+      formData = pairs.map((k) => {
+        const name = k.name.trim();
+        if (k.type !== "file") return { name, value: k.value };
+        const filePath = k.value.trim();
+        return { name, filePath, fileName: baseName(filePath), contentType: guessContentType(filePath) };
+      });
+    }
+  } else if (d.bodyType === "binary" && d.bodyFilePath.trim() !== "") {
+    bodyFile = d.bodyFilePath.trim();
+    // 手填优先，否则按文件类型推断（兜底 octet-stream，故 binary 有文件时总带 Content-Type）
+    setCT(d.bodyContentType || guessContentType(bodyFile));
   }
-  // form-data 的 multipart 发送暂未实现（保存可用），此处不组装 body
-  return { method: d.method, url: finalUrl, headers: hdrs, body: bodyStr };
+  return { method: d.method, url: finalUrl, headers: hdrs, body: bodyStr, bodyFile, formData };
 }
