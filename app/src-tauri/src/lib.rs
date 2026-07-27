@@ -18,8 +18,26 @@ pub struct HeaderEntry {
     pub value: String,
 }
 
-/// 前端传入的 API 请求 —— 即「单节点 DAG」的执行输入
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// multipart/form-data 的一个字段：`file_path` 有值即文件字段（后端读盘发字节），否则是文本字段。
+/// `file_name` 与 `content_type` 由前端按路径算好（basename / 扩展名推断），后端不再维护第二份 MIME 表。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FormField {
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub content_type: Option<String>,
+}
+
+/// 前端传入的 API 请求 —— 即「单节点 DAG」的执行输入。
+/// 请求体三选一（优先级 form_data > body_file > body）：
+/// multipart 表单 / 二进制文件（原始字节）/ 文本。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiRequest {
     pub method: String,
@@ -28,6 +46,12 @@ pub struct ApiRequest {
     pub headers: Vec<HeaderEntry>,
     #[serde(default)]
     pub body: Option<String>,
+    /// body 类型为 binary 时的文件路径——由后端直接读盘发字节，不经 IPC 搬运大文件
+    #[serde(default)]
+    pub body_file: Option<String>,
+    /// body 类型为 form-data 时的字段列表；Content-Type 与 boundary 交给 reqwest 生成
+    #[serde(default)]
+    pub form_data: Option<Vec<FormField>>,
 }
 
 /// 返回给前端的响应
@@ -97,7 +121,57 @@ async fn perform_request(req: ApiRequest, proxy: Option<ProxyConfig>) -> Result<
         }
         builder = builder.header(h.key.trim(), h.value.as_str());
     }
-    if let Some(body) = &req.body {
+    // 请求体三选一：multipart 表单 → 二进制文件 → 文本
+    let form_fields = req
+        .form_data
+        .as_ref()
+        .map(|f| f.iter().filter(|f| !f.name.trim().is_empty()).collect::<Vec<_>>())
+        .filter(|f| !f.is_empty());
+    let body_file = req
+        .body_file
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(fields) = form_fields {
+        // multipart 自带 Content-Type（含 boundary），故放在 header 之后设置，覆盖手填的同名头
+        let mut form = reqwest::multipart::Form::new();
+        for f in fields {
+            let name = f.name.trim().to_string();
+            let path = f.file_path.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            match path {
+                Some(path) => {
+                    let bytes = std::fs::read(path)
+                        // 多文件表单里只报路径不好定位是哪一行，带上字段名
+                        .map_err(|e| format!("读取表单文件失败（{name} → {path}）: {e}"))?;
+                    // file_name 前端总会传（basename），兜底防御一手
+                    let file_name = f
+                        .file_name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            Path::new(path)
+                                .file_name()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "file".to_string())
+                        });
+                    let mut part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
+                    if let Some(ct) = f.content_type.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                        part = part
+                            .mime_str(ct)
+                            .map_err(|e| format!("表单文件 Content-Type 非法（{name} → {ct}）: {e}"))?;
+                    }
+                    form = form.part(name, part);
+                }
+                None => form = form.text(name, f.value.clone()),
+            }
+        }
+        builder = builder.multipart(form);
+    } else if let Some(path) = body_file {
+        let bytes = std::fs::read(path).map_err(|e| format!("读取请求体文件失败（{path}）: {e}"))?;
+        builder = builder.body(bytes);
+    } else if let Some(body) = &req.body {
         if !body.is_empty() {
             builder = builder.body(body.clone());
         }
@@ -305,6 +379,46 @@ fn rename_path(from: String, to: String) -> Result<(), String> {
         return Err(format!("目标已存在: {to}"));
     }
     std::fs::rename(&from, &to).map_err(|e| format!("重命名失败: {e}"))
+}
+
+/// 递归复制目录内容（隐藏项一并复制——只有 `list_dir` 出于展示需要跳过 `.` 开头）。
+fn copy_dir_all(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for ent in std::fs::read_dir(from)? {
+        let ent = ent?;
+        let src = ent.path();
+        let dst = to.join(ent.file_name());
+        if ent.file_type()?.is_dir() {
+            copy_dir_all(&src, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
+/// Tauri 命令：复制路径（文件或目录，用于「克隆」与「复制 / 粘贴」）。
+/// 目标唯一名由前端算好；这里仍再校验一次目标已存在与「复制进自己的子目录」（否则会无限递归）。
+#[tauri::command]
+fn copy_path(from: String, to: String) -> Result<(), String> {
+    let src = Path::new(&from);
+    let dst = Path::new(&to);
+    if !src.exists() {
+        return Err(format!("源路径不存在: {from}"));
+    }
+    if dst.exists() {
+        return Err(format!("目标已存在: {to}"));
+    }
+    if src.is_dir() && dst.starts_with(src) {
+        return Err("不能把目录复制到它自己或它的子目录中".to_string());
+    }
+    if src.is_dir() {
+        copy_dir_all(src, dst).map_err(|e| format!("复制目录失败: {e}"))
+    } else {
+        std::fs::copy(src, dst)
+            .map(|_| ())
+            .map_err(|e| format!("复制文件失败: {e}"))
+    }
 }
 
 /// Tauri 命令：删除路径（文件用 remove_file，目录递归删除）。
@@ -675,6 +789,7 @@ pub fn run() {
             create_file,
             create_dir,
             rename_path,
+            copy_path,
             delete_path,
             search_workspace,
             watch_workspace,
@@ -699,8 +814,7 @@ mod tests {
         let req = ApiRequest {
             method: "BAD METHOD".into(),
             url: "https://example.com".into(),
-            headers: vec![],
-            body: None,
+            ..Default::default()
         };
         assert!(perform_request(req, None).await.is_err());
     }
@@ -711,10 +825,71 @@ mod tests {
         let req = ApiRequest {
             method: "GET".into(),
             url: "   ".into(),
-            headers: vec![],
-            body: None,
+            ..Default::default()
         };
         assert!(perform_request(req, None).await.is_err());
+    }
+
+    /// binary 请求体指向不存在的文件：应在发起前给出可读错误（无需联网）
+    #[tokio::test]
+    async fn missing_body_file_is_rejected() {
+        let path = std::env::temp_dir().join("apicase-not-exist-body.bin");
+        let req = ApiRequest {
+            method: "POST".into(),
+            url: "https://example.com".into(),
+            body_file: Some(path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let err = perform_request(req, None).await.expect_err("应报错");
+        assert!(err.contains("读取请求体文件失败"), "错误信息应指明是请求体文件读取失败: {err}");
+    }
+
+    /// form-data 的文件字段指向不存在的文件：错误信息应带上字段名与路径（无需联网）
+    #[tokio::test]
+    async fn missing_form_file_is_rejected() {
+        let path = std::env::temp_dir().join("apicase-not-exist-form.png");
+        let req = ApiRequest {
+            method: "POST".into(),
+            url: "https://example.com".into(),
+            form_data: Some(vec![FormField {
+                name: "avatar".into(),
+                file_path: Some(path.to_string_lossy().into_owned()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let err = perform_request(req, None).await.expect_err("应报错");
+        assert!(err.contains("读取表单文件失败"), "错误信息应指明是表单文件读取失败: {err}");
+        assert!(err.contains("avatar"), "错误信息应带上字段名: {err}");
+    }
+
+    /// copy_path：文件复制、目录递归复制、以及两条拒绝规则（无需联网）
+    #[test]
+    fn copy_path_files_and_dirs() {
+        let base = std::env::temp_dir().join("apicase-copy-test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("src/sub")).expect("建测试目录");
+        std::fs::write(base.join("src/a.yml"), b"a").expect("写文件");
+        std::fs::write(base.join("src/sub/b.yml"), b"b").expect("写文件");
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+        // 文件
+        copy_path(s(&base.join("src/a.yml")), s(&base.join("a-copy.yml"))).expect("复制文件应成功");
+        assert_eq!(std::fs::read(base.join("a-copy.yml")).unwrap(), b"a");
+
+        // 目录（含子目录与其中的文件）
+        copy_path(s(&base.join("src")), s(&base.join("dst"))).expect("复制目录应成功");
+        assert_eq!(std::fs::read(base.join("dst/sub/b.yml")).unwrap(), b"b");
+
+        // 目标已存在 → 拒绝（不覆盖）
+        assert!(copy_path(s(&base.join("src/a.yml")), s(&base.join("a-copy.yml"))).is_err());
+        // 目录复制进自己的子目录 → 拒绝（否则无限递归）
+        let err = copy_path(s(&base.join("src")), s(&base.join("src/sub/self"))).expect_err("应拒绝");
+        assert!(err.contains("自己"), "错误信息应说明原因: {err}");
+        // 源不存在 → 拒绝
+        assert!(copy_path(s(&base.join("nope")), s(&base.join("x"))).is_err());
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// 真实 GET：验证 单节点 DAG 端到端链路（需联网）
@@ -723,8 +898,7 @@ mod tests {
         let req = ApiRequest {
             method: "GET".into(),
             url: "https://example.com".into(),
-            headers: vec![],
-            body: None,
+            ..Default::default()
         };
         let resp = perform_request(req, None).await.expect("请求应成功");
         assert_eq!(resp.status, 200);
@@ -750,13 +924,61 @@ mod tests {
             let req = ApiRequest {
                 method: m.into(),
                 url: url.into(),
-                headers: vec![],
-                body: None,
+                ..Default::default()
             };
             let resp = perform_request(req, none())
                 .await
                 .unwrap_or_else(|e| panic!("{m} 请求失败: {e}"));
             assert_eq!(resp.status, 200, "{m} 状态应为 200");
         }
+    }
+
+    /// 端到端（同上，需本地 httpbin）：multipart 表单与 binary 文件体各发一次，
+    /// 由 httpbin 回显校验字段/字节确实送达。
+    /// 手动运行：cargo test -- --ignored e2e_body_kinds_via_local_httpbin
+    #[tokio::test]
+    #[ignore]
+    async fn e2e_body_kinds_via_local_httpbin() {
+        let none = || Some(ProxyConfig { mode: "none".into(), url: None });
+
+        // 文本字段与文件字段混排，httpbin 把前者回显在 form、后者回显在 files
+        let upload = std::env::temp_dir().join("apicase-e2e-upload.txt");
+        std::fs::write(&upload, b"apicase-form-file").expect("写临时文件");
+        let form = ApiRequest {
+            method: "POST".into(),
+            url: "http://127.0.0.1/post".into(),
+            form_data: Some(vec![
+                FormField { name: "a".into(), value: "1".into(), ..Default::default() },
+                FormField { name: "b".into(), value: "两".into(), ..Default::default() },
+                FormField {
+                    name: "doc".into(),
+                    file_path: Some(upload.to_string_lossy().into_owned()),
+                    file_name: Some("upload.txt".into()),
+                    content_type: Some("text/plain".into()),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        let resp = perform_request(form, none()).await.expect("multipart 请求应成功");
+        assert_eq!(resp.status, 200);
+        assert!(resp.body.contains("\"a\": \"1\""), "httpbin 应回显表单字段 a: {}", resp.body);
+        assert!(resp.body.contains("multipart/form-data"), "Content-Type 应由 reqwest 生成: {}", resp.body);
+        assert!(resp.body.contains("\"doc\""), "httpbin 应把文件字段回显在 files: {}", resp.body);
+        assert!(resp.body.contains("apicase-form-file"), "httpbin 应回显文件内容: {}", resp.body);
+        let _ = std::fs::remove_file(&upload);
+
+        let path = std::env::temp_dir().join("apicase-e2e-body.bin");
+        std::fs::write(&path, b"apicase-binary-payload").expect("写临时文件");
+        let bin = ApiRequest {
+            method: "POST".into(),
+            url: "http://127.0.0.1/post".into(),
+            body_file: Some(path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let resp = perform_request(bin, none()).await.expect("binary 请求应成功");
+        assert_eq!(resp.status, 200);
+        assert!(resp.body.contains("apicase-binary-payload"), "httpbin 应回显文件字节: {}", resp.body);
+        let _ = std::fs::remove_file(&path);
     }
 }

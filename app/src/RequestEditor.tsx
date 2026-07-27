@@ -2,13 +2,24 @@
 // 完全受控——父组件持有 ReqDraft，本组件只读 value、通过 onChange 汇报变更。
 // 切换 step 时父组件用 key 强制重挂载，从而重置内部 Tab 等瞬时状态。
 import { useEffect, useRef, useState } from "react";
-import { KV, AuthType, BodyType, Assertion, AssertOp, ASSERT_OPS, RequestOutput, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
-import { ReqDraft } from "./draft";
+import { KV, FormItem, AuthType, BodyType, Assertion, AssertOp, ASSERT_OPS, RequestOutput, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
+import { open } from "@tauri-apps/plugin-dialog";
+import { ReqDraft, DEFAULT_CONTENT_TYPE, guessContentType } from "./draft";
+import { AUTH_TYPE_METAS, authPreview, clearTokenCache } from "./auth";
 import { MarkdownEditor } from "./markdown";
+import { VarInput } from "./VarInput";
 
 export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
-const BODY_TYPES: BodyType[] = ["none", "json", "text", "form-urlencoded", "form-data"];
-const AUTH_TYPES: AuthType[] = ["none", "bearer", "basic", "apikey"];
+// 请求体类型平铺展示（顺序、命名对齐 Apifox）
+const BODY_TYPES: { value: BodyType; label: string }[] = [
+  { value: "none", label: "none" },
+  { value: "form-data", label: "form-data" },
+  { value: "form-urlencoded", label: "x-www-form-urlencoded" },
+  { value: "json", label: "JSON" },
+  { value: "xml", label: "XML" },
+  { value: "text", label: "Text" },
+  { value: "binary", label: "Binary" },
+];
 const PROTOCOLS = ["http"]; // 通信协议：当前仅 http，后续可扩展 grpc 等
 
 export function methodClass(m: string): string {
@@ -97,6 +108,267 @@ export function Select({
   );
 }
 
+// 密码可见性切换图标（off = 当前隐藏，画一道斜杠）
+function EyeIcon({ off }: { off?: boolean }) {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <g fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M1.6 8S4.1 3.8 8 3.8 14.4 8 14.4 8 11.9 12.2 8 12.2 1.6 8 1.6 8Z" />
+        <circle cx="8" cy="8" r="1.9" />
+        {off && <path d="M3.2 12.8 12.8 3.2" />}
+      </g>
+    </svg>
+  );
+}
+
+// 认证里的普通文本字段：支持 {{变量}} 高亮（令牌/用户名常来自环境变量）
+function AuthText({
+  label,
+  value,
+  onChange,
+  placeholder,
+  isVarSet,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  isVarSet: (name: string) => boolean;
+}) {
+  return (
+    <div className="field-row">
+      <label>{label}</label>
+      <VarInput className="auth-input" wrapClassName="grow" value={value} placeholder={placeholder} onChange={onChange} isVarSet={isVarSet} />
+    </div>
+  );
+}
+
+// 密钥字段：默认掩码，点眼睛切明文（切换后才做变量高亮——掩码态下高亮没有意义）
+function AuthSecret({
+  label,
+  value,
+  onChange,
+  placeholder,
+  isVarSet,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  isVarSet: (name: string) => boolean;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="field-row">
+      <label>{label}</label>
+      <div className="secret-field">
+        {show ? (
+          <VarInput className="auth-input" wrapClassName="grow" value={value} placeholder={placeholder} onChange={onChange} isVarSet={isVarSet} />
+        ) : (
+          <input className="auth-input" type="password" value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+        )}
+        <button type="button" className="secret-toggle" title={show ? "隐藏" : "显示"} onClick={() => setShow((v) => !v)}>
+          <EyeIcon off={!show} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// 认证面板：顶部选方式 → 该方式的字段 → 底部「发送时实际附加什么」预览
+function AuthPanel({
+  d,
+  set,
+  isVarSet,
+}: {
+  d: ReqDraft;
+  set: (patch: Partial<ReqDraft>) => void;
+  isVarSet: (name: string) => boolean;
+}) {
+  const meta = AUTH_TYPE_METAS.find((m) => m.value === d.authType) ?? AUTH_TYPE_METAS[0];
+  // 认证配置一改，之前换到的 access_token 就可能不再对应，直接作废缓存
+  const setAuth = (patch: Partial<ReqDraft>) => {
+    clearTokenCache();
+    set(patch);
+  };
+  const preview = authPreview(d);
+  return (
+    <div className="auth-panel">
+      <div className="field-row auth-type-row">
+        <label>认证方式</label>
+        <Select
+          className="field-select"
+          value={d.authType}
+          options={AUTH_TYPE_METAS.map((m) => ({ value: m.value, label: m.label }))}
+          onChange={(v) => setAuth({ authType: v as AuthType })}
+          ariaLabel="认证方式"
+        />
+        <span className="auth-type-zh">{meta.zh}</span>
+      </div>
+
+      {d.authType === "basic" && (
+        <>
+          <AuthText label="用户名" value={d.authBasicUser} onChange={(v) => setAuth({ authBasicUser: v })} placeholder="{{user}}" isVarSet={isVarSet} />
+          <AuthSecret label="密码" value={d.authBasicPass} onChange={(v) => setAuth({ authBasicPass: v })} placeholder="{{password}}" isVarSet={isVarSet} />
+        </>
+      )}
+
+      {d.authType === "bearer" && (
+        <AuthText label="令牌" value={d.authBearerToken} onChange={(v) => setAuth({ authBearerToken: v })} placeholder="{{token}}" isVarSet={isVarSet} />
+      )}
+
+      {d.authType === "apikey" && (
+        <>
+          <AuthText label="键名" value={d.authApikeyKey} onChange={(v) => setAuth({ authApikeyKey: v })} placeholder="X-API-Key" isVarSet={isVarSet} />
+          <AuthSecret label="值" value={d.authApikeyValue} onChange={(v) => setAuth({ authApikeyValue: v })} placeholder="{{apiKey}}" isVarSet={isVarSet} />
+          <div className="field-row">
+            <label>位置</label>
+            <Select
+              className="field-select"
+              value={d.authApikeyIn}
+              options={[
+                { value: "header", label: "请求头（Header）" },
+                { value: "query", label: "查询参数（Query）" },
+              ]}
+              onChange={(v) => setAuth({ authApikeyIn: v as "header" | "query" })}
+            />
+          </div>
+        </>
+      )}
+
+      {d.authType === "digest" && (
+        <>
+          <AuthText label="用户名" value={d.authDigestUser} onChange={(v) => setAuth({ authDigestUser: v })} placeholder="{{user}}" isVarSet={isVarSet} />
+          <AuthSecret label="密码" value={d.authDigestPass} onChange={(v) => setAuth({ authDigestPass: v })} placeholder="{{password}}" isVarSet={isVarSet} />
+        </>
+      )}
+
+      {d.authType === "oauth2" && (
+        <>
+          <AuthText
+            label="Token URL"
+            value={d.authOauth2TokenUrl}
+            onChange={(v) => setAuth({ authOauth2TokenUrl: v })}
+            placeholder="https://auth.example.com/oauth/token"
+            isVarSet={isVarSet}
+          />
+          <AuthText label="Client ID" value={d.authOauth2ClientId} onChange={(v) => setAuth({ authOauth2ClientId: v })} placeholder="{{clientId}}" isVarSet={isVarSet} />
+          <AuthSecret
+            label="Client Secret"
+            value={d.authOauth2ClientSecret}
+            onChange={(v) => setAuth({ authOauth2ClientSecret: v })}
+            placeholder="{{clientSecret}}"
+            isVarSet={isVarSet}
+          />
+          <AuthText label="Scope" value={d.authOauth2Scope} onChange={(v) => setAuth({ authOauth2Scope: v })} placeholder="可选，空格分隔" isVarSet={isVarSet} />
+          <div className="field-row">
+            <label>凭据位置</label>
+            <Select
+              className="field-select"
+              value={d.authOauth2ClientAuth}
+              options={[
+                { value: "header", label: "Basic 请求头" },
+                { value: "body", label: "表单体" },
+              ]}
+              onChange={(v) => setAuth({ authOauth2ClientAuth: v as "header" | "body" })}
+            />
+          </div>
+        </>
+      )}
+
+      {preview && (
+        <div className="auth-preview">
+          <span className="auth-preview-label">{preview.label}</span>
+          <code>{preview.code}</code>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 请求体面板：类型平铺成一排 chip（借 Apifox；不做 Postman 的 raw + 语言二级下拉——
+// BodySpec.type 本就是平铺的，多一层映射只会凭空造概念），下面按类型给对应编辑区。
+function BodyPanel({ d, set }: { d: ReqDraft; set: (patch: Partial<ReqDraft>) => void }) {
+  const t = d.bodyType;
+  const isTextual = t === "json" || t === "xml" || t === "text";
+  const placeholder = t === "json" ? '{\n  "name": "apicase"\n}' : t === "xml" ? "<root>\n  <name>apicase</name>\n</root>" : "请求体文本";
+
+  async function pickFile() {
+    const picked = await open({ multiple: false, directory: false, title: "选择请求体文件" });
+    if (typeof picked === "string") set({ bodyFilePath: picked });
+  }
+
+  return (
+    <div className="body-panel">
+      <div className="body-type-chips" role="radiogroup" aria-label="请求体类型">
+        {BODY_TYPES.map((bt) => (
+          <button
+            key={bt.value}
+            type="button"
+            role="radio"
+            aria-checked={t === bt.value}
+            className={`body-type-chip ${t === bt.value ? "active" : ""}`}
+            onClick={() => set({ bodyType: bt.value })}
+          >
+            {bt.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Content-Type 行：text / binary 可改，其余给出实际会发的值 */}
+      {t !== "none" && (
+        <div className="body-ct-row">
+          <span className="body-ct-label">Content-Type</span>
+          {t === "text" || t === "binary" ? (
+            <input
+              className="ct-input"
+              value={d.bodyContentType}
+              placeholder={t === "text" ? DEFAULT_CONTENT_TYPE.text : d.bodyFilePath ? guessContentType(d.bodyFilePath) : "application/octet-stream"}
+              onChange={(e) => set({ bodyContentType: e.target.value })}
+            />
+          ) : (
+            <code className="body-ct-value">{t === "form-data" ? "multipart/form-data" : DEFAULT_CONTENT_TYPE[t]}</code>
+          )}
+        </div>
+      )}
+
+      {t === "none" && <div className="panel-hint">无请求体</div>}
+      {isTextual && (
+        <textarea className="body-input" value={d.bodyText} placeholder={placeholder} onChange={(e) => set({ bodyText: e.target.value })} />
+      )}
+      {(t === "form-urlencoded" || t === "form-data") && (
+        <KVTable
+          rows={d.bodyForm}
+          onChange={(rows) => set({ bodyForm: rows })}
+          namePlaceholder="字段名"
+          valuePlaceholder="字段值"
+          withDescription
+          withType={t === "form-data"} // 只有 multipart 能带文件；urlencoded 一律文本
+        />
+      )}
+      {t === "binary" && (
+        <div className="binary-picker">
+          <button type="button" className="file-pick-btn" onClick={pickFile}>
+            选择文件…
+          </button>
+          {d.bodyFilePath ? (
+            <>
+              <code className="binary-path" title={d.bodyFilePath}>
+                {d.bodyFilePath}
+              </code>
+              <button type="button" className="row-del" title="移除" onClick={() => set({ bodyFilePath: "" })}>
+                <TrashIcon />
+              </button>
+            </>
+          ) : (
+            <span className="binary-empty">未选择文件</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // 断言操作符的中文显示（存储仍用英文标识，保持 YAML 稳定）
 export const OP_LABELS: Record<AssertOp, string> = {
   eq: "等于",
@@ -109,7 +381,8 @@ export const OP_LABELS: Record<AssertOp, string> = {
   matches: "匹配",
 };
 
-// 通用键值表格（query / headers / 表单项复用）：末行填写自动追加空行，每行可勾选启用
+// 通用键值表格（query / headers / 表单项复用）：末行填写自动追加空行，每行可勾选启用。
+// form-data 传 withType 多一列「类型」：该行可切文本 / 文件，文件行的值即本地文件路径。
 export function KVTable({
   rows,
   onChange,
@@ -117,16 +390,18 @@ export function KVTable({
   valuePlaceholder = "Value",
   hideEnabled = false,
   withDescription = false,
+  withType = false,
 }: {
-  rows: KV[];
-  onChange: (rows: KV[]) => void;
+  rows: FormItem[];
+  onChange: (rows: FormItem[]) => void;
   namePlaceholder?: string;
   valuePlaceholder?: string;
   hideEnabled?: boolean; // 无启用/停用语义的场景（如环境变量）隐藏勾选列
   withDescription?: boolean; // 多一列「描述」（数据模型支持 description 的场景，如参数/请求头/表单）
+  withType?: boolean; // 多一列「类型」（仅 form-data：文本 / 文件）
 }) {
   const display = rows.length ? rows : [{ name: "", value: "", enabled: true }];
-  function update(i: number, patch: Partial<KV>) {
+  function update(i: number, patch: Partial<FormItem>) {
     const next = display.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
     const last = next[next.length - 1];
     if (last.name || last.value || last.description) next.push({ name: "", value: "", enabled: true });
@@ -135,12 +410,18 @@ export function KVTable({
   function remove(i: number) {
     onChange(display.filter((_, idx) => idx !== i));
   }
+  // 文件行：值列即本地文件路径，改由系统文件选择框填
+  async function pickFile(i: number) {
+    const picked = await open({ multiple: false, directory: false, title: "选择上传文件" });
+    if (typeof picked === "string") update(i, { value: picked });
+  }
   return (
     <table className="kv-table grid">
       <thead>
         <tr>
           {!hideEnabled && <th className="ck-col"></th>}
           <th>名称</th>
+          {withType && <th className="type-col">类型</th>}
           <th>值</th>
           {withDescription && <th>描述</th>}
           <th></th>
@@ -148,7 +429,8 @@ export function KVTable({
       </thead>
       <tbody>
         {display.map((r, i) => {
-          const filled = !!(r.name || r.value || r.description);
+          const isFile = r.type === "file";
+          const filled = !!(r.name || r.value || r.description || isFile);
           return (
             <tr key={i}>
               {!hideEnabled && (
@@ -159,9 +441,46 @@ export function KVTable({
               <td>
                 <input value={r.name} placeholder={namePlaceholder} onChange={(e) => update(i, { name: e.target.value })} />
               </td>
-              <td>
-                <input value={r.value} placeholder={valuePlaceholder} onChange={(e) => update(i, { value: e.target.value })} />
-              </td>
+              {withType && (
+                <td className="type-col">
+                  <Select
+                    className="form-type-select"
+                    value={isFile ? "file" : "text"}
+                    options={[
+                      { value: "text", label: "文本" },
+                      { value: "file", label: "文件" },
+                    ]}
+                    ariaLabel="字段类型"
+                    // 值的语义整个换了（文本 ↔ 路径），一并清空，免得把一段文本当路径发出去
+                    onChange={(v) => update(i, { type: v === "file" ? "file" : undefined, value: "" })}
+                  />
+                </td>
+              )}
+              {isFile ? (
+                <td className="file-cell">
+                  <div className="cell-file">
+                    <button type="button" className="cell-file-btn" onClick={() => pickFile(i)}>
+                      选择文件…
+                    </button>
+                    {r.value ? (
+                      <>
+                        <code className="cell-file-path" title={r.value}>
+                          {r.value}
+                        </code>
+                        <button type="button" className="row-del" title="移除文件" onClick={() => update(i, { value: "" })}>
+                          <TrashIcon />
+                        </button>
+                      </>
+                    ) : (
+                      <span className="cell-file-empty">未选择文件</span>
+                    )}
+                  </div>
+                </td>
+              ) : (
+                <td>
+                  <input value={r.value} placeholder={valuePlaceholder} onChange={(e) => update(i, { value: e.target.value })} />
+                </td>
+              )}
               {withDescription && (
                 <td>
                   <input value={r.description || ""} placeholder="描述" onChange={(e) => update(i, { description: e.target.value })} />
@@ -183,6 +502,7 @@ export function KVTable({
 }
 
 // 断言表：目标 / 操作符 / 期望值（仅配置；运行结果在响应区「断言」栏展示）
+// 视觉与参数/请求头表一致——同一套 .kv-table.grid Excel 网格
 function AssertTable({
   rows,
   onChange,
@@ -201,7 +521,7 @@ function AssertTable({
     onChange(display.filter((_, idx) => idx !== i));
   }
   return (
-    <table className="kv-table assert-table">
+    <table className="kv-table grid assert-table">
       <thead>
         <tr>
           <th>目标</th>
@@ -226,7 +546,8 @@ function AssertTable({
                   onChange={(v) => update(i, { op: v as AssertOp })}
                 />
               </td>
-              <td>
+              {/* exists / notExists 无需期望值：单元格置灰示意不可填 */}
+              <td className={noVal ? "na-cell" : ""}>
                 {!noVal && <input value={r.value || ""} placeholder="期望值" onChange={(e) => update(i, { value: e.target.value })} />}
               </td>
               <td className="op-cell">
@@ -286,6 +607,7 @@ export function RequestEditor({
   onRenameId,
   protocol,
   onProtocol,
+  isVarSet = () => true,
 }: {
   value: ReqDraft;
   onChange: (d: ReqDraft) => void;
@@ -302,6 +624,7 @@ export function RequestEditor({
   onRenameId?: (newId: string) => void;
   protocol?: string; // 请求协议（当前仅 http）
   onProtocol?: (p: string) => void;
+  isVarSet?: (name: string) => boolean; // 判断某 {{变量}} 在当前环境是否已设值（用于 URL 高亮）
 }) {
   const [tab, setTab] = useState<string>("params");
   const d = value;
@@ -352,14 +675,16 @@ export function RequestEditor({
             ariaLabel="请求方法"
             optionClassName={methodClass}
           />
-          <input
+          <VarInput
             className="url-input"
+            wrapClassName="grow"
             value={d.url}
             placeholder="https://api.example.com/path"
-            onChange={(e) => onUrlChange(e.target.value)}
+            onChange={onUrlChange}
             onKeyDown={(e) => {
               if (e.key === "Enter") onSend();
             }}
+            isVarSet={isVarSet}
           />
         </div>
         <button className="send-btn" onClick={onSend} disabled={sending}>
@@ -382,95 +707,8 @@ export function RequestEditor({
         {tab === "headers" && (
           <KVTable rows={d.headers} onChange={(rows) => set({ headers: rows })} namePlaceholder="请求头名称" valuePlaceholder="值" withDescription />
         )}
-        {tab === "auth" && (
-          <div className="auth-panel">
-            <div className="field-row">
-              <label>类型</label>
-              <Select
-                className="field-select"
-                value={d.authType}
-                options={AUTH_TYPES.map((t) => ({ value: t, label: t }))}
-                onChange={(v) => set({ authType: v as AuthType })}
-              />
-            </div>
-            {d.authType === "bearer" && (
-              <div className="field-row">
-                <label>令牌</label>
-                <input value={d.authBearerToken} placeholder="{{token}}" onChange={(e) => set({ authBearerToken: e.target.value })} />
-              </div>
-            )}
-            {d.authType === "basic" && (
-              <>
-                <div className="field-row">
-                  <label>用户名</label>
-                  <input value={d.authBasicUser} onChange={(e) => set({ authBasicUser: e.target.value })} />
-                </div>
-                <div className="field-row">
-                  <label>密码</label>
-                  <input value={d.authBasicPass} onChange={(e) => set({ authBasicPass: e.target.value })} />
-                </div>
-              </>
-            )}
-            {d.authType === "apikey" && (
-              <>
-                <div className="field-row">
-                  <label>键名</label>
-                  <input value={d.authApikeyKey} onChange={(e) => set({ authApikeyKey: e.target.value })} />
-                </div>
-                <div className="field-row">
-                  <label>值</label>
-                  <input value={d.authApikeyValue} onChange={(e) => set({ authApikeyValue: e.target.value })} />
-                </div>
-                <div className="field-row">
-                  <label>位置</label>
-                  <Select
-                    className="field-select"
-                    value={d.authApikeyIn}
-                    options={[
-                      { value: "header", label: "header" },
-                      { value: "query", label: "query" },
-                    ]}
-                    onChange={(v) => set({ authApikeyIn: v as "header" | "query" })}
-                  />
-                </div>
-              </>
-            )}
-            {d.authType === "none" && <div className="panel-hint">无认证</div>}
-          </div>
-        )}
-        {tab === "body" && (
-          <div className="body-panel">
-            <div className="body-type-bar">
-              <Select
-                className="bodytype-select"
-                value={d.bodyType}
-                options={BODY_TYPES.map((t) => ({ value: t, label: t }))}
-                onChange={(v) => set({ bodyType: v as BodyType })}
-              />
-              {d.bodyType === "text" && (
-                <input
-                  className="ct-input"
-                  value={d.bodyContentType}
-                  placeholder="Content-Type（可选）"
-                  onChange={(e) => set({ bodyContentType: e.target.value })}
-                />
-              )}
-            </div>
-            {d.bodyType === "none" && <div className="panel-hint">无请求体</div>}
-            {(d.bodyType === "json" || d.bodyType === "text") && (
-              <textarea
-                className="body-input"
-                value={d.bodyText}
-                placeholder={d.bodyType === "json" ? '{"name":"apicase"}' : "请求体文本"}
-                onChange={(e) => set({ bodyText: e.target.value })}
-              />
-            )}
-            {(d.bodyType === "form-urlencoded" || d.bodyType === "form-data") && (
-              <KVTable rows={d.bodyForm} onChange={(rows) => set({ bodyForm: rows })} namePlaceholder="字段名" valuePlaceholder="字段值" withDescription />
-            )}
-            {d.bodyType === "form-data" && <div className="panel-hint">form-data 发送暂仅支持文本字段</div>}
-          </div>
-        )}
+        {tab === "auth" && <AuthPanel d={d} set={set} isVarSet={isVarSet} />}
+        {tab === "body" && <BodyPanel d={d} set={set} />}
         {tab === "outputs" && onOutputs && (
           <div className="outputs-panel">
             <div className="panel-hint">从响应提取变量，供下游请求 <code>{"{{requests.本请求.outputs.变量名}}"}</code> 引用。</div>
