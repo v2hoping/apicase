@@ -287,6 +287,60 @@ export function analyzeCase(text: string): { valid: boolean; case?: Case; error?
   return { valid: true, case: parseCase(text) };
 }
 
+/**
+ * 工作空间级请求设置（application.yml 的 `settings:` 键）。跟随项目走 git，团队共享。
+ * 三项都作用于**单请求与 flow 执行**——两者共用后端 send_request 通道。
+ */
+export interface WorkspaceSettings {
+  verifySsl: boolean; // SSL/TLS 证书验证；关闭后接受任何服务端证书（降安全，UI 警示）
+  useCustomCa: boolean; // 是否启用自定义 CA
+  caCert: string; // CA 证书文件，**相对工作空间根**的路径（绝对路径换机器就失效）
+  timeoutMs: number; // 整个请求的超时上限（毫秒），0 = 不限制
+}
+
+export const DEFAULT_WS_SETTINGS: WorkspaceSettings = {
+  verifySsl: true,
+  useCustomCa: false,
+  caCert: "",
+  timeoutMs: 0,
+};
+
+/**
+ * 从 application.yml 文本解析 settings。
+ * 容错同 parseEnvironments：解析失败 / 键缺失 / 类型不符一律回落默认，绝不抛错——
+ * 配置文件是手写的，一处写错不该让整个请求功能瘫掉。
+ */
+export function parseSettings(text: string): WorkspaceSettings {
+  let obj: unknown;
+  try {
+    obj = load(text) ?? {};
+  } catch {
+    return { ...DEFAULT_WS_SETTINGS };
+  }
+  if (!isPlainObject(obj) || !isPlainObject(obj.settings)) return { ...DEFAULT_WS_SETTINGS };
+  const s = obj.settings;
+  // 超时：非数字 / 负数 / 非有限值一律回 0（不限制），小数取整
+  const rawTimeout = typeof s.timeoutMs === "number" ? s.timeoutMs : Number(s.timeoutMs);
+  const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? Math.floor(rawTimeout) : 0;
+  return {
+    // 只有显式写 false 才关闭：键缺失或写错类型都按「校验开启」这一安全侧兜底
+    verifySsl: s.verifySsl !== false,
+    useCustomCa: s.useCustomCa === true,
+    caCert: typeof s.caCert === "string" ? s.caCert.trim() : "",
+    timeoutMs,
+  };
+}
+
+/** settings → YAML 对象；全为默认时返回 undefined，调用方据此整键不落盘（不给既有配置添噪）。 */
+function serializeSettings(s: WorkspaceSettings): Record<string, unknown> | undefined {
+  const o: Record<string, unknown> = {};
+  if (!s.verifySsl) o.verifySsl = false;
+  if (s.useCustomCa) o.useCustomCa = true;
+  if (s.caCert.trim()) o.caCert = s.caCert.trim();
+  if (s.timeoutMs > 0) o.timeoutMs = Math.floor(s.timeoutMs);
+  return Object.keys(o).length ? o : undefined;
+}
+
 /** 从 application.yml 文本解析 environment：`{ 环境名: { 变量: 值 } }`（值统一转字符串）。 */
 export function parseEnvironments(text: string): Record<string, Record<string, string>> {
   let obj: unknown;
@@ -307,8 +361,15 @@ export function parseEnvironments(text: string): Record<string, Record<string, s
   return out;
 }
 
-/** 把可视化编辑的 environment 写回 application.yml（保留其它顶层键，注释不可避免地丢失）。 */
-export function dumpApplicationConfig(baseText: string, environment: Record<string, Record<string, string>>): string {
+/**
+ * 把可视化编辑的 environment / settings 写回 application.yml（保留其它顶层键，注释不可避免地丢失）。
+ * settings 省略时不动原文该键；全为默认值则整键删除（避免写出一堆等于默认的噪声）。
+ */
+export function dumpApplicationConfig(
+  baseText: string,
+  environment: Record<string, Record<string, string>>,
+  settings?: WorkspaceSettings,
+): string {
   let obj: unknown;
   try {
     obj = load(baseText);
@@ -317,6 +378,15 @@ export function dumpApplicationConfig(baseText: string, environment: Record<stri
   }
   const base: Record<string, unknown> = isPlainObject(obj) ? { ...obj } : {};
   base.environment = environment;
+  if (settings) {
+    // 只接管自己认得的四个键：原文里其它手写键（未来字段 / 用户自定义）原样保留，
+    // 否则一次可视化保存就会把它们悄悄吃掉。
+    const prev: Record<string, unknown> = isPlainObject(base.settings) ? { ...base.settings } : {};
+    for (const k of ["verifySsl", "useCustomCa", "caCert", "timeoutMs"]) delete prev[k];
+    const merged = { ...prev, ...(serializeSettings(settings) || {}) };
+    if (Object.keys(merged).length) base.settings = merged;
+    else delete base.settings;
+  }
   return dump(base, { lineWidth: 100, noRefs: true });
 }
 

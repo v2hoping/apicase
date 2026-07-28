@@ -1,18 +1,33 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Case, Request, RequestOutput, Assertion, AssertOp, UiNodes, analyzeCase, dumpCase, splitQueryFromUrl, parseEnvironments, dumpApplicationConfig } from "./case";
+import {
+  Case,
+  Request,
+  RequestOutput,
+  Assertion,
+  AssertOp,
+  UiNodes,
+  WorkspaceSettings,
+  DEFAULT_WS_SETTINGS,
+  analyzeCase,
+  dumpCase,
+  splitQueryFromUrl,
+  parseEnvironments,
+  parseSettings,
+  dumpApplicationConfig,
+} from "./case";
 import { ReqDraft, requestToDraft, draftToRequest, emptyDraft } from "./draft";
 import { sendWithAuth } from "./auth";
 import { RequestEditor, KVTable, METHODS, methodClass, Select, OP_LABELS } from "./RequestEditor";
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
 import { TerminalPane } from "./TerminalPane";
-import { type ThemeMode, loadThemeMode, saveThemeMode, resolveTheme, applyTheme } from "./theme";
-import { loadAppSettings, saveAppSettings, filterExistingPaths, pathExists } from "./settings";
-import { type ProxyConfig, type ProxyMode, loadProxyConfig, saveProxyConfig, proxyPayload } from "./proxy";
+import { type ThemeMode, resolveTheme, applyTheme } from "./theme";
+import { type AppSettings, loadCachedSettings, loadAppSettings, saveAppSettings, filterExistingPaths, pathExists } from "./settings";
+import { type ProxyConfig, type ProxyMode, proxyPayload } from "./proxy";
 import { AiChat } from "./AiChat";
 import { MarkdownEditor } from "./markdown";
 import { RunContext, AssertResult, resolveDraft, extractOutputs, evalAssertions } from "./flow";
@@ -31,10 +46,6 @@ import {
   buildLookup,
   findConflict,
   isDefaultBinding,
-  loadOverrides,
-  saveOverrides,
-  loadShortcutsEnabled,
-  saveShortcutsEnabled,
 } from "./shortcuts";
 import "./App.css";
 
@@ -55,6 +66,20 @@ interface DirEntry {
   name: string;
   path: string;
   isDir: boolean;
+}
+
+// 应用自身的存储位置（后端 app_paths 命令返回）；exists 决定「显示位置」是否可点
+interface AppPaths {
+  settingsFile: string;
+  settingsFileExists: boolean;
+  home: string; // 用户主目录，供 tildify 缩写显示
+}
+
+/** 显示用：把主目录前缀缩成 `~`（省 15+ 字符，多数路径因此能一行放下）。原始路径仍用于打开文件管理器。 */
+function tildify(path: string, home: string): string {
+  if (!home || !path.startsWith(home)) return path;
+  const rest = path.slice(home.length);
+  return rest === "" || rest.startsWith("/") || rest.startsWith("\\") ? `~${rest}` : path;
 }
 
 // case 内部统一模型：单请求 = 只有 1 个请求；每个请求复用 ReqDraft
@@ -405,7 +430,7 @@ function TreeNode({
       <div
         ref={rowRef}
         className={`tree-row ${isSelected ? "selected" : ""} ${menuPath === entry.path ? "menu-open" : ""}`}
-        style={{ paddingLeft: 6 + depth * 14 }}
+        style={{ paddingLeft: 16 + depth * 14 }}
         title={entry.name}
         onClick={() => (entry.isDir ? onToggle(entry) : onSelect(entry.path))}
         onContextMenu={(e) => onContext(e, entry)}
@@ -432,7 +457,7 @@ function TreeNode({
         <div className="tree-children" style={{ "--tree-depth": depth } as React.CSSProperties}>
           {/* 43 = 箭头 16 + 图标 15 + 两处 6px 间距，让提示文字与同级文件名左对齐 */}
           {children.length === 0 && (
-            <div className="tree-empty" style={{ paddingLeft: 6 + (depth + 1) * 14 + 43 }}>
+            <div className="tree-empty" style={{ paddingLeft: 16 + (depth + 1) * 14 + 43 }}>
               空文件夹
             </div>
           )}
@@ -564,6 +589,65 @@ function PromptDialog({
   );
 }
 
+/** 文案中被操作的对象（文件名、环境名、动作名）：以样式区分，不用书名号包裹 */
+function Obj({ children }: { children: ReactNode }) {
+  return <span className="q">{children}</span>;
+}
+
+/**
+ * 确认对话框。取代 window.confirm——系统弹窗不跟随深色主题、按钮只能是「确定/取消」，
+ * 而删除这类操作应当把动作写进按钮（「删除」而不是「确定」），破坏性的还要标红。
+ */
+type ConfirmOptions = {
+  title: ReactNode;
+  message?: ReactNode; // 副标题：补充后果，如「此操作不可撤销」
+  confirmLabel?: string; // 默认「确定」；破坏性操作应写明动作
+  danger?: boolean; // 主按钮转红
+  onConfirm: () => void;
+};
+
+function ConfirmDialog({ title, message, confirmLabel = "确定", danger, onConfirm, onClose }: ConfirmOptions & { onClose: () => void }) {
+  const okRef = useRef<HTMLButtonElement>(null);
+  // 焦点直接落在主按钮上：回车即确认、Esc 取消，与系统弹窗的键盘习惯一致
+  useEffect(() => okRef.current?.focus(), []);
+  return (
+    <div className="modal-mask" onMouseDown={onClose}>
+      <div
+        className="modal"
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onClose();
+        }}
+      >
+        <div className="modal-title">{title}</div>
+        {message && <div className="modal-message">{message}</div>}
+        <div className="modal-actions">
+          <button className="btn-ghost" onClick={onClose}>
+            取消
+          </button>
+          <button
+            ref={okRef}
+            className={danger ? "btn-danger" : "btn-primary"}
+            onClick={() => {
+              onConfirm();
+              onClose();
+            }}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 返回 [要渲染的节点, 发起确认的函数]。各组件各持一份，无需全局状态。 */
+function useConfirm() {
+  const [opts, setOpts] = useState<ConfirmOptions | null>(null);
+  const node = opts ? <ConfirmDialog {...opts} onClose={() => setOpts(null)} /> : null;
+  return [node, setOpts] as const;
+}
+
 // 可视化新建 case 对话框（名称 + method + URL）
 function NewCaseDialog({
   onOk,
@@ -647,6 +731,7 @@ function ShortcutsSettings({
   onToggleEnabled: (next: boolean) => void;
 }) {
   const [recording, setRecording] = useState<ActionId | null>(null);
+  const [confirmNode, askConfirm] = useConfirm();
   const bindings = resolveBindings(overrides);
 
   // 录制态：capture 阶段全局捕获 + stopPropagation，避免录制时触发全局快捷键分发
@@ -670,8 +755,14 @@ function ShortcutsSettings({
       if (!accel) return; // 仅按了修饰键，等待主键
       const conflict = findConflict(resolveBindings(overrides), accel, rec);
       if (conflict) {
-        const ok = window.confirm(`${formatAccel(accel)} 已被「${ACTION_MAP[conflict].label}」占用，替换？（原动作将被解绑）`);
-        if (ok) onChange({ ...overrides, [conflict]: "", [rec]: accelKey(accel) });
+        // 确认是异步的，rec 在此闭包里捕获——setRecording(null) 不影响已取到的值
+        const target = rec;
+        askConfirm({
+          title: `${formatAccel(accel)} 已被占用`,
+          message: <>原绑定 <Obj>{ACTION_MAP[conflict].label}</Obj> 将被解绑</>,
+          confirmLabel: "替换",
+          onConfirm: () => onChange({ ...overrides, [conflict]: "", [target]: accelKey(accel) }),
+        });
       } else {
         onChange({ ...overrides, [rec]: accelKey(accel) });
       }
@@ -699,8 +790,8 @@ function ShortcutsSettings({
 
   return (
     <div className="settings-section">
-      <div className="settings-title sc-title-row">
-        <span>快捷键</span>
+      {/* 标题已由左导航指明，这行只剩右侧操作 */}
+      <div className="sc-title-row">
         <span className="sc-title-actions">
           <button
             type="button"
@@ -755,6 +846,7 @@ function ShortcutsSettings({
           </div>
         ))}
       </div>
+      {confirmNode}
     </div>
   );
 }
@@ -817,6 +909,63 @@ const PROXY_OPTIONS: { mode: ProxyMode; label: string; desc: string }[] = [
   { mode: "custom", label: "自定义", desc: "指定 http / https 代理地址" },
 ];
 
+// 「显示位置」图标：方框 + 右上外指箭头（通用的 reveal / open-external 语义）
+function RevealIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M13 9v3.5a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1H7" strokeLinecap="round" />
+      <path d="M9.5 2.5H13.5V6.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M13.5 2.5 8 8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/**
+ * 一行「位置」：标签 + 只读全路径 + 在系统文件管理器中显示。
+ * exists 省略时视为存在（工作空间这类必然存在的路径不必额外查一次盘）；
+ * 明确为 false 时禁用按钮——对不存在的路径调 revealItemInDir 会直接抛错。
+ */
+function PathRow({
+  label,
+  path,
+  note,
+  exists,
+  home = "",
+}: {
+  label: string;
+  path: string;
+  note?: string;
+  exists?: boolean;
+  home?: string;
+}) {
+  const usable = path.trim() !== "" && exists !== false;
+  return (
+    <div className="path-row">
+      <div className="field-row">
+        <label>{label}</label>
+        {/* 用可换行的文本块而非 input：路径很长，截断了就失去「告诉用户在哪」的意义。
+            显示走 ~ 缩写，title 给出未缩写的原路径 */}
+        <div className="path-value" title={path}>
+          <span className="path-text">{path ? tildify(path, home) : "—"}</span>
+          {/* 状态标签就地贴在路径末尾——它同时解释了右侧按钮为何禁用 */}
+          {exists === false && <span className="path-tag">尚未创建</span>}
+        </div>
+        <button
+          type="button"
+          className="path-reveal"
+          title={usable ? "在文件管理器中显示" : "该路径尚不存在"}
+          aria-label="在文件管理器中显示"
+          disabled={!usable}
+          onClick={() => revealItemInDir(path).catch(() => {})}
+        >
+          <RevealIcon />
+        </button>
+      </div>
+      {note && <div className="path-note">{note}</div>}
+    </div>
+  );
+}
+
 function SettingsPage({
   environments,
   onChange,
@@ -830,6 +979,8 @@ function SettingsPage({
   onThemeChange,
   proxyConfig,
   onProxyChange,
+  wsSettings,
+  onWsSettingsChange,
 }: {
   environments: Record<string, Record<string, string>>;
   onChange: (next: Record<string, Record<string, string>>) => void;
@@ -843,12 +994,14 @@ function SettingsPage({
   onThemeChange: (next: ThemeMode) => void;
   proxyConfig: ProxyConfig;
   onProxyChange: (next: ProxyConfig) => void;
+  wsSettings: WorkspaceSettings;
+  onWsSettingsChange: (next: WorkspaceSettings) => void;
 }) {
-  // 导航分两组：上＝跟随**项目**（工作空间 / application.yml），下＝跟随**应用**（localStorage / app 存储）
+  // 导航分两组：上＝跟随**项目**（工作空间 / application.yml），下＝跟随**应用**（settings.json）
   const NAV_PROJECT = ["通用", "环境"] as const;
   const NAV_APP = ["主题", "代理", "快捷键", "关于"] as const;
   const NAV = [...NAV_PROJECT, ...NAV_APP] as const;
-  const [section, setSection] = useState<(typeof NAV)[number]>("环境");
+  const [section, setSection] = useState<(typeof NAV)[number]>("通用");
   const envNames = Object.keys(environments);
   const [selEnv, setSelEnv] = useState(envNames[0] || "");
   const cur = envNames.includes(selEnv) ? selEnv : envNames[0] || "";
@@ -856,7 +1009,51 @@ function SettingsPage({
   const shownEnvs = envNames.filter((e) => e.toLowerCase().includes(envQuery.trim().toLowerCase()));
   // 改名走草稿：逐字改 key 会让 activeEnv 抖动，故失焦/回车才提交
   const [nameDraft, setNameDraft] = useState(cur);
-  useEffect(() => setNameDraft(cur), [cur]);
+  // 重名提示：就地显示在名称输入框下方，不弹模态——用户正要改这个名字
+  const [renameError, setRenameError] = useState("");
+  useEffect(() => {
+    setNameDraft(cur);
+    setRenameError("");
+  }, [cur]);
+
+  // 应用侧存储位置（配置目录 / settings.json）：由 Tauri 按 identifier 推导，各平台不同，
+  // 只能问后端要。进入「通用」页时取一次，顺带拿到「是否已创建」用于禁用「显示位置」。
+  const [appPaths, setAppPaths] = useState<AppPaths | null>(null);
+  useEffect(() => {
+    if (section !== "通用") return;
+    let alive = true;
+    invoke<AppPaths>("app_paths")
+      .then((p) => alive && setAppPaths(p))
+      .catch(() => alive && setAppPaths(null));
+    return () => {
+      alive = false;
+    };
+  }, [section]);
+
+  const [confirmNode, askConfirm] = useConfirm();
+
+  // 「自定义 CA」下拉的候选：工作空间内的证书文件（相对路径）。
+  // 每次进入「通用」页重扫一次——用户常是刚把证书拷进工作空间就回来选。
+  const [certFiles, setCertFiles] = useState<string[]>([]);
+  useEffect(() => {
+    if (section !== "通用" || !workspacePath) return;
+    let alive = true;
+    invoke<string[]>("list_cert_files", { root: workspacePath })
+      .then((files) => alive && setCertFiles(files))
+      .catch(() => alive && setCertFiles([]));
+    return () => {
+      alive = false;
+    };
+  }, [section, workspacePath]);
+  // 已配置的证书当前扫不到（被删 / 改名 / 换了工作空间）：仍列进候选并给出提示，不静默丢弃设置
+  const caCertMissing = !!wsSettings.caCert && certFiles.length > 0 && !certFiles.includes(wsSettings.caCert);
+  const caCertOptions = useMemo(
+    () => [
+      { value: "", label: "未选择" },
+      ...(caCertMissing ? [wsSettings.caCert, ...certFiles] : certFiles).map((f) => ({ value: f, label: f })),
+    ],
+    [certFiles, caCertMissing, wsSettings.caCert],
+  );
 
   function setVars(env: string, rows: { name: string; value: string; enabled?: boolean }[]) {
     const m: Record<string, string> = {};
@@ -871,23 +1068,32 @@ function SettingsPage({
     setEnvQuery(""); // 否则新环境可能被搜索词过滤掉
   }
   function delEnv(env: string) {
-    if (!window.confirm(`删除环境「${env}」？`)) return;
-    const next = { ...environments };
-    delete next[env];
-    onChange(next);
-    setSelEnv(Object.keys(next)[0] || "");
+    askConfirm({
+      title: <>删除环境 <Obj>{env}</Obj>？</>,
+      message: "其中的变量一并移除",
+      confirmLabel: "删除",
+      danger: true,
+      onConfirm: () => {
+        const next = { ...environments };
+        delete next[env];
+        onChange(next);
+        setSelEnv(Object.keys(next)[0] || "");
+      },
+    });
   }
   function commitRename() {
     const n = nameDraft.trim();
     if (!n || n === cur) {
       setNameDraft(cur);
+      setRenameError("");
       return;
     }
     if (environments[n]) {
-      window.alert("环境已存在");
-      setNameDraft(cur);
+      // 保留用户输入而非回滚：他要的是改个名字，回滚等于让他从头再来
+      setRenameError(`环境 ${n} 已存在`);
       return;
     }
+    setRenameError("");
     const next: Record<string, Record<string, string>> = {};
     for (const [k, v] of Object.entries(environments)) next[k === cur ? n : k] = v; // 重建以保持顺序
     onChange(next);
@@ -909,7 +1115,6 @@ function SettingsPage({
       <div className={`settings-panel ${section === "环境" ? "is-env" : ""}`}>
         {section === "环境" && (
           <div className="settings-section env-manage">
-            <div className="settings-title">环境</div>
             <div className="env-manage-body">
               <div className="env-side">
                 <div className="env-side-head">
@@ -957,19 +1162,24 @@ function SettingsPage({
                 <div className="env-detail">
                   <div className="env-detail-head">
                     <input
-                      className="env-name-input"
+                      className={`env-name-input ${renameError ? "is-invalid" : ""}`}
                       value={nameDraft}
                       placeholder="环境名称"
-                      onChange={(e) => setNameDraft(e.target.value)}
+                      onChange={(e) => {
+                        setNameDraft(e.target.value);
+                        if (renameError) setRenameError("");
+                      }}
                       onBlur={commitRename}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") e.currentTarget.blur();
                         if (e.key === "Escape") {
                           setNameDraft(cur);
+                          setRenameError("");
                           e.currentTarget.blur();
                         }
                       }}
                     />
+                    {renameError && <div className="field-error">{renameError}</div>}
                   </div>
                   <div className="env-detail-body">
                     <KVTable
@@ -991,21 +1201,118 @@ function SettingsPage({
         )}
         {section === "通用" && (
           <div className="settings-section">
-            <div className="settings-title">通用</div>
-            <div className="field-row">
-              <label>工作空间</label>
-              <input readOnly value={workspacePath} />
+
+            <div className="settings-subtitle is-first">位置</div>
+            <PathRow label="工作空间" path={workspacePath} home={appPaths?.home} />
+            <PathRow label="工作空间配置" path={configPath} home={appPaths?.home} />
+            {wsSettings.useCustomCa && wsSettings.caCert.trim() && (
+              <PathRow
+                label="CA 证书"
+                path={workspacePath ? joinPath(workspacePath, wsSettings.caCert.trim()) : wsSettings.caCert}
+                home={appPaths?.home}
+                note={`配置中记为相对路径 ${wsSettings.caCert.trim()}`}
+              />
+            )}
+            <PathRow
+              label="应用设置"
+              path={appPaths?.settingsFile || ""}
+              exists={appPaths?.settingsFileExists}
+              home={appPaths?.home}
+            />
+
+            <div className="settings-subtitle">请求</div>
+
+            {/* ① 证书验证：关闭是降安全操作，故紧跟一条常驻警示 */}
+            <div className="set-row">
+              <div className="set-row-main">
+                <div className="set-row-label">SSL/TLS 证书验证</div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={wsSettings.verifySsl}
+                title={wsSettings.verifySsl ? "关闭证书验证" : "开启证书验证"}
+                className={`sc-switch ${wsSettings.verifySsl ? "on" : ""}`}
+                onClick={() => onWsSettingsChange({ ...wsSettings, verifySsl: !wsSettings.verifySsl })}
+              >
+                <span className="sc-switch-thumb" />
+              </button>
             </div>
-            <div className="field-row">
-              <label>配置文件</label>
-              <input readOnly value={configPath} />
+            {/* 只讲当下决策要用到的：风险是什么、能用在哪。
+                原理（中间人如何无症状地解密篡改、为何请求照常返回 200）与「该设置随 application.yml
+                提交给团队」这类背景，属于知识而非状态，待内嵌文档落地后挂「了解风险」链接过去。 */}
+            {!wsSettings.verifySsl && (
+              <div className="text-warn">
+                已关闭证书验证：<b>无法确认对端身份</b>，仅用于本机 / 内网调试。
+              </div>
+            )}
+
+            {/* ② 自定义 CA：校验关掉后它不再起作用，整项灰显并说明 */}
+            <div className={`set-row ${wsSettings.verifySsl ? "" : "is-off"}`}>
+              <div className="set-row-main">
+                <div className="set-row-label">使用自定义 CA 证书</div>
+                {/* 仅在被禁用时说明原因——否则整项灰着点不动却不给缘由 */}
+                {!wsSettings.verifySsl && <div className="set-row-desc">证书验证已关闭，自定义 CA 不再起作用。</div>}
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={wsSettings.useCustomCa}
+                disabled={!wsSettings.verifySsl}
+                title={wsSettings.useCustomCa ? "停用自定义 CA" : "启用自定义 CA"}
+                className={`sc-switch ${wsSettings.useCustomCa ? "on" : ""}`}
+                onClick={() => onWsSettingsChange({ ...wsSettings, useCustomCa: !wsSettings.useCustomCa })}
+              >
+                <span className="sc-switch-thumb" />
+              </button>
+            </div>
+            {wsSettings.verifySsl && wsSettings.useCustomCa && (
+              <>
+                <div className="field-row">
+                  <label>证书文件</label>
+                  <Select
+                    className="cert-select"
+                    ariaLabel="选择 CA 证书文件"
+                    value={wsSettings.caCert}
+                    disabled={certFiles.length === 0}
+                    placeholder="未选择"
+                    options={caCertOptions}
+                    onChange={(v) => onWsSettingsChange({ ...wsSettings, caCert: v })}
+                  />
+                </div>
+                {/* 仅在两种异常态给提示：无候选、已配置项失效。正常选中时不占版面 */}
+                {certFiles.length === 0 ? (
+                  <div className="settings-hint">工作空间内未找到证书文件（.pem / .crt / .cer / .der / .ca-bundle）</div>
+                ) : (
+                  caCertMissing && <div className="settings-hint is-warn">已配置的 {wsSettings.caCert} 不在工作空间内</div>
+                )}
+              </>
+            )}
+
+            {/* ③ 超时：0 显示为空，「不填即不限制」比显示一个 0 更自然 */}
+            <div className="set-row">
+              <div className="set-row-main">
+                <div className="set-row-label">请求超时时间</div>
+              </div>
+              <div className="set-row-input">
+                <input
+                  type="number"
+                  min={0}
+                  step={100}
+                  placeholder="0（不限制）"
+                  value={wsSettings.timeoutMs || ""}
+                  onChange={(e) => {
+                    const n = Math.floor(Number(e.target.value));
+                    onWsSettingsChange({ ...wsSettings, timeoutMs: Number.isFinite(n) && n > 0 ? n : 0 });
+                  }}
+                />
+                <span className="set-row-unit">毫秒</span>
+              </div>
             </div>
           </div>
         )}
         {section === "主题" && (
           <div className="settings-section">
-            <div className="settings-title">主题</div>
-            <div className="settings-desc">选择界面外观；「跟随系统」会随操作系统的浅色/深色偏好自动切换。</div>
             <div className="theme-options">
               {THEME_OPTIONS.map((o) => (
                 <button
@@ -1023,10 +1330,6 @@ function SettingsPage({
         )}
         {section === "代理" && (
           <div className="settings-section">
-            <div className="settings-title">代理</div>
-            <div className="settings-desc">
-              控制发起 HTTP 请求时是否走代理。请求本地地址（<code>127.0.0.1</code> / <code>localhost</code>）若被系统代理拦截（常见返回 502），切到「不使用代理」即可直连。
-            </div>
             <div className="proxy-options">
               {PROXY_OPTIONS.map((o) => (
                 <button
@@ -1062,6 +1365,7 @@ function SettingsPage({
         )}
         {section === "关于" && <AboutSettings />}
       </div>
+      {confirmNode}
     </div>
   );
 }
@@ -1145,27 +1449,18 @@ function loadLayout(): LayoutFlags {
 }
 
 function App() {
+  // 应用级设置（settings.json）：首帧先用 localStorage 镜像的同步值起手，挂载后再以磁盘值为准。
+  // 只在挂载时取一次快照——后续各 state 自行演进，统一由下方写回 effect 落盘。
+  const [cachedSettings] = useState(loadCachedSettings);
+  // 确认对话框（取代 window.confirm）
+  const [confirmNode, askConfirm] = useConfirm();
   // 工作空间
   const [workspace, setWorkspace] = useState("");
   // 最近打开的工作空间：持久化到应用配置目录 settings.json（见 settings.ts）
   const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>([]);
   const settingsLoaded = useRef(false);
-  // 挂载时读取磁盘上的最近工作空间，先剔除已删除 / 移动的失效目录，再 merge 进内存
-  // （读取完成前用户可能已打开工作空间，用去重合并避免覆盖丢失），最近在前，最多 10 条。
-  // 过滤后的列表随下方写回 effect 覆盖 settings.json，失效项从文件中一并清除——
-  // 不会只在显示层剔除而磁盘数据无限累积。
-  useEffect(() => {
-    loadAppSettings().then(async (s) => {
-      const alive = await filterExistingPaths(s.recentWorkspaces);
-      setRecentWorkspaces((prev) => Array.from(new Set([...prev, ...alive])).slice(0, 10));
-      settingsLoaded.current = true;
-    });
-  }, []);
-  // 最近工作空间变化即写回；加载完成前不写，避免用初始空值覆盖磁盘。
-  useEffect(() => {
-    if (!settingsLoaded.current) return;
-    saveAppSettings({ recentWorkspaces });
-  }, [recentWorkspaces]);
+  // 磁盘上当前内容的序列化快照，用于跳过无变化的写回（见下方写回 effect 的说明）
+  const lastSavedRef = useRef<string>("");
   const [wsMenuOpen, setWsMenuOpen] = useState(false);
   const wsMenuRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -1226,6 +1521,8 @@ function App() {
   const structuredRef = useRef<HTMLDivElement>(null);
   // environment（多套环境）：从工作空间根 application.yml 读取
   const [environments, setEnvironments] = useState<Record<string, Record<string, string>>>({});
+  // 工作空间级请求设置（同一份 application.yml 的 settings: 键）：证书校验 / 自定义 CA / 超时
+  const [wsSettings, setWsSettings] = useState<WorkspaceSettings>({ ...DEFAULT_WS_SETTINGS });
   const [activeEnv, setActiveEnv] = useState("");
   const [envMenuOpen, setEnvMenuOpen] = useState(false);
   const envMenuRef = useRef<HTMLDivElement>(null);
@@ -1293,31 +1590,21 @@ function App() {
   const respResizingRef = useRef(false);
   const requestPaneRef = useRef<HTMLDivElement>(null);
 
-  // 全局快捷键 override（app 级偏好，持久化 localStorage）
-  const [scOverrides, setScOverrides] = useState<Overrides>(() => loadOverrides());
-  function onShortcutChange(next: Overrides) {
-    setScOverrides(next);
-    saveOverrides(next);
-  }
+  // 以下四项均为 app 级偏好，统一持久化到 settings.json（见 settings.ts）；
+  // 初值取自首帧缓存，挂载后由下方的加载 effect 以磁盘值校正、由写回 effect 落盘。
+  // 全局快捷键 override
+  const [scOverrides, setScOverrides] = useState<Overrides>(cachedSettings.shortcuts);
+  const onShortcutChange = setScOverrides;
   // 快捷键功能总开关：关闭时全局不分发任何快捷键
-  const [scEnabled, setScEnabled] = useState<boolean>(() => loadShortcutsEnabled());
-  function onShortcutsEnabledChange(next: boolean) {
-    setScEnabled(next);
-    saveShortcutsEnabled(next);
-  }
-
-  // 代理设置（app 级偏好，持久化 localStorage）：控制发请求是否走系统代理
-  const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(() => loadProxyConfig());
-  function onProxyChange(next: ProxyConfig) {
-    setProxyConfig(next);
-    saveProxyConfig(next);
-  }
-
+  const [scEnabled, setScEnabled] = useState<boolean>(cachedSettings.shortcutsEnabled);
+  const onShortcutsEnabledChange = setScEnabled;
+  // 代理设置：控制发请求是否走系统代理
+  const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(cachedSettings.proxy);
+  const onProxyChange = setProxyConfig;
   // 主题（浅色 / 深色 / 跟随系统）：写 data-theme（供 CSS 变量覆盖）+ 传 resolvedTheme 给终端等运行时消费者
-  const [themeMode, setThemeMode] = useState<ThemeMode>(() => loadThemeMode());
-  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() => resolveTheme(loadThemeMode()));
+  const [themeMode, setThemeMode] = useState<ThemeMode>(cachedSettings.theme);
+  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() => resolveTheme(cachedSettings.theme));
   useEffect(() => {
-    saveThemeMode(themeMode);
     setResolvedTheme(applyTheme(themeMode));
     if (themeMode !== "system") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -1325,6 +1612,44 @@ function App() {
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
   }, [themeMode]);
+
+  // 挂载时以磁盘值校正首帧缓存，并剔除已删除 / 移动的最近工作空间。
+  // 最近工作空间用去重合并而非直接覆盖：读盘完成前用户可能已经打开了工作空间。
+  // 过滤结果随下方写回 effect 覆盖 settings.json，失效项从文件中一并清除——
+  // 不会只在显示层剔除而磁盘数据无限累积。
+  useEffect(() => {
+    loadAppSettings().then(async (s) => {
+      setThemeMode(s.theme);
+      setProxyConfig(s.proxy);
+      setScOverrides(s.shortcuts);
+      setScEnabled(s.shortcutsEnabled);
+      const alive = await filterExistingPaths(s.recentWorkspaces);
+      setRecentWorkspaces((prev) => Array.from(new Set([...prev, ...alive])).slice(0, 10));
+      lastSavedRef.current = JSON.stringify({ ...s, recentWorkspaces: alive });
+      settingsLoaded.current = true;
+    });
+  }, []);
+
+  // 任一偏好变化即整份写回（settings.json 是整份覆盖，分散写会互相抹掉字段，故收敛到这一个出口）。
+  // 加载完成前不写，避免用首帧缓存覆盖磁盘上更新的值。
+  //
+  // 与磁盘内容逐字相同则跳过——这不只是省一次 IO：迁移期两种启动方式的 localStorage 按 origin
+  // 分桶（dev 是 http://localhost:1420、打包是 tauri://localhost），dev 侧看不到打包侧的旧键，
+  // 若挂载后无条件写一次，dev 空跑就会把默认值固化进 settings.json，反手覆盖掉打包版已有的设置。
+  useEffect(() => {
+    if (!settingsLoaded.current) return;
+    const next: AppSettings = {
+      recentWorkspaces,
+      theme: themeMode,
+      proxy: proxyConfig,
+      shortcuts: scOverrides,
+      shortcutsEnabled: scEnabled,
+    };
+    const serialized = JSON.stringify(next);
+    if (serialized === lastSavedRef.current) return;
+    lastSavedRef.current = serialized;
+    saveAppSettings(next);
+  }, [recentWorkspaces, themeMode, proxyConfig, scOverrides, scEnabled]);
 
   const mark = () => setDirty(true);
 
@@ -1658,16 +1983,18 @@ function App() {
     invoke("watch_workspace", { path }).catch(() => {});
   }
 
-  // 读取工作空间 environment（application.yml）并挑选活动环境
+  // 读取工作空间 application.yml：environment（挑选活动环境）+ settings（请求设置）
   async function loadEnvironments(root: string) {
     try {
       const text = await invoke<string>("read_text_file", { path: joinPath(root, "application.yml") });
       const envs = parseEnvironments(text);
       setEnvironments(envs);
+      setWsSettings(parseSettings(text));
       const names = Object.keys(envs);
       setActiveEnv(names.includes("default") ? "default" : names[0] || "");
     } catch {
       setEnvironments({});
+      setWsSettings({ ...DEFAULT_WS_SETTINGS });
       setActiveEnv("");
     }
   }
@@ -1794,7 +2121,20 @@ function App() {
   }
 
   function closeTab(path: string) {
-    if (isDirtyPath(path) && !window.confirm(`「${baseName(path)}」有未保存修改，仍关闭？`)) return;
+    if (isDirtyPath(path)) {
+      askConfirm({
+        title: <><Obj>{baseName(path)}</Obj> 有未保存修改</>,
+        message: "修改将丢失",
+        confirmLabel: "不保存并关闭",
+        danger: true,
+        onConfirm: () => doCloseTab(path),
+      });
+      return;
+    }
+    doCloseTab(path);
+  }
+
+  function doCloseTab(path: string) {
     const wasActive = path === currentCasePath;
     const idx = tabOrder.indexOf(path);
     const rest = tabOrder.filter((p) => p !== path);
@@ -1835,7 +2175,21 @@ function App() {
 
   function closeOtherTabs(keep: string) {
     const others = tabOrder.filter((p) => p !== keep);
-    if (others.some(isDirtyPath) && !window.confirm("其它标签页有未保存修改，仍关闭？")) return;
+    if (others.some(isDirtyPath)) {
+      askConfirm({
+        title: "其它标签页有未保存修改",
+        message: "修改将丢失",
+        confirmLabel: "不保存并关闭",
+        danger: true,
+        onConfirm: () => doCloseOtherTabs(keep),
+      });
+      return;
+    }
+    doCloseOtherTabs(keep);
+  }
+
+  function doCloseOtherTabs(keep: string) {
+    const others = tabOrder.filter((p) => p !== keep);
     if (currentCasePath !== keep) {
       const s = tabCacheRef.current[keep];
       if (s) restoreSnapshot(s);
@@ -1847,7 +2201,16 @@ function App() {
   }
 
   function closeAllTabs() {
-    if (tabOrder.some(isDirtyPath) && !window.confirm("有未保存的标签页，仍全部关闭？")) return;
+    if (tabOrder.some(isDirtyPath)) {
+      askConfirm({
+        title: "有标签页未保存",
+        message: "修改将丢失",
+        confirmLabel: "不保存并关闭",
+        danger: true,
+        onConfirm: closeAllTabsAndReset,
+      });
+      return;
+    }
     closeAllTabsAndReset();
   }
 
@@ -1911,9 +2274,12 @@ function App() {
       setRunMap({});
       setOutputsCtx({});
       setRawText(text);
-      // application.yml：默认进可视设置页，并按文件内容同步环境
+      // application.yml：默认进可视设置页，并按文件内容同步环境与请求设置
       setConfigVisual(isAppConfig(path));
-      if (isAppConfig(path)) setEnvironments(parseEnvironments(text));
+      if (isAppConfig(path)) {
+        setEnvironments(parseEnvironments(text));
+        setWsSettings(parseSettings(text));
+      }
       // 仅 .yml/.yaml（非 application.yml）才按 case 解析渲染；其余一律纯文本——
       // 避免把恰好符合格式的 .txt/.json 误渲染成结构化编辑器（保存会用 YAML 覆盖、丢内容）
       const canBeCase = isYamlFile(path) && !isAppConfig(path);
@@ -1949,7 +2315,7 @@ function App() {
     const out: Request[] = [];
     for (const rd of requests) {
       const { request, error: err } = draftToRequest(rd.req);
-      if (err || !request) return { error: `请求「${rd.id}」：${err || "请求非法"}` };
+      if (err || !request) return { error: `请求 ${rd.id}：${err || "请求非法"}` };
       out.push({
         id: rd.id,
         protocol: rd.protocol || "http",
@@ -1992,7 +2358,8 @@ function App() {
   function commitText(): Case | null {
     const res = analyzeCase(rawText);
     if (!res.valid || !res.case) {
-      window.alert(`YAML 无效，无法切换到结构视图：\n${res.error || "未知错误"}`);
+      // 复用页面顶部的错误条，而不是弹模态打断——用户正要回去改这段 YAML
+      setError(`YAML 无效，无法切换到结构视图：${res.error || "未知错误"}`);
       return null;
     }
     applyCase(res.case);
@@ -2042,12 +2409,14 @@ function App() {
   // application.yml：文本 ↔ 可视设置页
   function enterConfigVisual() {
     if (configVisual) return;
-    setEnvironments(parseEnvironments(rawText)); // 以文本为准同步到可视
+    // 以文本为准同步到可视（环境与请求设置同处一份文件）
+    setEnvironments(parseEnvironments(rawText));
+    setWsSettings(parseSettings(rawText));
     setConfigVisual(true);
   }
   function exitConfigVisual() {
     if (!configVisual) return;
-    if (dirty) setRawText(dumpApplicationConfig(rawText, environments)); // 有编辑才回写文本（保留原注释除非改过）
+    if (dirty) setRawText(dumpApplicationConfig(rawText, environments, wsSettings)); // 有编辑才回写文本（保留原注释除非改过）
     setConfigVisual(false);
   }
   // 可视设置页编辑环境：更新全局 environments + 保持 activeEnv 有效 + 标脏
@@ -2057,6 +2426,11 @@ function App() {
     if (activeEnv && !names.includes(activeEnv)) setActiveEnv(names.includes("default") ? "default" : names[0] || "");
     mark();
   }
+  // 可视设置页编辑请求设置（证书校验 / 自定义 CA / 超时）：同 onEnvChange，改完标脏待保存
+  function onWsSettingsChange(next: WorkspaceSettings) {
+    setWsSettings(next);
+    mark();
+  }
 
   // ── 保存 ────────────────────────────────────────
   async function saveCase() {
@@ -2064,18 +2438,19 @@ function App() {
     noteSelfWrite(currentCasePath); // 抑制本次保存的监听回声
     try {
       if (isAppConfig(currentCasePath) && configVisual) {
-        // 可视设置页：把 environments 序列化进 application.yml
-        const content = dumpApplicationConfig(rawText, environments);
+        // 可视设置页：把 environments 与请求设置一并序列化进 application.yml
+        const content = dumpApplicationConfig(rawText, environments, wsSettings);
         await invoke("write_text_file", { path: currentCasePath, content });
         setRawText(content);
         const names = Object.keys(environments);
         if (!names.includes(activeEnv)) setActiveEnv(names.includes("default") ? "default" : names[0] || "");
       } else if (effectiveText) {
         await invoke("write_text_file", { path: currentCasePath, content: rawText });
-        // application.yml：保存后重载 environment 使切换即时生效
+        // application.yml：保存后重载 environment / 请求设置，使切换与发请求即时生效
         if (isAppConfig(currentCasePath)) {
           const envs = parseEnvironments(rawText);
           setEnvironments(envs);
+          setWsSettings(parseSettings(rawText));
           const names = Object.keys(envs);
           if (!names.includes(activeEnv)) setActiveEnv(names.includes("default") ? "default" : names[0] || "");
         }
@@ -2209,7 +2584,7 @@ function App() {
 
   function renameRequest(oldId: string, newId: string) {
     if (requests.some((s) => s.id === newId)) {
-      window.alert("请求 ID 已存在");
+      setError(`请求 ID ${newId} 已存在`);
       return;
     }
     setRequests((prev) =>
@@ -2301,7 +2676,7 @@ function App() {
       return false;
     };
     if (reaches(fromId, toId)) {
-      window.alert("无法建立依赖：会形成环。");
+      setError("无法建立该依赖：会形成环");
       return;
     }
     let changed = false;
@@ -2336,6 +2711,18 @@ function App() {
   }
 
   // ── 运行 ────────────────────────────────────────
+  // 工作空间请求设置 → 后端载荷：CA 相对路径在此还原为绝对路径（存盘用相对是为了随 git 走）。
+  // 只传偏离默认值的项，让后端的 Option 缺省语义（校验开启 / 无 CA / 不限超时）自然兜底。
+  const requestOptions = useMemo(() => {
+    const o: { verifySsl?: boolean; caCertPath?: string; timeoutMs?: number } = {};
+    if (!wsSettings.verifySsl) o.verifySsl = false;
+    if (wsSettings.useCustomCa && wsSettings.caCert.trim() && workspace) {
+      o.caCertPath = joinPath(workspace, wsSettings.caCert.trim());
+    }
+    if (wsSettings.timeoutMs > 0) o.timeoutMs = wsSettings.timeoutMs;
+    return o;
+  }, [wsSettings, workspace]);
+
   // 单个请求执行：变量透传 → 发送 → 提取 outputs → 评估断言
   async function runRequestWithCtx(sd: RequestDraft, ctx: RunContext): Promise<{ state: RunState; outputs: Record<string, unknown> }> {
     try {
@@ -2343,7 +2730,7 @@ function App() {
       // 经 sendWithAuth 走一层：Digest 的 401 重发、OAuth 2.0 的 token 交换都在其中，
       // 且共用同一个后端通道，代理设置对它们一样生效。
       const result = await sendWithAuth(resolved, (request) =>
-        invoke<ApiResponse>("send_request", { request, proxy: proxyPayload(proxyConfig) }),
+        invoke<ApiResponse>("send_request", { request, proxy: proxyPayload(proxyConfig), options: requestOptions }),
       );
       const outputs = extractOutputs(sd.outputs, result.body);
       const asserts = evalAssertions(sd.assertions, result);
@@ -2486,8 +2873,17 @@ function App() {
     });
   }
 
-  async function deleteEntry(entry: DirEntry) {
-    if (!window.confirm(`确定删除「${entry.name}」？此操作不可撤销。`)) return;
+  function deleteEntry(entry: DirEntry) {
+    askConfirm({
+      title: <>删除 <Obj>{entry.name}</Obj>？</>,
+      message: entry.isDir ? "连同其中的全部内容，不可撤销" : "不可撤销",
+      confirmLabel: "删除",
+      danger: true,
+      onConfirm: () => void doDeleteEntry(entry),
+    });
+  }
+
+  async function doDeleteEntry(entry: DirEntry) {
     const dir = dirName(entry.path);
     try {
       noteSelfWrite(entry.path);
@@ -2551,7 +2947,7 @@ function App() {
     const { path: from, isDir } = clip;
     try {
       if (!(await pathExists(from))) {
-        setError(`剪贴板中的「${baseName(from)}」已不存在`);
+        setError(`剪贴板中的 ${baseName(from)} 已不存在`);
         setClip(null);
         return;
       }
@@ -3117,6 +3513,8 @@ function App() {
                   onThemeChange={setThemeMode}
                   proxyConfig={proxyConfig}
                   onProxyChange={onProxyChange}
+                  wsSettings={wsSettings}
+                  onWsSettingsChange={onWsSettingsChange}
                 />
               ) : (
                 <div className="text-view">
@@ -3510,6 +3908,7 @@ function App() {
           }}
         />
       )}
+      {confirmNode}
     </div>
   );
 }

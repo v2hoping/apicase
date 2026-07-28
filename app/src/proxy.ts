@@ -1,5 +1,6 @@
-// 代理设置（app 级偏好，持久化 localStorage）。后端 reqwest 据此决定发请求时是否走代理。
+// 代理设置（app 级偏好）。后端 reqwest 据此决定发请求时是否走代理。
 // mode：system=跟随系统代理（读 HTTP(S)_PROXY 环境变量）｜ none=不使用代理（直连）｜ custom=自定义地址。
+// 持久化本身不在这里——统一由 settings.ts 写进应用配置目录的 settings.json（见该文件说明）。
 export type ProxyMode = "system" | "none" | "custom";
 
 export interface ProxyConfig {
@@ -7,28 +8,14 @@ export interface ProxyConfig {
   url: string; // custom 模式的代理地址，如 http://127.0.0.1:7890
 }
 
-const KEY = "apicase.proxy.v1";
-
 export const DEFAULT_PROXY: ProxyConfig = { mode: "system", url: "" };
 
-export function loadProxyConfig(): ProxyConfig {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return { ...DEFAULT_PROXY };
-    const o = JSON.parse(raw);
-    const mode: ProxyMode = o.mode === "none" || o.mode === "custom" ? o.mode : "system";
-    return { mode, url: typeof o.url === "string" ? o.url : "" };
-  } catch {
-    return { ...DEFAULT_PROXY };
-  }
-}
-
-export function saveProxyConfig(c: ProxyConfig): void {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(c));
-  } catch {
-    /* ignore */
-  }
+/** 任意来源（JSON / 旧 localStorage 值）→ 合法的代理配置；缺项与类型不符一律回默认。 */
+export function normalizeProxyConfig(v: unknown): ProxyConfig {
+  if (!v || typeof v !== "object") return { ...DEFAULT_PROXY };
+  const o = v as Record<string, unknown>;
+  const mode: ProxyMode = o.mode === "none" || o.mode === "custom" ? o.mode : "system";
+  return { mode, url: typeof o.url === "string" ? o.url : "" };
 }
 
 // 传给后端 send_request 的 proxy 载荷：非 custom 时省略 url
