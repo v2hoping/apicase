@@ -52,6 +52,8 @@ export function Select({
   className = "",
   ariaLabel,
   optionClassName,
+  disabled,
+  placeholder,
 }: {
   value: string;
   options: SelectOption[];
@@ -59,6 +61,8 @@ export function Select({
   className?: string;
   ariaLabel?: string;
   optionClassName?: (value: string) => string; // 按选项值追加类名（如方法下拉逐项配色）
+  disabled?: boolean; // 无可选项时禁用（如工作空间内没有证书文件）
+  placeholder?: string; // 值为空且无匹配选项时的占位文案
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -78,10 +82,19 @@ export function Select({
     };
   }, [open]);
   const current = options.find((o) => o.value === value);
+  const empty = !current && !value;
   return (
     <div className={`ui-select ${open ? "is-open" : ""} ${className}`} ref={ref}>
-      <button type="button" className="ui-select-trigger" aria-label={ariaLabel} onClick={() => setOpen((v) => !v)}>
-        <span className="ui-select-value">{current?.label ?? value}</span>
+      <button
+        type="button"
+        className="ui-select-trigger"
+        aria-label={ariaLabel}
+        disabled={disabled}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className={`ui-select-value ${empty && placeholder ? "is-placeholder" : ""}`}>
+          {current?.label ?? (empty ? (placeholder ?? "") : value)}
+        </span>
         <svg className="ui-select-caret" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
           <path d="M3 4.5L6 7.5L9 4.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
         </svg>

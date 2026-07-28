@@ -141,17 +141,54 @@
   box-sizing: border-box;
 }
 
-/* 自定义滚动条：细、跟随主题（配合 color-scheme 兜底原生控件） */
+/* 键盘焦点：统一给所有按钮一圈 accent 描边。
+   `:focus-visible` 只在键盘导航时触发，鼠标点击不留残影，故可以放心全局铺。
+   输入框不在此列——它们已有 border-color 变色作反馈，再套一圈会重复。 */
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* 贴边/被容器裁剪的按钮改用内描边，否则 outline 会被 overflow:hidden 切掉 */
+.tree-row button:focus-visible,
+.tree-root-name button:focus-visible,
+.file-tab button:focus-visible,
+.tab-bar button:focus-visible {
+  outline-width: 1.5px;
+  outline-offset: -1.5px;
+}
+
+/* 自定义滚动条：细、跟随主题（配合 color-scheme 兜底原生控件）。
+   全局统一策略：滑块默认完全透明，鼠标进入该可滚动区域才出现，移出即消失。
+   槽位（10px）始终占位，因此显隐过程不会引起内容宽度跳动。
+
+   实现要点：WebKit（Tauri 用的 WKWebView）**不会**为滚动条伪元素重新匹配选择器，
+   `X:hover::-webkit-scrollbar-thumb { background: ... }` 这类写法完全不生效（实测确认）；
+   但它会重新求值伪元素从宿主继承来的自定义属性。故滑块颜色统一走 `var(--sb-thumb)`，
+   由宿主元素的 `:hover` 改这个属性来驱动重绘。 */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
+::-webkit-scrollbar-track {
+  background: transparent;
+}
 ::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
+  background: var(--sb-thumb, transparent);
   border: 2px solid transparent;
   background-clip: content-box;
   border-radius: 8px;
 }
+/* 自定义属性会向下继承：只写 `*:hover` 的话，鼠标落在左栏也会顺着公共祖先把右栏、
+   底部终端等**非 hover 兄弟子树**里的滚动条一起点亮。
+   故先将 hover 元素的子代一律复位，再让 hover 链自身覆盖回可见——
+   两条特异性相同，后写者胜；只匹配前一条的兄弟子树则保持透明。 */
+*:hover > * {
+  --sb-thumb: transparent;
+}
+*:hover {
+  --sb-thumb: var(--border-strong);
+}
+/* 滑块自身的悬停态由 WebKit 原生维护，这里可以直接改 background（实测有效） */
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
   background-clip: content-box;
@@ -234,7 +271,7 @@ body,
   color: var(--text);
   background: transparent;
   border: none;
-  border-radius: 5px;
+  border-radius: 6px;
   cursor: pointer;
   outline: none;
 }
@@ -286,7 +323,7 @@ body,
   color: var(--text);
   background: transparent;
   border: none;
-  border-radius: 5px;
+  border-radius: 6px;
   cursor: pointer;
 }
 .ws-item:hover {
@@ -364,12 +401,12 @@ body,
   width: 22px;
   height: 22px;
   margin-right: 2px;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1;
   color: var(--muted);
   background: none;
   border: none;
-  border-radius: 5px;
+  border-radius: 6px;
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
@@ -400,7 +437,7 @@ body,
   color: var(--text);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: 6px;
   cursor: pointer;
   outline: none;
 }
@@ -459,12 +496,14 @@ body,
   min-height: 0;
 }
 
-/* 左侧栏（文件树占位）；宽度由 JS 控制，可拖动调节 */
+/* 左侧栏（文件树占位）；宽度由 JS 控制，可拖动调节。
+   左右不留内边距：让树行的 hover / 选中底色能通栏铺满整个可视宽度（VSCode 式），
+   原先靠这里撑出的 10px 文字起始缩进，改由各行自身的 padding-left 补回。 */
 .sidebar {
   flex-shrink: 0;
   background: var(--bg); /* 层次色 #f9f9f9：文件树侧栏，与纯白内容区形成微妙层次 */
   border-right: 1px solid var(--border);
-  padding: 10px;
+  padding: 10px 0;
   overflow: auto;
 }
 .sidebar-placeholder {
@@ -489,15 +528,14 @@ body,
   align-items: center;
   gap: 6px;
   height: 26px;
-  padding: 0 8px 0 6px;
+  padding: 0 8px 0 16px; /* 左 16 = 原行内 6 + 侧栏原本的 10；底色通栏后由行自己撑出缩进 */
   margin-bottom: 4px;
   font-weight: 600;
   color: var(--text);
-  border-radius: 6px;
   cursor: pointer;
   overflow: hidden;
   white-space: nowrap;
-  transition: background 0.1s;
+  transition: background 0.12s;
 }
 .tree-root-name:hover {
   background: var(--hover);
@@ -505,6 +543,8 @@ body,
 .tree-root-name .tree-ico {
   color: var(--muted);
 }
+/* 行是块级 flex，宽度即树容器宽度，故 hover / 选中底色天然通栏；
+   左缩进走内联 paddingLeft（16 + depth×14，见 TreeNode），不做圆角以免通栏底色两端露出缺口 */
 .tree-row {
   position: relative;
   display: flex;
@@ -512,11 +552,10 @@ body,
   gap: 6px;
   height: 26px;
   padding-right: 8px;
-  border-radius: 6px;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
-  transition: background 0.1s;
+  transition: background 0.12s;
 }
 .tree-row:hover {
   background: var(--hover);
@@ -594,7 +633,7 @@ body,
 .caret-down {
   flex-shrink: 0;
   color: var(--muted);
-  transition: transform 0.15s ease;
+  transition: transform 0.12s ease;
 }
 .chevron.is-open {
   transform: rotate(90deg);
@@ -609,7 +648,7 @@ body,
   color: var(--text);
 }
 /* 子级容器的缩进参考线（借 Postman / VSCode）：一条贯穿子列表的细竖线，
-   落在父行折叠箭头的中线上（6px 行内左边距 + 父级缩进 + 箭头半宽 8px），
+   落在父行折叠箭头的中线上（16px 行内左边距 + 父级缩进 + 箭头半宽 8px），
    层级一眼可辨。--tree-depth 由 TreeNode 以内联变量传入（父行的 depth）。 */
 .tree-children {
   position: relative;
@@ -619,7 +658,7 @@ body,
   position: absolute;
   top: 0;
   bottom: 0;
-  left: calc(6px + var(--tree-depth, 0) * 14px + 8px);
+  left: calc(16px + var(--tree-depth, 0) * 14px + 8px);
   width: 1px;
   background: var(--indent-guide);
   /* 压过行的 hover / 选中底色：线断在选中行上会割裂层级感（VSCode 同此） */
@@ -631,7 +670,7 @@ body,
   height: 26px;
   display: flex;
   align-items: center;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--muted);
   font-style: italic;
 }
@@ -812,15 +851,28 @@ body.resizing-pane .pane-resizer::after {
 .ui-select.is-open .ui-select-trigger {
   border-color: var(--accent);
 }
+/* 无可选项时禁用（如工作空间内没有证书文件）：底色转次级面，与只读输入同一套观感 */
+.ui-select-trigger:disabled {
+  color: var(--muted);
+  background: var(--panel-2);
+  cursor: not-allowed;
+}
+.ui-select-trigger:disabled:hover {
+  border-color: var(--border);
+}
 .ui-select-value {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 值为空时的占位文案，比正常值淡 */
+.ui-select-value.is-placeholder {
+  color: var(--muted);
+}
 .ui-select-caret {
   flex-shrink: 0;
   color: var(--muted);
-  transition: transform 0.15s ease;
+  transition: transform 0.12s ease;
 }
 .ui-select.is-open .ui-select-caret {
   transform: rotate(180deg);
@@ -861,7 +913,7 @@ body.resizing-pane .pane-resizer::after {
   color: var(--text);
   background: transparent;
   border: none;
-  border-radius: 5px;
+  border-radius: 6px;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -949,7 +1001,7 @@ body.resizing-pane .pane-resizer::after {
 .var-token.warn {
   color: var(--warn-text);
   background: var(--warn-bg);
-  border-radius: 3px;
+  border-radius: 4px;
 }
 .send-btn {
   height: 34px;
@@ -1139,7 +1191,7 @@ body.resizing-pane .pane-resizer::after {
 .cell-file-btn {
   flex-shrink: 0;
   padding: 2px 8px;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text);
   background: var(--panel);
   border: 1px solid var(--border);
@@ -1154,7 +1206,7 @@ body.resizing-pane .pane-resizer::after {
   min-width: 0;
   flex: 1;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1163,7 +1215,7 @@ body.resizing-pane .pane-resizer::after {
   text-align: left;
 }
 .cell-file-empty {
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--muted);
 }
 .cell-file .row-del {
@@ -1253,7 +1305,7 @@ body.resizing-pane .pane-resizer::after {
   display: flex;
   align-items: center;
   padding: 0 12px;
-  font-size: 13.5px;
+  font-size: 13px;
 }
 .response-toggle {
   display: inline-flex;
@@ -1357,7 +1409,7 @@ body.resizing-pane .pane-resizer::after {
   padding: 0 12px;
   font-size: 13px;
   border: 1px solid var(--warn-border);
-  border-radius: 5px;
+  border-radius: 6px;
   background: var(--panel);
   color: var(--warn-text);
   cursor: pointer;
@@ -1380,7 +1432,7 @@ body.resizing-pane .pane-resizer::after {
   box-sizing: border-box;
   min-height: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.5;
   background: var(--panel);
   color: var(--text);
@@ -1435,12 +1487,12 @@ body.resizing-pane .pane-resizer::after {
   max-width: 200px;
   height: 30px;
   padding: 0 6px 0 12px;
-  font-size: 13.5px;
+  font-size: 13px;
   color: var(--muted);
   background: transparent;
   border: 1px solid transparent;
   border-bottom: none;
-  border-radius: 7px 7px 0 0;
+  border-radius: 6px 6px 0 0;
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
@@ -1463,7 +1515,7 @@ body.resizing-pane .pane-resizer::after {
   top: -1px;
   height: 2px;
   background: var(--accent);
-  border-radius: 7px 7px 0 0;
+  border-radius: 6px 6px 0 0;
 }
 /* 遮住 tab-bar 底边框，与内容区连贯 */
 .file-tab.active::before {
@@ -1594,7 +1646,7 @@ body.resizing-pane .pane-resizer::after {
 .auth-type-zh {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1666,7 +1718,7 @@ body.resizing-pane .pane-resizer::after {
 .auth-preview code {
   min-width: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text);
   word-break: break-all;
 }
@@ -1707,7 +1759,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .body-ct-value {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text);
 }
 .ct-input {
@@ -1747,7 +1799,7 @@ body.resizing-pane .pane-resizer::after {
 .binary-path {
   min-width: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1949,21 +2001,173 @@ body.resizing-pane .pane-resizer::after {
   padding: 20px 24px;
   overflow: auto;
 }
+/* 全站统一版心：各分区右边缘对齐，不因内容长短各用一套宽度。
+   820 是权衡结果——路径以 ~ 缩写后（见 tildify）能一行放下，同时设置项的开关不至于被甩太远。 */
 .settings-section {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-width: 640px;
+  max-width: 820px;
 }
 .settings-title {
   font-size: 16px;
   font-weight: 600;
   color: var(--text);
 }
-.settings-desc {
-  font-size: 13.5px;
+/* 分区内的次级标题（如「通用」页里的「位置」「请求」组）：上方留白 + 细分隔线划出组边界 */
+.settings-subtitle {
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+/* 紧跟大标题的第一个次级标题不画线：两条横线叠一起像误画的 */
+.settings-subtitle.is-first {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+/* 一行位置：路径行 + 其下的说明。路径可能很长，故整行顶端对齐、值本身允许折行 */
+.path-row .field-row {
+  align-items: flex-start;
+}
+.path-row .field-row label {
+  padding-top: 7px; /* 与 path-value 的首行文字对齐（其 padding 6px + 行高差） */
+}
+.path-value {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  user-select: text; /* 侧栏那套 user-select:none 不该波及到这里——路径要能选中复制 */
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.path-text {
+  min-width: 0;
+  word-break: break-all; /* 路径没有空格可断，只能按字符折 */
+}
+/* 状态标签（如「尚未创建」）：贴在路径末尾，不另起一行占版面 */
+.path-tag {
+  flex-shrink: 0;
+  padding: 0 6px;
+  font-family: inherit;
+  font-size: 11px;
   line-height: 1.7;
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: 4px;
+}
+.path-note {
+  margin: 3px 0 0 88px; /* 88 = label 宽 80 + field-row 的 8px 间距，与路径输入框左边缘对齐 */
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--muted);
+}
+/* 「在文件管理器中显示」：常态低调，hover 才浮出，避免一列按钮抢过路径本身 */
+.path-reveal {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.path-reveal:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.path-reveal:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+/* 控件下方的补充说明 / 校验提示：小一号、更轻 */
+.settings-hint {
+  margin-top: -4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+/* 配置指向的文件已失效等需要留意的提示：与「尚未创建」同一套告警色 */
+.settings-hint.is-warn {
+  color: var(--warn-text);
+}
+/* 设置项行：左侧「标题 + 说明」占满剩余宽度，右侧是开关或输入控件 */
+.set-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.set-row-main {
+  flex: 1;
+  min-width: 0;
+}
+.set-row-label {
+  font-size: 14px;
+  color: var(--text);
+}
+.set-row-desc {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+/* 前置条件不满足时整行减淡（控件自身仍用 disabled 拦交互，这里只做视觉） */
+.set-row.is-off .set-row-label,
+.set-row.is-off .set-row-desc {
+  opacity: 0.55;
+}
+.set-row-input {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.set-row-input input {
+  width: 120px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  text-align: right;
+}
+.set-row-input input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+/* 去掉数字输入的原生上下箭头：那对小箭头与全站控件质感不搭，且这里按步进调数值没意义 */
+.set-row-input input::-webkit-outer-spin-button,
+.set-row-input input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.set-row-unit {
+  font-size: 13px;
+  color: var(--muted);
+}
+/* 证书文件下拉：复用全局 ui-select（同请求编辑器的方法/认证下拉），填满该行剩余宽度 */
+.cert-select {
+  flex: 1;
+  min-width: 0;
 }
 /* 主题选择卡片（浅色 / 深色 / 跟随系统）*/
 .theme-options {
@@ -1981,9 +2185,9 @@ body.resizing-pane .pane-resizer::after {
   padding: 12px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   cursor: pointer;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.12s, box-shadow 0.12s;
 }
 .theme-card:hover {
   border-color: var(--border-strong);
@@ -1996,7 +2200,7 @@ body.resizing-pane .pane-resizer::after {
   position: relative;
   width: 100%;
   height: 62px;
-  border-radius: 7px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   overflow: hidden;
 }
@@ -2030,14 +2234,17 @@ body.resizing-pane .pane-resizer::after {
 .theme-swatch.is-dark::before {
   background: #232328;
 }
+/* 跟随系统：左浅右深，像并排放着两个窗口。
+   必须用 90deg——斜向渐变在 62px 高的本体与 14px 高的标题栏（::before）上分割线位置不同，
+   两层错开会切出一道 Z 形；垂直分割线在任何高度都落在水平中点，两层严丝合缝。 */
 .theme-swatch.is-system {
-  background: linear-gradient(120deg, #ffffff 0 50%, #1a1a1d 50% 100%);
+  background: linear-gradient(90deg, #ffffff 0 50%, #1a1a1d 50% 100%);
 }
 .theme-swatch.is-system::before {
-  background: linear-gradient(120deg, #f9f9f9 0 50%, #232328 50% 100%);
+  background: linear-gradient(90deg, #f9f9f9 0 50%, #232328 50% 100%);
 }
 .theme-card-label {
-  font-size: 13.5px;
+  font-size: 13px;
   color: var(--text);
 }
 .theme-card-check {
@@ -2051,23 +2258,24 @@ body.resizing-pane .pane-resizer::after {
 /* 代理设置卡片（跟随系统 / 不使用代理 / 自定义）*/
 .proxy-options {
   display: flex;
-  flex-wrap: wrap;
   gap: 12px;
   margin-top: 6px;
 }
+/* 三张卡片等宽平分：固定宽度会让描述在各卡里换行行数不一，右边缘参差 */
 .proxy-card {
   position: relative;
   display: flex;
   flex-direction: column;
   gap: 5px;
-  width: 190px;
+  flex: 1;
+  min-width: 0;
   padding: 12px 14px;
   text-align: left;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   cursor: pointer;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.12s, box-shadow 0.12s;
 }
 .proxy-card:hover {
   border-color: var(--border-strong);
@@ -2077,7 +2285,7 @@ body.resizing-pane .pane-resizer::after {
   box-shadow: 0 0 0 1px var(--accent);
 }
 .proxy-card-label {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
 }
@@ -2096,14 +2304,6 @@ body.resizing-pane .pane-resizer::after {
 }
 .proxy-url-row {
   margin-top: 14px;
-}
-.settings-desc code {
-  padding: 1px 5px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
-  color: var(--accent-dark);
-  background: var(--accent-tint);
-  border-radius: 4px;
 }
 .settings-empty {
   padding: 16px 0;
@@ -2135,13 +2335,13 @@ body.resizing-pane .pane-resizer::after {
   gap: 6px;
 }
 .about-name {
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 700;
   letter-spacing: 0.3px;
   color: var(--text);
 }
 .about-ver {
-  font-size: 13.5px;
+  font-size: 13px;
   color: var(--muted);
 }
 .about-intro {
@@ -2177,9 +2377,9 @@ body.resizing-pane .pane-resizer::after {
   color: var(--text);
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
 }
 .about-link:hover {
   color: var(--accent-dark);
@@ -2237,7 +2437,7 @@ body.resizing-pane .pane-resizer::after {
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
-  font-size: 13.5px;
+  font-size: 13px;
   color: var(--text);
   border-radius: 6px;
   cursor: pointer;
@@ -2332,7 +2532,7 @@ body.resizing-pane .pane-resizer::after {
 .tab-count {
   display: inline-block;
   margin-left: 1px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
   font-weight: 600;
   color: var(--text-strong);
@@ -2356,7 +2556,7 @@ body.resizing-pane .pane-resizer::after {
 .panel-hint code {
   padding: 1px 5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--accent-dark);
   background: var(--accent-tint);
   border-radius: 4px;
@@ -2441,7 +2641,7 @@ body.resizing-pane .pane-resizer::after {
 }
 .text-warn {
   padding: 8px 12px;
-  font-size: 13.5px;
+  font-size: 13px;
   color: var(--warn-text);
   background: var(--warn-bg);
   border: 1px solid var(--warn-border);
@@ -2453,7 +2653,7 @@ body.resizing-pane .pane-resizer::after {
   min-height: 260px;
   padding: 12px 14px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.6;
   color: var(--text);
   border: 1px solid var(--border);
@@ -2581,7 +2781,7 @@ body.resizing-pane .pane-resizer::after {
 .flow-tool-btn.icon {
   width: 30px;
   padding: 0;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1;
 }
 .flow-tool-btn.zoom-label {
@@ -2623,7 +2823,7 @@ body.resizing-pane .pane-resizer::after {
   position: relative;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   /* 点状网格背景，n8n/Postman Flows 观感；size/position 由内联样式随缩放平移设置 */
   background-color: var(--canvas-bg);
   background-image: radial-gradient(var(--canvas-grid) 1px, transparent 1px);
@@ -2742,11 +2942,11 @@ body.resizing-pane .pane-resizer::after {
   padding: 0 12px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   box-shadow: 0 1px 3px var(--shadow-weak);
   cursor: grab;
   user-select: none;
-  transition: box-shadow 0.12s, border-color 0.12s, transform 0.06s;
+  transition: box-shadow 0.12s, border-color 0.12s, transform 0.12s;
 }
 .flow-node:hover {
   border-color: var(--border-strong);
@@ -2825,7 +3025,7 @@ body.resizing-pane .pane-resizer::after {
 .fn-port.out {
   right: -5px;
   cursor: crosshair;
-  transition: transform 0.1s, background 0.1s, border-color 0.1s;
+  transition: transform 0.12s, background 0.12s, border-color 0.12s;
 }
 /* out 端口是连线起点：悬停放大并高亮，提示可拖拽 */
 .fn-port.out:hover {
@@ -2876,7 +3076,7 @@ body.resizing-pane .pane-resizer::after {
   text-align: left;
   font-size: 14px;
   border: none;
-  border-radius: 5px;
+  border-radius: 6px;
   background: none;
   color: var(--text);
   cursor: pointer;
@@ -2922,7 +3122,7 @@ body.resizing-pane .pane-resizer::after {
   width: 320px;
   padding: 16px;
   background: var(--panel);
-  border-radius: 10px;
+  border-radius: 8px;
   box-shadow: 0 12px 40px var(--shadow-strong);
 }
 .modal-title {
@@ -2951,7 +3151,8 @@ body.resizing-pane .pane-resizer::after {
   margin-top: 14px;
 }
 .btn-ghost,
-.btn-primary {
+.btn-primary,
+.btn-danger {
   height: 30px;
   padding: 0 16px;
   font-size: 14px;
@@ -2972,6 +3173,44 @@ body.resizing-pane .pane-resizer::after {
   background: var(--accent);
   color: var(--on-accent);
 }
+/* 破坏性操作的主按钮（删除、放弃未保存修改）：动作写在按钮上，颜色给出后果 */
+.btn-danger {
+  border: 1px solid var(--red);
+  background: var(--red);
+  color: var(--on-accent);
+}
+/* 文案中被操作的对象（文件名、环境名、动作名）。
+   用等宽 + 加深来区分，而不是拿书名号去包——符号是在用文字解决排版问题，
+   多个对象名连用时还会串成一片括号。副标题是 muted 底色，对象名提到正常文字色即可跳出。 */
+.q {
+  padding: 1px 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.94em;
+  color: var(--text-strong);
+  background: var(--hover);
+  border-radius: 4px;
+}
+.modal-message .q {
+  color: var(--text);
+}
+
+/* 确认框的副标题：说明这一步的后果 */
+.modal-message {
+  margin: -4px 0 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+/* 表单项就地校验提示（取代打断式的 alert） */
+.field-error {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--red);
+}
+.env-name-input.is-invalid {
+  border-color: var(--red);
+}
 .btn-primary:hover {
   background: var(--accent-dark);
   border-color: var(--accent-dark);
@@ -2982,7 +3221,7 @@ body.resizing-pane .pane-resizer::after {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 8px;
+  padding: 6px 10px; /* 侧栏已无左右内边距，这里自行留白 */
 }
 .tree-search-wrap {
   flex: 1;
@@ -3016,7 +3255,7 @@ body.resizing-pane .pane-resizer::after {
   border: none;
   background: none;
   color: var(--muted);
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1;
   cursor: pointer;
 }
@@ -3038,7 +3277,7 @@ body.resizing-pane .pane-resizer::after {
   border-radius: 6px;
   background: var(--panel);
   color: var(--text);
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1;
   cursor: pointer;
 }
@@ -3063,11 +3302,12 @@ body.resizing-pane .pane-resizer::after {
   overflow: auto;
   padding: 2px 0;
 }
+/* 与树行同样通栏：底色铺满可视宽度，左缩进 16px 与树的根行图标对齐 */
 .search-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px;
+  padding: 5px 16px;
   font-size: 14px;
   cursor: pointer;
 }
@@ -3124,10 +3364,11 @@ body.resizing-pane .pane-resizer::after {
 }
 
 /* ── 快捷键设置（配置页「快捷键」分区）───────────────── */
+/* 快捷键页的操作栏：标题去掉后只剩右侧的总开关与「全部恢复默认」 */
 .sc-title-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
 }
 .sc-title-actions {
   display: inline-flex;
@@ -3233,7 +3474,7 @@ body.resizing-pane .pane-resizer::after {
   border-radius: 999px;
   background: var(--border);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.12s;
 }
 .sc-switch.on {
   background: var(--accent);
@@ -3251,7 +3492,7 @@ body.resizing-pane .pane-resizer::after {
   border-radius: 50%;
   background: var(--on-accent);
   box-shadow: 0 1px 2px var(--shadow-strong);
-  transition: transform 0.15s;
+  transition: transform 0.12s;
 }
 .sc-switch.on .sc-switch-thumb {
   transform: translateX(14px);
@@ -3390,7 +3631,7 @@ body.resizing-row {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1;
   color: var(--muted);
   background: transparent;
@@ -3399,7 +3640,7 @@ body.resizing-row {
   cursor: pointer;
 }
 .panel-add {
-  font-size: 17px;
+  font-size: 16px;
 }
 .panel-close:hover,
 .panel-add:hover {
@@ -3574,7 +3815,7 @@ body.resizing-ai .ai-resizer::after {
   color: var(--muted);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: 6px;
   padding: 2px 8px;
   cursor: pointer;
 }
@@ -3620,7 +3861,7 @@ body.resizing-ai .ai-resizer::after {
 }
 .ai-bubble {
   max-width: 82%;
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.55;
   color: var(--text);
   white-space: pre-wrap;
@@ -3650,7 +3891,7 @@ body.resizing-ai .ai-resizer::after {
   min-height: 34px;
   max-height: 120px;
   font-family: inherit;
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.5;
   color: var(--text);
   padding: 8px 10px;
@@ -3666,7 +3907,7 @@ body.resizing-ai .ai-resizer::after {
   flex-shrink: 0;
   height: 34px;
   padding: 0 14px;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--on-accent);
   background: var(--accent);
@@ -3751,7 +3992,7 @@ body.resizing-ai .ai-resizer::after {
   min-width: 0;
   padding: 12px 14px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.6;
   color: var(--text);
   border: none;
@@ -3800,7 +4041,7 @@ body.resizing-ai .ai-resizer::after {
   border-bottom: 1px solid var(--border);
 }
 .markdown-view .md-h2 {
-  font-size: 18px;
+  font-size: 16px;
   padding-bottom: 5px;
   border-bottom: 1px solid var(--border);
 }
@@ -3860,7 +4101,7 @@ body.resizing-ai .ai-resizer::after {
   padding: 0;
   background: transparent;
   color: var(--code-fg);
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.55;
 }
 .markdown-view .md-quote {

@@ -75,9 +75,57 @@ pub struct ProxyConfig {
     pub url: Option<String>,
 }
 
+/// 工作空间级请求设置（前端「设置 → 通用」，存于 application.yml 的 `settings:`）。
+/// 三项均为可选：缺省即「校验开启 / 无自定义 CA / 不限超时」这套安全侧默认。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestOptions {
+    /// SSL/TLS 证书验证；None 或 true = 校验，false = 接受任何证书（降安全）
+    #[serde(default)]
+    pub verify_ssl: Option<bool>,
+    /// 自定义 CA 证书的**绝对路径**（前端已 join 过工作空间根）
+    #[serde(default)]
+    pub ca_cert_path: Option<String>,
+    /// 整个请求的超时上限（毫秒）；None 或 0 = 不限制
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+const PEM_MARKER: &[u8] = b"-----BEGIN CERTIFICATE-----";
+
+/// 读取 CA 证书文件并解析为 reqwest 证书（PEM 与 DER 两族都支持）。
+/// 任何一步失败都**明确报错**——静默忽略会让用户以为配好了却仍连不上，最难排查。
+fn load_ca_certificates(path: &str) -> Result<Vec<reqwest::Certificate>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("读取 CA 证书失败（{path}）: {e}"))?;
+    // PEM：文本格式，一个文件里可以串多张（CA 链常打成一个 bundle）
+    if bytes.windows(PEM_MARKER.len()).any(|w| w == PEM_MARKER) {
+        let certs = reqwest::Certificate::from_pem_bundle(&bytes)
+            .map_err(|e| format!("解析 CA 证书失败（{path}）——PEM 格式有误: {e}"))?;
+        if certs.is_empty() {
+            return Err(format!("解析 CA 证书失败（{path}）——PEM 里没有找到证书"));
+        }
+        return Ok(certs);
+    }
+    // DER：二进制，必须是 ASN.1 SEQUENCE（0x30）开头。
+    // reqwest 的 from_der 是**惰性**的——真正的解析推迟到 build 客户端时，
+    // 连一段纯文本都能构造成功。故先自行挡一道，免得错误延后成一句无指向的「创建客户端失败」。
+    if bytes.first() != Some(&0x30) {
+        return Err(format!(
+            "解析 CA 证书失败（{path}）——既不是 PEM（找不到 BEGIN CERTIFICATE）也不是 DER"
+        ));
+    }
+    reqwest::Certificate::from_der(&bytes)
+        .map(|c| vec![c])
+        .map_err(|e| format!("解析 CA 证书失败（{path}）——DER 格式有误: {e}"))
+}
+
 /// 真正发起请求的逻辑（与 Tauri 解耦，便于测试）。
 /// 由后端用 reqwest 发出，天然绕过浏览器 CORS。
-async fn perform_request(req: ApiRequest, proxy: Option<ProxyConfig>) -> Result<ApiResponse, String> {
+async fn perform_request(
+    req: ApiRequest,
+    proxy: Option<ProxyConfig>,
+    options: Option<RequestOptions>,
+) -> Result<ApiResponse, String> {
     let url = req.url.trim();
     if url.is_empty() {
         return Err("URL 不能为空".to_string());
@@ -110,6 +158,25 @@ async fn perform_request(req: ApiRequest, proxy: Option<ProxyConfig>) -> Result<
         }
         _ => {}
     }
+
+    // 工作空间设置：证书校验 / 自定义 CA / 超时
+    if let Some(opts) = options.as_ref() {
+        // 仅显式 false 才关闭校验；此时 reqwest 跳过信任链、有效期与域名匹配（流量仍加密）
+        if opts.verify_ssl == Some(false) {
+            client_builder = client_builder.danger_accept_invalid_certs(true);
+        }
+        if let Some(ca) = opts.ca_cert_path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            // add_root_certificate 是**追加**到默认信任库，公网 HTTPS 的校验不受影响
+            for cert in load_ca_certificates(ca)? {
+                client_builder = client_builder.add_root_certificate(cert);
+            }
+        }
+        // 覆盖「连接 + 发送 + 读完响应体」全过程，不是单纯的连接超时
+        if let Some(ms) = opts.timeout_ms.filter(|ms| *ms > 0) {
+            client_builder = client_builder.timeout(Duration::from_millis(ms));
+        }
+    }
+
     let client = client_builder
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
@@ -210,8 +277,12 @@ async fn perform_request(req: ApiRequest, proxy: Option<ProxyConfig>) -> Result<
 
 /// Tauri 命令：发送单个 API 请求
 #[tauri::command]
-async fn send_request(request: ApiRequest, proxy: Option<ProxyConfig>) -> Result<ApiResponse, String> {
-    perform_request(request, proxy).await
+async fn send_request(
+    request: ApiRequest,
+    proxy: Option<ProxyConfig>,
+    options: Option<RequestOptions>,
+) -> Result<ApiResponse, String> {
+    perform_request(request, proxy, options).await
 }
 
 /// Tauri 命令：把一个目录初始化为 apicase 工作空间。
@@ -241,6 +312,36 @@ fn app_settings_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .app_config_dir()
         .map_err(|e| format!("获取应用配置目录失败: {e}"))?;
     Ok(dir.join("settings.json"))
+}
+
+/// 应用侧的存储位置（设置页「通用 → 位置」展示用）。
+/// `exists` 供前端决定「显示位置」按钮是否可点——该文件在首次写入前并不存在。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppPaths {
+    pub settings_file: String,
+    pub settings_file_exists: bool,
+    /// 用户主目录：前端据此把 `/Users/xxx/...` 显示成 `~/...`（省 15+ 字符，多数路径因此能一行放下）。
+    /// 仅用于显示，「在文件管理器中显示」仍走原始绝对路径。
+    pub home: String,
+}
+
+/// Tauri 命令：返回应用自身用到的文件位置。
+/// 让用户一眼看清「哪些数据存在哪」——该路径由 Tauri 按 identifier 推导，不同平台各不相同，
+/// 不暴露出来的话用户无从知道自己的偏好设置究竟落在哪。
+#[tauri::command]
+fn app_paths(app: AppHandle) -> Result<AppPaths, String> {
+    let file = app_settings_path(&app)?;
+    Ok(AppPaths {
+        settings_file_exists: file.is_file(),
+        settings_file: file.to_string_lossy().into_owned(),
+        // 取不到主目录不算错（缩写只是显示优化），退回空串让前端原样显示
+        home: app
+            .path()
+            .home_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    })
 }
 
 /// Tauri 命令：读取应用设置（原始 JSON 文本，结构交由前端）。
@@ -303,6 +404,59 @@ fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(entries)
+}
+
+/// 可作为 CA 证书使用的扩展名（PEM 与 DER 两族的常见后缀）
+const CERT_EXTS: [&str; 5] = ["pem", "crt", "cer", "der", "ca-bundle"];
+
+/// Tauri 命令：递归列出工作空间内的证书文件（设置页「自定义 CA 证书」下拉用）。
+/// 返回**相对工作空间根**的路径——存进 application.yml 后随 git 走，换机器/换 clone 目录依然有效。
+/// 遍历骨架同 search_workspace：跳过隐藏项与 node_modules/target/dist，结果上限 200。
+#[tauri::command]
+fn list_cert_files(root: String) -> Result<Vec<String>, String> {
+    let root_path = std::path::Path::new(&root);
+    if !root_path.is_dir() {
+        return Err(format!("不是目录: {root}"));
+    }
+    const LIMIT: usize = 200;
+    let mut out: Vec<String> = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> = vec![root_path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for ent in rd.flatten() {
+            let name = ent.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let p = ent.path();
+            if p.is_dir() {
+                if name != "node_modules" && name != "target" && name != "dist" {
+                    stack.push(p);
+                }
+                continue;
+            }
+            let is_cert = p
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .map(|e| CERT_EXTS.contains(&e.as_str()))
+                .unwrap_or(false);
+            if is_cert {
+                if let Ok(rel) = p.strip_prefix(root_path) {
+                    // 统一用 / 分隔：配置文件要跨平台共享，落盘不能带 Windows 的反斜杠
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
+                    if out.len() >= LIMIT {
+                        out.sort_by_key(|s| s.to_lowercase());
+                        return Ok(out);
+                    }
+                }
+            }
+        }
+    }
+    out.sort_by_key(|s| s.to_lowercase());
+    Ok(out)
 }
 
 /// Tauri 命令：读取文本文件内容（case 解析用）。
@@ -782,7 +936,9 @@ pub fn run() {
             init_workspace,
             read_app_settings,
             write_app_settings,
+            app_paths,
             list_dir,
+            list_cert_files,
             read_text_file,
             read_file_smart,
             write_text_file,
@@ -816,7 +972,7 @@ mod tests {
             url: "https://example.com".into(),
             ..Default::default()
         };
-        assert!(perform_request(req, None).await.is_err());
+        assert!(perform_request(req, None, None).await.is_err());
     }
 
     /// 空 URL 应报错（无需联网）
@@ -827,7 +983,7 @@ mod tests {
             url: "   ".into(),
             ..Default::default()
         };
-        assert!(perform_request(req, None).await.is_err());
+        assert!(perform_request(req, None, None).await.is_err());
     }
 
     /// binary 请求体指向不存在的文件：应在发起前给出可读错误（无需联网）
@@ -840,7 +996,7 @@ mod tests {
             body_file: Some(path.to_string_lossy().into_owned()),
             ..Default::default()
         };
-        let err = perform_request(req, None).await.expect_err("应报错");
+        let err = perform_request(req, None, None).await.expect_err("应报错");
         assert!(err.contains("读取请求体文件失败"), "错误信息应指明是请求体文件读取失败: {err}");
     }
 
@@ -858,7 +1014,7 @@ mod tests {
             }]),
             ..Default::default()
         };
-        let err = perform_request(req, None).await.expect_err("应报错");
+        let err = perform_request(req, None, None).await.expect_err("应报错");
         assert!(err.contains("读取表单文件失败"), "错误信息应指明是表单文件读取失败: {err}");
         assert!(err.contains("avatar"), "错误信息应带上字段名: {err}");
     }
@@ -892,6 +1048,104 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// 测试用自签 CA（`openssl req -x509 -newkey rsa:2048 -days 36500 -subj "/CN=apicase-test-ca"`）。
+    /// 只用于验证「能被解析并装进 ClientBuilder」，不参与任何真实握手，故有效期长短无所谓。
+    const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIDFzCCAf+gAwIBAgIUOOOO5K92DMLFjeHc18cNQ136Mh8wDQYJKoZIhvcNAQEL\n\
+BQAwGjEYMBYGA1UEAwwPYXBpY2FzZS10ZXN0LWNhMCAXDTI2MDcyODA2MzYzOFoY\n\
+DzIxMjYwNzA0MDYzNjM4WjAaMRgwFgYDVQQDDA9hcGljYXNlLXRlc3QtY2EwggEi\n\
+MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDRbq2skW/liHTfAbcAPimd/0OC\n\
+OZUHkrVLLivzkq2QcMHyvDbZfGVtQwJlWzoMuBCVKuDM1IUJHjegf9ccqy59WyIN\n\
+CjNEzNvOXFaWlUw6euL0FLlUnMIKojPbvOsjn2O4FFA+g0yl6eWQk4shAKrHO7d3\n\
++uAtGFR0zPZvkgG8Q0GhDVaoAVHii3YK0x2R2iCUSgwcEai28zMvNAIdvnQojpIB\n\
+FodCXN4bgdmHjMeajaexLFBje3k+9BscbCuyprbgponS45cWZo/W0OJSKCSKscG2\n\
+PqxI5ZauBpzACgeTp6zD8AHu2vbO8e1oB0OfyWMfQXS+4PSJipajTtbnUlYZAgMB\n\
+AAGjUzBRMB0GA1UdDgQWBBQfIMo9w/DlilHgfO7nQbWMpC8zwjAfBgNVHSMEGDAW\n\
+gBQfIMo9w/DlilHgfO7nQbWMpC8zwjAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3\n\
+DQEBCwUAA4IBAQCZXRIWajEphFSkTCRgfRCDEU6i5ZOBYUamL6htmXT6q3Gw6ZuE\n\
+WCCPRPbTPPawOqbcm93QPU+wD8Z4egPR9XQmHkBXdWah9/z8zsA51KqAqHk07m13\n\
+kxr6ax3O28kuy7BonYaOm2axKIRKuvGNLFqjCKJzSM1pAyt75oj95GT/wGSoybkr\n\
+8vW9QMl0LrAYptQAv9vRUSFqJzhSGlYONfBBlS7WL9tyF4sGn1AwuEZ2yvlwnw/V\n\
+jAQHQ5W/qTrZoHrsS9zstP8ENCdKVzlCfq005tKEbPQ74tLVDHe76Sl5lqc6c1iS\n\
+DH7Q58rzXuGXGM7MUx1dXEbGRbr7wGIvDp0E\n\
+-----END CERTIFICATE-----\n";
+
+    /// CA 证书加载：单张 PEM、PEM bundle（多张串一个文件）、以及三类失败（无需联网）
+    #[test]
+    fn ca_certificate_loading() {
+        let base = std::env::temp_dir().join("apicase-ca-test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("建测试目录");
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+        // 单张 PEM
+        let single = base.join("ca.crt");
+        std::fs::write(&single, TEST_CA_PEM).expect("写证书");
+        assert_eq!(load_ca_certificates(&s(&single)).expect("单张 PEM 应解析成功").len(), 1);
+
+        // bundle：一个文件里串多张（CA 链的常见形态）
+        let bundle = base.join("chain.pem");
+        std::fs::write(&bundle, format!("{TEST_CA_PEM}{TEST_CA_PEM}")).expect("写证书");
+        assert_eq!(load_ca_certificates(&s(&bundle)).expect("bundle 应解析成功").len(), 2);
+
+        // 文件不存在
+        let err = load_ca_certificates(&s(&base.join("nope.crt"))).expect_err("应报错");
+        assert!(err.contains("读取 CA 证书失败"), "错误应指明是读取阶段失败: {err}");
+
+        // 内容不是证书 → 必须明确报错，不能静默忽略（否则用户以为配好了却仍连不上）
+        let junk = base.join("junk.crt");
+        std::fs::write(&junk, b"not a certificate at all").expect("写文件");
+        let err = load_ca_certificates(&s(&junk)).expect_err("应报错");
+        assert!(err.contains("解析 CA 证书失败"), "错误应指明是解析阶段失败: {err}");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 设置装配：坏 CA 路径必须让请求提前失败（而不是丢掉设置照常发出去）（无需联网）
+    #[tokio::test]
+    async fn bad_ca_path_fails_request() {
+        let req = ApiRequest {
+            method: "GET".into(),
+            url: "https://example.com".into(),
+            ..Default::default()
+        };
+        let opts = RequestOptions {
+            ca_cert_path: Some(
+                std::env::temp_dir()
+                    .join("apicase-absent-ca.crt")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            ..Default::default()
+        };
+        let err = perform_request(req, None, Some(opts)).await.expect_err("应报错");
+        assert!(err.contains("CA 证书"), "错误应指明与 CA 证书有关: {err}");
+    }
+
+    /// list_cert_files：按扩展名筛、递归、返回相对路径、跳过隐藏项与大目录（无需联网）
+    #[test]
+    fn list_cert_files_filters_and_relativizes() {
+        let base = std::env::temp_dir().join("apicase-certscan-test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("certs")).expect("建目录");
+        std::fs::create_dir_all(base.join("node_modules")).expect("建目录");
+        std::fs::create_dir_all(base.join(".hidden")).expect("建目录");
+        std::fs::write(base.join("root-ca.pem"), b"x").expect("写文件");
+        std::fs::write(base.join("certs/ca.crt"), b"x").expect("写文件");
+        std::fs::write(base.join("certs/server.CER"), b"x").expect("写文件"); // 大小写不敏感
+        std::fs::write(base.join("application.yml"), b"x").expect("写文件"); // 非证书后缀
+        std::fs::write(base.join("node_modules/dep.pem"), b"x").expect("写文件"); // 大目录跳过
+        std::fs::write(base.join(".hidden/secret.pem"), b"x").expect("写文件"); // 隐藏目录跳过
+
+        let got = list_cert_files(base.to_string_lossy().into_owned()).expect("扫描应成功");
+        assert_eq!(got, vec!["certs/ca.crt", "certs/server.CER", "root-ca.pem"]);
+
+        // 非目录应报错
+        assert!(list_cert_files(base.join("root-ca.pem").to_string_lossy().into_owned()).is_err());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// 真实 GET：验证 单节点 DAG 端到端链路（需联网）
     #[tokio::test]
     async fn real_get_request_succeeds() {
@@ -900,9 +1154,90 @@ mod tests {
             url: "https://example.com".into(),
             ..Default::default()
         };
-        let resp = perform_request(req, None).await.expect("请求应成功");
+        let resp = perform_request(req, None, None).await.expect("请求应成功");
         assert_eq!(resp.status, 200);
         assert!(!resp.body.is_empty());
+    }
+
+    /// 端到端：自签 HTTPS 服务下，三项请求设置各自的真实效果（需先起测试服务，见下）。
+    ///
+    /// 准备（证书由 TEST_CA_PEM 对应的 CA 签发，SAN 覆盖 localhost 与 127.0.0.1）：
+    /// ```sh
+    /// openssl req -x509 -newkey rsa:2048 -sha256 -days 36500 -nodes \
+    ///   -keyout ca.key -out ca.crt -subj "/CN=apicase-test-ca" \
+    ///   -addext "basicConstraints=critical,CA:TRUE"          # 内容需与 TEST_CA_PEM 一致
+    /// openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj "/CN=localhost"
+    /// openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+    ///   -out server.crt -days 3650 -sha256 \
+    ///   -extfile <(printf "subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE")
+    /// # 再用 node 起一个 https 服务监听 127.0.0.1:8443，/ 返回 200、/slow 延迟 5s 返回
+    /// ```
+    /// 手动运行：`cargo test -- --ignored e2e_tls_options`
+    ///
+    /// 一律走 proxy=none：本机常设 HTTPS_PROXY，不绕开的话根本到不了本地服务。
+    #[tokio::test]
+    #[ignore]
+    async fn e2e_tls_options_against_self_signed_server() {
+        let none = || Some(ProxyConfig { mode: "none".into(), url: None });
+        let get = |url: &str| ApiRequest {
+            method: "GET".into(),
+            url: url.into(),
+            ..Default::default()
+        };
+
+        // ① 默认（校验开启）：自签证书追溯不到受信任根 → 必须失败
+        let err = perform_request(get("https://127.0.0.1:8443/"), none(), None)
+            .await
+            .expect_err("严格校验下自签证书应被拒绝");
+        assert!(err.contains("请求失败"), "应是发起阶段的失败: {err}");
+
+        // ② 关闭校验：同一张证书照常连通
+        let opts = RequestOptions {
+            verify_ssl: Some(false),
+            ..Default::default()
+        };
+        let resp = perform_request(get("https://127.0.0.1:8443/"), none(), Some(opts))
+            .await
+            .expect("关闭校验后应连通");
+        assert_eq!(resp.status, 200);
+
+        // ③ 校验仍开启，但把签发它的 CA 加进信任库 → 同样连通（且公网校验不受影响）
+        let ca_path = std::env::temp_dir().join("apicase-e2e-ca.crt");
+        std::fs::write(&ca_path, TEST_CA_PEM).expect("写 CA 证书");
+        let opts = RequestOptions {
+            ca_cert_path: Some(ca_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let resp = perform_request(get("https://127.0.0.1:8443/"), none(), Some(opts))
+            .await
+            .expect("导入 CA 后应连通");
+        assert_eq!(resp.status, 200);
+
+        // ④ 超时：/slow 要 5s，给 500ms 必须超时（关校验以排除证书因素）
+        let opts = RequestOptions {
+            verify_ssl: Some(false),
+            timeout_ms: Some(500),
+            ..Default::default()
+        };
+        let start = Instant::now();
+        let err = perform_request(get("https://127.0.0.1:8443/slow"), none(), Some(opts))
+            .await
+            .expect_err("应超时");
+        assert!(start.elapsed() < Duration::from_secs(3), "应在超时值附近返回而非等满 5s");
+        assert!(err.contains("请求失败"), "超时应体现为请求失败: {err}");
+
+        // ⑤ 超时设为 0 = 不限制：同一个慢接口应能等到结果
+        let opts = RequestOptions {
+            verify_ssl: Some(false),
+            timeout_ms: Some(0),
+            ..Default::default()
+        };
+        let resp = perform_request(get("https://127.0.0.1:8443/slow"), none(), Some(opts))
+            .await
+            .expect("0 表示不限制，慢接口应等到结果");
+        assert_eq!(resp.status, 200);
+
+        let _ = std::fs::remove_file(&ca_path);
     }
 
     /// 端到端（需本地 httpbin：docker run -d -p 80:80 kennethreitz/httpbin）：
@@ -926,7 +1261,7 @@ mod tests {
                 url: url.into(),
                 ..Default::default()
             };
-            let resp = perform_request(req, none())
+            let resp = perform_request(req, none(), None)
                 .await
                 .unwrap_or_else(|e| panic!("{m} 请求失败: {e}"));
             assert_eq!(resp.status, 200, "{m} 状态应为 200");
@@ -960,7 +1295,7 @@ mod tests {
             ]),
             ..Default::default()
         };
-        let resp = perform_request(form, none()).await.expect("multipart 请求应成功");
+        let resp = perform_request(form, none(), None).await.expect("multipart 请求应成功");
         assert_eq!(resp.status, 200);
         assert!(resp.body.contains("\"a\": \"1\""), "httpbin 应回显表单字段 a: {}", resp.body);
         assert!(resp.body.contains("multipart/form-data"), "Content-Type 应由 reqwest 生成: {}", resp.body);
@@ -976,7 +1311,7 @@ mod tests {
             body_file: Some(path.to_string_lossy().into_owned()),
             ..Default::default()
         };
-        let resp = perform_request(bin, none()).await.expect("binary 请求应成功");
+        let resp = perform_request(bin, none(), None).await.expect("binary 请求应成功");
         assert_eq!(resp.status, 200);
         assert!(resp.body.contains("apicase-binary-payload"), "httpbin 应回显文件字节: {}", resp.body);
         let _ = std::fs::remove_file(&path);

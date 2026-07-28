@@ -1,6 +1,6 @@
-// 全局快捷键：动作注册表 + 键位解析 / 格式化 / 持久化 / 冲突检测（纯逻辑，无 React）。
+// 全局快捷键：动作注册表 + 键位解析 / 格式化 / 冲突检测（纯逻辑，无 React）。
 // 设计：一套跨平台配置——修饰键统一抽象为 Mod（macOS=⌘，其它=Ctrl）。
-// 用户自定义 override 存 localStorage；未 override 用默认；override 为空串表示禁用。
+// 未 override 用默认；override 为空串表示禁用。存储由 settings.ts 统一负责（→ settings.json）。
 
 export type ActionId =
   | "new-case"
@@ -132,44 +132,19 @@ export function accelTokens(a: Accel | null): string[] {
   return out;
 }
 
-// ── 持久化（localStorage）─────────────────────────
+// ── 自定义绑定 ───────────────────────────────────
 // override 值：accel 字符串（自定义）| ""（显式禁用）；缺省 key → 用默认。
-const LS_KEY = "apicase.shortcuts.v1";
-// 快捷键功能总开关（关闭时全局不分发任何快捷键）；缺省视为启用。
-const LS_ENABLED_KEY = "apicase.shortcuts.enabled.v1";
-
+// 持久化本身不在这里——统一由 settings.ts 写进应用配置目录的 settings.json（见该文件说明）。
 export type Overrides = Partial<Record<ActionId, string>>;
 
-export function loadShortcutsEnabled(): boolean {
-  return localStorage.getItem(LS_ENABLED_KEY) !== "0";
-}
-
-export function saveShortcutsEnabled(enabled: boolean): void {
-  try {
-    localStorage.setItem(LS_ENABLED_KEY, enabled ? "1" : "0");
-  } catch {
-    /* ignore */
+/** 任意来源（JSON / 旧 localStorage 值）→ 合法的 override 表；只收字符串值，其余丢弃。 */
+export function normalizeOverrides(v: unknown): Overrides {
+  if (!v || typeof v !== "object") return {};
+  const out: Overrides = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof val === "string") out[k as ActionId] = val;
   }
-}
-
-export function loadOverrides(): Overrides {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return {};
-    const o = JSON.parse(raw);
-    if (o && typeof o === "object") return o as Overrides;
-  } catch {
-    /* ignore */
-  }
-  return {};
-}
-
-export function saveOverrides(o: Overrides): void {
-  try {
-    localStorage.setItem(LS_KEY, JSON.stringify(o));
-  } catch {
-    /* ignore */
-  }
+  return out;
 }
 
 /** 合并默认 + override → 每个动作的生效键位（null = 禁用）。 */

@@ -6,10 +6,12 @@ import "@fontsource/inter/700.css";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
-import { applyTheme, loadThemeMode } from "./theme";
+import { applyTheme } from "./theme";
+import { loadCachedSettings } from "./settings";
 
-// 首帧前应用主题，避免深色下加载闪白
-applyTheme(loadThemeMode());
+// 首帧前应用主题，避免深色下加载闪白。
+// 权威值在 settings.json 里（异步），这里读的是它在 localStorage 的同步镜像。
+applyTheme(loadCachedSettings().theme);
 
 // 禁用 WebView 自带右键菜单（重新载入 / 检查元素 / 查询 / 翻译 / 用谷歌翻译等浏览器行为）。
 // 应用自有的右键菜单（文件树、标签页等）靠 onContextMenu + setState 渲染，自身已 preventDefault，
