@@ -1,9 +1,9 @@
 [package]
 name = "app"
-version = "0.1.0"
 description = "apicase — API 调试、管理与用例编排桌面应用"
-authors = ["apicase"]
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,18 +18,19 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# 执行内核：case 解析、变量、认证、HTTP 执行、报告渲染全在这里。
+# 本 crate 只剩「Tauri 命令层 + 桌面专属能力（fs 监听 / PTY / 应用配置目录）」。
+apicase-core = { path = "../core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-# HTTP 客户端：rustls 避免本地 OpenSSL 依赖，利于跨平台
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "multipart"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
 # 文件系统监听：跨平台原生后端（macOS FSEvents / Linux inotify / Windows ReadDirectoryChangesW）
 notify = "6"
 # 伪终端：为底部终端提供真·交互式 shell（跨平台，wezterm 出品）
 portable-pty = "0.9"
 
 [dev-dependencies]
-# 仅用于 perform_request 的异步测试
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -14,7 +14,7 @@
 
 - **文件即数据（local-first）** —— case 不进数据库，就是磁盘上的 `.yml`。Git 友好、可 diff、可 review、可离线，数据完全由用户掌控。
 - **单 / 多请求统一为 DAG** —— 不做两套模型：单请求 = 退化的单节点 DAG，多步编排 = 多节点 DAG（节点间以 `dependsOn` 声明依赖）。概念更少、代码路径统一、单 → 多平滑演进。
-- **变量与数据流** —— 变量就近覆盖：environment（全局） < case 级 `vars` < 上游节点 `outputs`；透传语法 `{{baseUrl}}`、`{{steps.login.outputs.token}}`；输出按 JSONPath 从响应体提取供下游引用。
+- **变量与数据流** —— 变量就近覆盖：environment（全局） < case 级 `vars` < 上游节点 `outputs`；透传语法 `${{baseUrl}}`、`${{steps.login.outputs.token}}`；输出按 JSONPath 从响应体提取供下游引用。
 - **YAML 作为载体** —— case / 配置都用 YAML，可读、可注释、Git 友好；schema 参考 Postman / HAR / Insomnia / Bruno（request）与 Arazzo / GitHub Actions（flow）。
 
 ## 功能特性
@@ -82,7 +82,7 @@ environment:
 **单节点用例**（等价于「发一个 API」）：
 
 ```yaml
-apicase: "0.1"
+apicase: v0.1
 name: 获取用户
 vars:
   baseUrl: https://api.example.com
@@ -90,7 +90,7 @@ requests:
   - id: getUser
     http:
       method: GET
-      url: "{{baseUrl}}/users/1"
+      url: ${{baseUrl}}/users/1
     assertions:
       - { target: status, op: eq, value: "200" }
       - { target: $.data.id, op: exists }
@@ -99,7 +99,7 @@ requests:
 **多节点用例**（登录 → 下单，`dependsOn` 声明依赖、`outputs` 提取变量供下游透传）：
 
 ```yaml
-apicase: "0.1"
+apicase: v0.1
 name: 登录并下单
 vars:
   baseUrl: https://api.example.com
@@ -107,7 +107,7 @@ requests:
   - id: login
     http:
       method: POST
-      url: "{{baseUrl}}/login"
+      url: ${{baseUrl}}/login
       body:
         type: json
         json: { username: admin, password: "123456" }
@@ -119,9 +119,9 @@ requests:
     dependsOn: [login]
     http:
       method: POST
-      url: "{{baseUrl}}/orders"
+      url: ${{baseUrl}}/orders
       headers:
-        - { name: Authorization, value: "Bearer {{steps.login.outputs.token}}" }
+        - { name: Authorization, value: Bearer ${{steps.login.outputs.token}} }
       body:
         type: json
         json: { sku: A-1001, qty: 2 }
@@ -132,7 +132,7 @@ requests:
 - **auth 类型**：`none` / `bearer` `{ token }` / `basic` `{ username, password }` / `apikey` `{ key, value, in: header|query }`。
 - **body 类型**：`none` / `json` / `text`（可选 `contentType`）/ `form-urlencoded` / `form-data`。
 - **断言目标**：`status` / `header.<名>` / JSONPath（如 `$.code`）。
-- **变量**：`{{name}}`；跨节点引用上游输出用 `{{steps.<请求id>.outputs.<输出名>}}`；未解析保留字面量。
+- **变量**：`${{name}}`；跨节点引用上游输出用 `${{steps.<请求id>.outputs.<输出名>}}`；未解析保留字面量。
 
 ## 仓库结构
 
@@ -156,6 +156,6 @@ apicase/
 
 ## 路线（下一步）
 
-1. 未定义变量高亮（`{{var}}` 找不到时提示）；深色主题。
+1. 未定义变量高亮（`${{var}}` 找不到时提示）；深色主题。
 2. JSONPath 通配符 / 过滤器、flow 并发执行、断言更多目标（响应耗时 / 大小）。
 3. 画布节点拖拽持久化、标签拖拽排序、最近列表持久化、文件树外部变更自动刷新、历史、导入导出（Postman / Arazzo）、OpenAPI(SPEC)。

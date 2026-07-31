@@ -1,12 +1,14 @@
-// {{var}} 高亮输入框：透明 <input> 叠在一层「高亮背板」之上——
+// 变量高亮输入框：透明 <input> 叠在一层「高亮背板」之上——
 // 背板与输入框共用同一 className（排版完全一致），并随输入横向滚动同步。
-// 变量 token 依据是否已设值着色：已设值→蓝色(--accent)，未设值/空 {{}}→警告色。
+// 变量 token 依据是否已设值着色：已设值→蓝色(--accent)，未设值/空占位→警告色。
 import { useRef, type InputHTMLAttributes, type ReactNode } from "react";
 
-// 匹配 {{ 变量名 }}（含空占位 {{}}）；变量名内不含花括号
-const VAR_RE = /\{\{([^{}]*?)\}\}/g;
+// 匹配 ${{ 变量名 }}（含空占位 ${{}}）；变量名内不含花括号。
+// **只认带 `$` 的写法**，与执行内核一致（core/src/vars.rs）：`{` 是 YAML 的流式映射
+// 指示符，以 `{{` 开头的值必须整行加引号，带上 `$` 才能裸写。
+const VAR_RE = /\$\{\{([^{}]*?)\}\}/g;
 
-/** 将含 {{var}} 的字符串拆成高亮片段。 */
+/** 将含 ${{var}} 的字符串拆成高亮片段。 */
 function highlight(value: string, isVarSet: (name: string) => boolean): ReactNode[] {
   const nodes: ReactNode[] = [];
   let last = 0;

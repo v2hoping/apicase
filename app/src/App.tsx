@@ -11,17 +11,34 @@ import {
   Assertion,
   AssertOp,
   UiNodes,
+  Environments,
   WorkspaceSettings,
   DEFAULT_WS_SETTINGS,
   analyzeCase,
   dumpCase,
   splitQueryFromUrl,
-  parseEnvironments,
-  parseSettings,
-  dumpApplicationConfig,
+  parseAppConfig,
+  dumpAppConfig,
 } from "./case";
-import { ReqDraft, requestToDraft, draftToRequest, emptyDraft } from "./draft";
-import { sendWithAuth } from "./auth";
+import { ReqDraft, RequestDraft, draftToRequest, emptyDraft, caseToRequests } from "./draft";
+import {
+  type RunReport,
+  type RunOpts,
+  type RunContext,
+  type ClientConfig,
+  type AssertRecord,
+  type KVPair,
+  type StepResult,
+  debugRunOpts as makeDebugOpts,
+  batchRunOpts as makeBatchOpts,
+  runStep,
+  runBatch,
+  cancelRun as cancelRunIpc,
+  listenRun,
+  reportShell,
+  parseReport,
+  topoOrder,
+} from "./run";
 import { RequestEditor, KVTable, METHODS, methodClass, Select, OP_LABELS } from "./RequestEditor";
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
 import { TerminalPane } from "./TerminalPane";
@@ -30,7 +47,6 @@ import { type AppSettings, loadCachedSettings, loadAppSettings, saveAppSettings,
 import { type ProxyConfig, type ProxyMode, proxyPayload } from "./proxy";
 import { AiChat } from "./AiChat";
 import { MarkdownEditor } from "./markdown";
-import { RunContext, AssertResult, resolveDraft, extractOutputs, evalAssertions } from "./flow";
 import { baseName, dirName, joinPath, relPath, isUnder, retargetPath, uniqueName } from "./pathutil";
 import {
   ACTIONS,
@@ -49,23 +65,11 @@ import {
 } from "./shortcuts";
 import "./App.css";
 
-interface HeaderEntry {
-  key: string;
-  value: string;
-}
-
-interface ApiResponse {
-  status: number;
-  statusText: string;
-  headers: HeaderEntry[];
-  body: string;
-  elapsedMs: number;
-}
-
 interface DirEntry {
   name: string;
   path: string;
   isDir: boolean;
+  hidden?: boolean; // `.` 开头；仅在「显示隐藏文件」打开时才会出现，用于淡色渲染
 }
 
 // 应用自身的存储位置（后端 app_paths 命令返回）；exists 决定「显示位置」是否可点
@@ -82,22 +86,34 @@ function tildify(path: string, home: string): string {
   return rest === "" || rest.startsWith("/") || rest.startsWith("\\") ? `~${rest}` : path;
 }
 
-// case 内部统一模型：单请求 = 只有 1 个请求；每个请求复用 ReqDraft
-interface RequestDraft {
-  id: string;
-  protocol: string;
-  dependsOn: string[];
-  outputs: RequestOutput[];
-  assertions: Assertion[];
-  docs: string;
-  req: ReqDraft;
+// 执行语义（变量透传 / 请求组装 / 认证 / 断言 / 报告）全在 Rust 执行内核里，
+// 见 core/src/runner.rs。本文件只负责把配置递下去、把结果画出来。
+
+/** 响应区展示用的一次响应——由 `StepResult.response` 折平而来（调试运行不截断，preview 即全文）。 */
+interface RespView {
+  status: number;
+  statusText: string;
+  headers: KVPair[];
+  body: string;
+  elapsedMs: number;
 }
 
 interface RunState {
   status: "idle" | "running" | "ok" | "err";
-  resp?: ApiResponse | null;
+  resp?: RespView | null;
   error?: string | null;
-  asserts?: AssertResult[];
+  asserts?: AssertRecord[];
+}
+
+/** `StepResult.response` → 响应区要的形状。 */
+function respViewOf(r: StepResult): RespView {
+  return {
+    status: r.response?.status ?? 0,
+    statusText: r.response?.statusText ?? "",
+    headers: r.response?.headers ?? [],
+    body: r.response?.body.preview ?? "",
+    elapsedMs: r.response?.elapsedMs ?? 0,
+  };
 }
 
 // 一个标签页的完整编辑态快照（切换/后台保存时用）
@@ -157,6 +173,46 @@ function isAppConfig(path: string): boolean {
 function isMarkdownFile(path: string): boolean {
   const n = baseName(path).toLowerCase();
   return n.endsWith(".md") || n.endsWith(".markdown");
+}
+
+function isHtmlFile(path: string): boolean {
+  const n = baseName(path).toLowerCase();
+  return n.endsWith(".html") || n.endsWith(".htm");
+}
+
+// ── 运行报告 ────────────────────────────────────────
+
+/** 运行报告的输出位置（相对工作空间根）。隐藏目录：默认不出现在文件树，用例树保持干净。 */
+const REPORTS_REL = ".apicase/reports";
+
+/**
+ * 运行报告标签用**伪路径**占位。tabOrder 存的是路径字符串，加前缀即可与真实文件分流——
+ * 伪路径不走 openCase、不进 tabCacheRef（它不是编辑态，TabSnapshot 那套字段一个都不需要）。
+ */
+const RUN_TAB_PREFIX = "apicase://run/";
+const isRunTab = (p: string): boolean => p.startsWith(RUN_TAB_PREFIX);
+const runIdOf = (p: string): string => p.slice(RUN_TAB_PREFIX.length);
+/** 历史报告以其文件路径为会话 id，重复打开同一份即复用同一个标签。 */
+const reportKey = (path: string): string => "file:" + path;
+
+/** 一次运行的会话状态（live 运行或读回的历史报告）。 */
+interface RunSession {
+  runId: string;
+  report: RunReport | null;
+  file: string; // report.html 的绝对路径
+  dir: string; // 报告目录
+  total: number; // 预计要跑的用例数（进度条分母；报告 summary 在跑完前不含未跑的）
+  cancelling?: boolean;
+  readOnly?: boolean; // 历史报告：没有进度条与取消
+}
+
+/** 运行配置对话框状态。files=null 表示正在扫描用例。 */
+interface RunDialogState {
+  target: string;
+  isDir: boolean;
+  recursive: boolean;
+  env: string;
+  files: string[] | null;
 }
 
 // 已知二进制/媒体扩展名：直接短路，不读取整个文件（避免大文件读入内存）
@@ -235,7 +291,44 @@ function ConfigIcon({ className = "tree-ico ico-config", size = 15 }: { classNam
 // 文件图标（仅文件用，供文件树 / 搜索结果 / 标签页统一复用）：
 // application.yml → 齿轮；.yml/.yaml 用例 → 高亮文件；其余 → 普通文件
 function FileTypeIcon({ path }: { path: string }) {
+  if (isRunTab(path)) return <ReportIcon />;
   return isAppConfig(path) ? <ConfigIcon /> : <FileIcon active={isYamlFile(path)} />;
+}
+
+/** 文件树「显示隐藏文件」开关的图标（睁眼 / 闭眼，对齐 Finder 与 VSCode 的心智） */
+function EyeIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <path d="M1.5 8s2.4-4 6.5-4 6.5 4 6.5 4-2.4 4-6.5 4S1.5 8 1.5 8Z" strokeLinejoin="round" />
+      <circle cx="8" cy="8" r="1.8" />
+    </svg>
+  );
+}
+function EyeOffIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <path d="M1.5 8s2.4-4 6.5-4c1.2 0 2.2.3 3.1.8M14.5 8s-2.4 4-6.5 4c-1.2 0-2.2-.3-3.1-.8" strokeLinecap="round" />
+      <path d="M3 13 13 3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** 运行报告标签的图标：带勾的清单（与用例的文件图标区分开） */
+function ReportIcon() {
+  return (
+    <svg className="tree-ico ico-report" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" d="M6 3h8l4 4v14H6z" />
+      <path fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" d="M14 3v4h4" />
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="m9 13.5 1.8 1.8L15 11"
+      />
+    </svg>
+  );
 }
 // 设置页左导航图标：统一线条描边（currentColor 跟随文字色），16×16 viewBox
 const SETTINGS_NAV_ICONS: Record<string, ReactNode> = {
@@ -338,50 +431,6 @@ function byteSize(s: string): string {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
-// Case → 内部 RequestDraft 列表（case.requests 已是统一列表；空则兜底 1 个）
-function caseToRequests(c: Case): { requests: RequestDraft[]; ui?: UiNodes } {
-  const src: Request[] = c.requests.length
-    ? c.requests
-    : [{ id: "step1", protocol: "http", http: emptyDraftRequest(), dependsOn: [], outputs: [], assertions: [] }];
-  return {
-    requests: src.map((r) => ({
-      id: r.id,
-      protocol: r.protocol || "http",
-      dependsOn: r.dependsOn,
-      outputs: r.outputs,
-      assertions: r.assertions,
-      docs: r.docs || "",
-      req: requestToDraft(r.http),
-    })),
-    ui: c.ui?.nodes,
-  };
-}
-
-// 极少数：valid 但 http 报文缺失时的兜底
-function emptyDraftRequest() {
-  return { method: "GET", url: "", query: [], headers: [], auth: { type: "none" as const }, body: { type: "none" as const } };
-}
-
-// 拓扑序（运行时按依赖先后逐个请求执行）
-function topoOrder(sds: RequestDraft[]): RequestDraft[] {
-  const byId = new Map(sds.map((s) => [s.id, s]));
-  const visited = new Set<string>();
-  const out: RequestDraft[] = [];
-  const visit = (s: RequestDraft, stack: Set<string>) => {
-    if (visited.has(s.id) || stack.has(s.id)) return;
-    stack.add(s.id);
-    for (const dep of s.dependsOn) {
-      const d = byId.get(dep);
-      if (d) visit(d, stack);
-    }
-    stack.delete(s.id);
-    visited.add(s.id);
-    out.push(s);
-  };
-  for (const s of sds) visit(s, new Set());
-  return out;
-}
-
 // 行内「更多」按钮图标：水平三点（同 VSCode 文件树行尾的 ⋯）
 function MoreIcon() {
   return (
@@ -429,7 +478,9 @@ function TreeNode({
     <div className="tree-node">
       <div
         ref={rowRef}
-        className={`tree-row ${isSelected ? "selected" : ""} ${menuPath === entry.path ? "menu-open" : ""}`}
+        className={`tree-row ${isSelected ? "selected" : ""} ${menuPath === entry.path ? "menu-open" : ""} ${
+          entry.hidden ? "is-hidden-entry" : ""
+        }`}
         style={{ paddingLeft: 16 + depth * 14 }}
         title={entry.name}
         onClick={() => (entry.isDir ? onToggle(entry) : onSelect(entry.path))}
@@ -853,6 +904,8 @@ function ShortcutsSettings({
 
 // 应用元信息（与 package.json / tauri.conf.json 保持一致）
 const APP_VERSION = "0.1.0";
+/** case 文件的 schema 版本（`apicase:` 字段）。带 `v` 前缀故不是数字形态，落盘不必加引号。 */
+const CASE_VERSION = "v0.1";
 const APP_REPO = "https://github.com/v2hoping/apicase";
 
 type SysInfo = { os: string; arch: string; chip: string };
@@ -1029,6 +1082,19 @@ function SettingsPage({
       alive = false;
     };
   }, [section]);
+
+  // 报告目录是否已创建（首次运行前并不存在，「显示位置」要据此禁用）
+  const [reportsDirExists, setReportsDirExists] = useState<boolean | undefined>(undefined);
+  useEffect(() => {
+    if (section !== "通用" || !workspacePath) return;
+    let alive = true;
+    invoke<boolean>("path_exists", { path: joinPath(workspacePath, REPORTS_REL) })
+      .then((e) => alive && setReportsDirExists(e))
+      .catch(() => alive && setReportsDirExists(false));
+    return () => {
+      alive = false;
+    };
+  }, [section, workspacePath]);
 
   const [confirmNode, askConfirm] = useConfirm();
 
@@ -1213,6 +1279,14 @@ function SettingsPage({
                 note={`配置中记为相对路径 ${wsSettings.caCert.trim()}`}
               />
             )}
+            {/* 报告目录在 .apicase/ 下、文件树默认不显示，不在这里列出用户就无从知道它在哪。
+                首次运行前目录并不存在，故 exists 交给 reportsDirExists 决定按钮可否点。 */}
+            <PathRow
+              label="运行报告"
+              path={workspacePath ? joinPath(workspacePath, REPORTS_REL) : ""}
+              exists={reportsDirExists}
+              home={appPaths?.home}
+            />
             <PathRow
               label="应用设置"
               path={appPaths?.settingsFile || ""}
@@ -1371,10 +1445,257 @@ function SettingsPage({
 }
 
 // 标签页栏（多文件打开）：中键 / × 关闭，右键弹关闭菜单
+/**
+ * 运行配置对话框。
+ *
+ * **列出将要运行的用例是必备项**——Newman / Bruno 都没有，结果是用户经常不知道自己刚跑了什么。
+ * 本期只暴露「递归」与「环境」两个选项：并发默认串行、失败继续、输出目录固定，
+ * runner 侧留了参数位，加 UI 时不必改执行语义。
+ */
+function RunDialog({
+  state,
+  workspaceRoot,
+  environments,
+  onRecursive,
+  onEnv,
+  onRun,
+  onCancel,
+}: {
+  state: RunDialogState;
+  workspaceRoot: string;
+  environments: Record<string, Record<string, string>>;
+  onRecursive: (v: boolean) => void;
+  onEnv: (v: string) => void;
+  onRun: () => void;
+  onCancel: () => void;
+}) {
+  const envNames = Object.keys(environments);
+  const rel = relPath(workspaceRoot, state.target);
+  const files = state.files;
+  const scanning = files === null;
+  const canRun = !scanning && files.length > 0;
+
+  return (
+    <div className="modal-mask" onMouseDown={onCancel}>
+      <div
+        className="modal run-modal"
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onCancel();
+          if (e.key === "Enter" && canRun) onRun();
+        }}
+      >
+        <div className="modal-title">运行并生成报告</div>
+        <div className="modal-message">
+          {state.isDir ? "目录" : "用例"} <Obj>{rel || baseName(state.target) || "工作空间根"}</Obj>
+        </div>
+
+        <div className="run-opts">
+          {state.isDir && (
+            <label className="run-opt">
+              <span className="run-opt-label">范围</span>
+              <span className="seg-radio">
+                <button className={state.recursive ? "on" : ""} onClick={() => onRecursive(true)}>
+                  含子目录
+                </button>
+                <button className={!state.recursive ? "on" : ""} onClick={() => onRecursive(false)}>
+                  仅当前目录
+                </button>
+              </span>
+            </label>
+          )}
+          <label className="run-opt">
+            <span className="run-opt-label">环境</span>
+            {envNames.length ? (
+              <Select
+                value={state.env}
+                options={envNames.map((n) => ({ value: n, label: n }))}
+                onChange={onEnv}
+              />
+            ) : (
+              <span className="run-opt-none">未配置环境</span>
+            )}
+          </label>
+        </div>
+
+        <div className="run-preview">
+          <div className="run-preview-head">
+            {scanning ? "正在扫描用例…" : `将运行 ${files.length} 个用例`}
+          </div>
+          {!scanning && files.length > 0 && (
+            <ul className="run-preview-list">
+              {files.map((f) => (
+                <li key={f} title={relPath(workspaceRoot, f)}>
+                  {relPath(workspaceRoot, f)}
+                </li>
+              ))}
+            </ul>
+          )}
+          {!scanning && files.length === 0 && (
+            <div className="run-preview-empty">
+              这里没有可运行的用例（只认 <code>.yml</code> / <code>.yaml</code>，不含 application.yml）。
+            </div>
+          )}
+        </div>
+
+        <div className="modal-actions">
+          <button className="btn-ghost" onClick={onCancel}>
+            取消
+          </button>
+          <button className="btn-primary" onClick={onRun} disabled={!canRun}>
+            运行
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 运行报告面板 = 原生工具栏（iframe 外）+ 报告页 iframe（iframe 内）。
+ *
+ * **报告内容只有一套渲染实现**：iframe 里跑的 REPORT_SHELL 与落盘 report.html 出自同一模板，
+ * 因此「应用内看到的」「历史回看的」「发给同事的」三处像素级一致。若这里改用 React 再画一遍，
+ * 改一次配色就要改两处，必然漂移。
+ *
+ * 反过来，**运行控制留在 iframe 外**——分发出去的报告里本就不该有「取消」按钮。
+ *
+ * 数据经 postMessage 推送而非重塞 srcdoc：整页重画会丢掉用户展开的详情与滚动位置。
+ */
+/** 报告空壳的进程级缓存：它不随运行数据变化，取一次就够，多个报告标签共用。 */
+let reportShellCache: Promise<string> | null = null;
+function loadReportShell(): Promise<string> {
+  reportShellCache ??= reportShell();
+  return reportShellCache;
+}
+
+function RunReportPane({
+  session,
+  theme,
+  onCancel,
+  onOpenCase,
+  onOpenExternal,
+  onReveal,
+}: {
+  session: RunSession;
+  theme: "light" | "dark";
+  onCancel: () => void;
+  onOpenCase: (file: string) => void;
+  onOpenExternal: () => void;
+  onReveal: () => void;
+}) {
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const readyRef = useRef(false);
+  const { report } = session;
+  // 空壳是编译期常量（与运行数据无关），取一次缓存起来即可；
+  // 拿到之前不渲染 iframe——srcDoc 一变就会重新加载整个文档，握手状态会跟着作废。
+  const [shell, setShell] = useState("");
+  useEffect(() => {
+    let alive = true;
+    void loadReportShell().then((html) => {
+      if (alive) setShell(html);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const post = (msg: unknown) => {
+    // srcdoc 的 origin 是 null，只能用 "*"；反向消息在下面按 type 白名单处理。
+    frameRef.current?.contentWindow?.postMessage(msg, "*");
+  };
+
+  // 报告页加载完成 → 握手（宿主专属动作据此显形）→ 推主题 → 推数据
+  useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      if (e.source !== frameRef.current?.contentWindow) return;
+      const d = e.data as { type?: string; file?: string };
+      if (!d || typeof d !== "object") return;
+      if (d.type === "ready") {
+        readyRef.current = true;
+        post({ type: "host", app: "apicase" });
+        post({ type: "theme", mode: theme });
+        if (report) post({ type: "report", report });
+      } else if (d.type === "open-case" && typeof d.file === "string") {
+        onOpenCase(d.file);
+      }
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [report, theme, onOpenCase]);
+
+  useEffect(() => {
+    if (readyRef.current) post({ type: "theme", mode: theme });
+  }, [theme]);
+
+  useEffect(() => {
+    if (readyRef.current && report) post({ type: "report", report });
+  }, [report]);
+
+  const s = report?.summary;
+  const done = s ? s.passed + s.failed + s.error + s.skipped : 0;
+  const total = Math.max(session.total, s?.total ?? 0, 1);
+  const running = !session.readOnly && report?.status === "running";
+  const pct = Math.round((done / total) * 100);
+
+  return (
+    <div className="run-pane">
+      <div className="run-bar">
+        {running ? (
+          <>
+            <span className="run-spinner" aria-hidden="true" />
+            <span className="run-count">
+              {done} / {total}
+            </span>
+            <div className="run-progress">
+              <div className="run-progress-fill" style={{ width: `${pct}%` }} />
+            </div>
+          </>
+        ) : (
+          <span className={`run-verdict ${s && s.failed + s.error > 0 ? "bad" : "ok"}`}>
+            {report?.status === "cancelled" ? "已取消" : s && s.failed + s.error > 0 ? "未全部通过" : "全部通过"}
+          </span>
+        )}
+        {s && (
+          <span className="run-stats">
+            <span className="ok">✓ {s.passed}</span>
+            {s.failed > 0 && <span className="bad">✕ {s.failed}</span>}
+            {s.error > 0 && <span className="warn">! {s.error}</span>}
+            {s.skipped > 0 && <span className="mute">– {s.skipped}</span>}
+          </span>
+        )}
+        <span className="run-bar-spacer" />
+        {running && (
+          <button className="btn-ghost sm" onClick={onCancel} disabled={session.cancelling}>
+            {session.cancelling ? "正在停止…" : "取消"}
+          </button>
+        )}
+        <button className="btn-ghost sm" onClick={onReveal} title={session.file}>
+          显示位置
+        </button>
+        <button className="btn-ghost sm" onClick={onOpenExternal}>
+          在浏览器中打开
+        </button>
+      </div>
+      {shell && (
+        <iframe
+          ref={frameRef}
+          className="run-frame"
+          title="运行报告"
+          // 不给 allow-same-origin：给了就等于放弃隔离，报告页将能访问父窗口与存储
+          sandbox="allow-scripts"
+          srcDoc={shell}
+        />
+      )}
+    </div>
+  );
+}
+
 function TabBar({
   tabs,
   active,
   isDirty,
+  labelOf,
   onSelect,
   onClose,
   onContext,
@@ -1382,6 +1703,7 @@ function TabBar({
   tabs: string[];
   active: string;
   isDirty: (path: string) => boolean;
+  labelOf: (path: string) => string;
   onSelect: (path: string) => void;
   onClose: (path: string) => void;
   onContext: (e: React.MouseEvent, path: string) => void;
@@ -1392,7 +1714,7 @@ function TabBar({
         <div
           key={path}
           className={`file-tab ${path === active ? "active" : ""}`}
-          title={path}
+          title={isRunTab(path) ? labelOf(path) : path}
           onMouseDown={(e) => {
             if (e.button === 1) {
               e.preventDefault();
@@ -1403,7 +1725,7 @@ function TabBar({
           onContextMenu={(e) => onContext(e, path)}
         >
           <FileTypeIcon path={path} />
-          <span className="ft-name">{baseName(path)}</span>
+          <span className="ft-name">{labelOf(path)}</span>
           <span className="ft-right">
             {isDirty(path) && <span className="ft-dirty" />}
             <button
@@ -1559,7 +1881,7 @@ function App() {
   const [currentCasePath, setCurrentCasePath] = useState("");
   const [caseName, setCaseName] = useState("");
   const [caseVars, setCaseVars] = useState<Record<string, unknown> | undefined>(undefined);
-  const [caseVersion, setCaseVersion] = useState("0.1");
+  const [caseVersion, setCaseVersion] = useState(CASE_VERSION);
   const [dirty, setDirty] = useState(false);
 
   // 统一 requests 模型（单请求 = 长度 1）
@@ -1576,6 +1898,15 @@ function App() {
   const [textError, setTextError] = useState<string | null>(null);
   const [binaryFile, setBinaryFile] = useState(false); // 二进制/不支持编码：显示占位提示
   const [configVisual, setConfigVisual] = useState(false); // application.yml：可视设置页 vs 文本
+
+  // 批量运行：会话（live 或历史报告）与运行配置对话框。
+  // 会话独立于 tabCacheRef——伪路径标签不是编辑态，不进快照体系。
+  const [runSessions, setRunSessions] = useState<Record<string, RunSession>>({});
+  const [runDialog, setRunDialog] = useState<RunDialogState | null>(null);
+  const runDialogRef = useRef<RunDialogState | null>(null);
+  runDialogRef.current = runDialog;
+  // 「打开并运行」：openCase 是异步的，记下待运行的路径，等 requests 就绪后再发
+  const pendingRunRef = useRef<string | null>(null);
 
   // 运行态：每个请求一份（响应区展示当前选中请求）
   const [runMap, setRunMap] = useState<Record<string, RunState>>({});
@@ -1598,6 +1929,9 @@ function App() {
   // 快捷键功能总开关：关闭时全局不分发任何快捷键
   const [scEnabled, setScEnabled] = useState<boolean>(cachedSettings.shortcutsEnabled);
   const onShortcutsEnabledChange = setScEnabled;
+  // 文件树显示隐藏项（. 开头）。报告目录 .apicase/ 靠它可见，但这是通用能力——
+  // 用户的 .env / .gitignore / .gitlab-ci.yml 本来也该能看到。
+  const [showHidden, setShowHidden] = useState<boolean>(cachedSettings.showHiddenFiles);
   // 代理设置：控制发请求是否走系统代理
   const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(cachedSettings.proxy);
   const onProxyChange = setProxyConfig;
@@ -1623,6 +1957,7 @@ function App() {
       setProxyConfig(s.proxy);
       setScOverrides(s.shortcuts);
       setScEnabled(s.shortcutsEnabled);
+      setShowHidden(s.showHiddenFiles);
       const alive = await filterExistingPaths(s.recentWorkspaces);
       setRecentWorkspaces((prev) => Array.from(new Set([...prev, ...alive])).slice(0, 10));
       lastSavedRef.current = JSON.stringify({ ...s, recentWorkspaces: alive });
@@ -1644,14 +1979,24 @@ function App() {
       proxy: proxyConfig,
       shortcuts: scOverrides,
       shortcutsEnabled: scEnabled,
+      showHiddenFiles: showHidden,
     };
     const serialized = JSON.stringify(next);
     if (serialized === lastSavedRef.current) return;
     lastSavedRef.current = serialized;
     saveAppSettings(next);
-  }, [recentWorkspaces, themeMode, proxyConfig, scOverrides, scEnabled]);
+  }, [recentWorkspaces, themeMode, proxyConfig, scOverrides, scEnabled, showHidden]);
 
   const mark = () => setDirty(true);
+
+  // 「打开并运行」的第二步：文件已打开且请求就绪，此时才发得出去
+  useEffect(() => {
+    const want = pendingRunRef.current;
+    if (!want || want !== currentCasePath || !requests.length) return;
+    pendingRunRef.current = null;
+    if (requests.length > 1) void onRunAll();
+    else void onSendRequest(requests[0].id);
+  }, [currentCasePath, requests]);
 
   const selected = requests.find((s) => s.id === selectedRequestId) || requests[0];
   const isFlow = requests.length >= 2 || requests.some((s) => s.outputs.length > 0 || s.dependsOn.length > 0);
@@ -1905,12 +2250,21 @@ function App() {
   // 读取某目录的直接子项并缓存
   async function loadDir(path: string) {
     try {
-      const entries = await invoke<DirEntry[]>("list_dir", { path });
+      const entries = await invoke<DirEntry[]>("list_dir", { path, showHidden });
       setChildrenMap((prev) => ({ ...prev, [path]: entries }));
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     }
   }
+
+  // 切换「显示隐藏文件」后重拉已加载的目录（保持懒加载：只刷新展开过的）
+  const showHiddenRef = useRef(showHidden);
+  useEffect(() => {
+    if (showHiddenRef.current === showHidden) return;
+    showHiddenRef.current = showHidden;
+    const loaded = Object.keys(childrenMap);
+    loaded.forEach((d) => void loadDir(d));
+  }, [showHidden]);
 
   // 记录本应用自身发起的写操作路径，令监听回声可被识别并抑制
   function noteSelfWrite(...paths: string[]) {
@@ -1987,9 +2341,9 @@ function App() {
   async function loadEnvironments(root: string) {
     try {
       const text = await invoke<string>("read_text_file", { path: joinPath(root, "application.yml") });
-      const envs = parseEnvironments(text);
+      const { environment: envs, settings } = await parseAppConfig(text);
       setEnvironments(envs);
-      setWsSettings(parseSettings(text));
+      setWsSettings(settings);
       const names = Object.keys(envs);
       setActiveEnv(names.includes("default") ? "default" : names[0] || "");
     } catch {
@@ -2052,6 +2406,7 @@ function App() {
 
   function closeAllTabsAndReset() {
     tabCacheRef.current = {};
+    tabOrder.forEach(disposeRunTab); // 运行中的一并取消
     setTabOrder([]);
     resetCaseState();
   }
@@ -2106,18 +2461,32 @@ function App() {
     setError(s.error);
   }
 
-  const isDirtyPath = (p: string): boolean => (p === currentCasePath ? dirty : tabCacheRef.current[p]?.dirty ?? false);
+  // 运行报告标签恒非 dirty（它不是编辑态），关闭时不该弹「未保存」确认
+  const isDirtyPath = (p: string): boolean =>
+    isRunTab(p) ? false : p === currentCasePath ? dirty : tabCacheRef.current[p]?.dirty ?? false;
+
+  /**
+   * 让某个标签成为活动标签（**不做快照**，调用方负责）。
+   * 运行报告是伪路径：清空编辑态即可，不读盘、不进 tabCacheRef。
+   */
+  function activateTab(path: string) {
+    if (isRunTab(path)) {
+      resetCaseState();
+      setCurrentCasePath(path);
+      setError(null);
+      return;
+    }
+    const s = tabCacheRef.current[path];
+    if (s) restoreSnapshot(s);
+    else openCase(path); // 读取成功后再入标签，避免二进制读取失败留下空标签
+  }
 
   // 打开一个标签（新开则从磁盘加载，已开则恢复其内存状态）
   function openTab(path: string) {
     if (path === currentCasePath) return;
     const snap = snapshotCurrent();
     if (snap) tabCacheRef.current[snap.path] = snap;
-    if (tabOrder.includes(path) && tabCacheRef.current[path]) {
-      restoreSnapshot(tabCacheRef.current[path]);
-    } else {
-      openCase(path); // 读取成功后再入标签，避免二进制读取失败留下空标签
-    }
+    activateTab(path);
   }
 
   function closeTab(path: string) {
@@ -2139,17 +2508,29 @@ function App() {
     const idx = tabOrder.indexOf(path);
     const rest = tabOrder.filter((p) => p !== path);
     delete tabCacheRef.current[path];
+    disposeRunTab(path);
     setTabOrder(rest);
     if (wasActive) {
       if (rest.length === 0) {
         resetCaseState();
       } else {
-        const neighbor = rest[Math.min(idx, rest.length - 1)];
-        const s = tabCacheRef.current[neighbor];
-        if (s) restoreSnapshot(s);
-        else openCase(neighbor);
+        activateTab(rest[Math.min(idx, rest.length - 1)]);
       }
     }
+  }
+
+  /** 关闭运行报告标签：运行中的一并取消（不能留个跑着的孤儿），并释放会话。 */
+  function disposeRunTab(path: string) {
+    if (!isRunTab(path)) return;
+    const id = runIdOf(path);
+    const s = runSessions[id];
+    if (s && !s.readOnly) void cancelRunIpc(id);
+    setRunSessions((m) => {
+      if (!(id in m)) return m;
+      const next = { ...m };
+      delete next[id];
+      return next;
+    });
   }
 
   // 外部删除：静默关闭指向该路径的标签并切到邻居（文件已不存在，无需确认）
@@ -2165,10 +2546,7 @@ function App() {
       if (rest.length === 0) {
         resetCaseState();
       } else {
-        const neighbor = rest[Math.min(idx, rest.length - 1)];
-        const s = tabCacheRef.current[neighbor];
-        if (s) restoreSnapshot(s);
-        else openCase(neighbor);
+        activateTab(rest[Math.min(idx, rest.length - 1)]);
       }
     }
   }
@@ -2190,12 +2568,11 @@ function App() {
 
   function doCloseOtherTabs(keep: string) {
     const others = tabOrder.filter((p) => p !== keep);
-    if (currentCasePath !== keep) {
-      const s = tabCacheRef.current[keep];
-      if (s) restoreSnapshot(s);
-      else openCase(keep);
-    }
-    others.forEach((p) => delete tabCacheRef.current[p]);
+    if (currentCasePath !== keep) activateTab(keep);
+    others.forEach((p) => {
+      delete tabCacheRef.current[p];
+      disposeRunTab(p);
+    });
     delete tabCacheRef.current[keep];
     setTabOrder([keep]);
   }
@@ -2221,7 +2598,7 @@ function App() {
     setUiNodes(ui);
     setCaseName(c.name || "");
     setCaseVars(c.vars);
-    setCaseVersion(c.version || "0.1");
+    setCaseVersion(c.version || CASE_VERSION);
     setSelectedRequestId((prev) => (rd.some((s) => s.id === prev) ? prev : rd[0].id));
     setCaseValid(true);
   }
@@ -2266,6 +2643,16 @@ function App() {
         return;
       }
       const text = fc.text;
+      // apicase 自己生成的运行报告 → 报告视图（与刚跑完时看到的完全一致）。
+      // **只认自己的报告**：提取不到结构化数据的普通 HTML 一律落纯文本，
+      // 把任意 HTML 塞进 iframe 既无产品价值，又等于在应用里跑一份来源不明的页面。
+      if (isHtmlFile(path)) {
+        const parsed = await parseReport(text);
+        if (parsed) {
+          openReportTab(path, parsed);
+          return;
+        }
+      }
       setTabOrder((prev) => (prev.includes(path) ? prev : [...prev, path]));
       setBinaryFile(false);
       setCurrentCasePath(path);
@@ -2277,13 +2664,14 @@ function App() {
       // application.yml：默认进可视设置页，并按文件内容同步环境与请求设置
       setConfigVisual(isAppConfig(path));
       if (isAppConfig(path)) {
-        setEnvironments(parseEnvironments(text));
-        setWsSettings(parseSettings(text));
+        const cfg = await parseAppConfig(text);
+        setEnvironments(cfg.environment);
+        setWsSettings(cfg.settings);
       }
       // 仅 .yml/.yaml（非 application.yml）才按 case 解析渲染；其余一律纯文本——
       // 避免把恰好符合格式的 .txt/.json 误渲染成结构化编辑器（保存会用 YAML 覆盖、丢内容）
       const canBeCase = isYamlFile(path) && !isAppConfig(path);
-      const res = canBeCase ? analyzeCase(text) : null;
+      const res = canBeCase ? await analyzeCase(text) : null;
       if (!res || !res.valid || !res.case) {
         // 非 case 或校验不通过 → 纯文本兜底（非 .yml 文件不挂"不是有效用例"提示）
         setRequests([]);
@@ -2300,7 +2688,7 @@ function App() {
         setTextMode(false);
         // 内容驱动默认视图：多请求 → 流程+请求；单请求 → 请求
         const list = res.case.requests;
-        const multi = list.length >= 2 || list.some((s) => s.outputs.length || s.dependsOn.length);
+        const multi = list.length >= 2 || list.some((r: Request) => r.outputs.length || r.dependsOn.length);
         setShowFlow(multi);
         setShowRequest(true);
       }
@@ -2328,7 +2716,7 @@ function App() {
     }
     if (out.length === 0) return { error: "无请求" };
     const c: Case = {
-      version: caseVersion || "0.1",
+      version: caseVersion || CASE_VERSION,
       name: caseName || undefined,
       vars: caseVars,
       requests: out,
@@ -2337,26 +2725,26 @@ function App() {
     return { case: c };
   }
 
-  function currentDump(): { text?: string; error?: string } {
+  async function currentDump(): Promise<{ text?: string; error?: string }> {
     const { case: c, error: err } = stateToCase();
     if (err || !c) return { error: err };
-    return { text: dumpCase(c) };
+    return { text: await dumpCase(c) };
   }
 
   // ── 视图切换 ────────────────────────────────────
-  function enterText() {
+  async function enterText() {
     // 未修改：保留原始文件文本（含注释/格式，忠实展示）；
     // 有结构化改动：从结构态重新 dump 以反映编辑（注释不可避免地丢失）。
     if (dirty) {
-      const { text, error: err } = currentDump();
+      const { text, error: err } = await currentDump();
       if (!err && text !== undefined) setRawText(text);
       else if (err) setError(err);
     }
     setTextMode(true);
   }
 
-  function commitText(): Case | null {
-    const res = analyzeCase(rawText);
+  async function commitText(): Promise<Case | null> {
+    const res = await analyzeCase(rawText);
     if (!res.valid || !res.case) {
       // 复用页面顶部的错误条，而不是弹模态打断——用户正要回去改这段 YAML
       setError(`YAML 无效，无法切换到结构视图：${res.error || "未知错误"}`);
@@ -2367,13 +2755,13 @@ function App() {
     return res.case;
   }
 
-  const onClickText = () => enterText();
+  const onClickText = () => void enterText();
 
   // 流程/请求切换：关掉当前唯一在显的面板 → 切到文本
   function onClickFlow() {
     if (showFlow && !showRequest) {
       setShowFlow(false);
-      enterText();
+      void enterText();
       return;
     }
     setShowFlow((v) => !v);
@@ -2382,18 +2770,18 @@ function App() {
   function onClickRequest() {
     if (showRequest && !showFlow) {
       setShowRequest(false);
-      enterText();
+      void enterText();
       return;
     }
     setShowRequest((v) => !v);
   }
 
   // 用例：点「可视」进结构视图（文本先提交回结构）；两面板都关时按内容驱动默认
-  function onClickVisual() {
+  async function onClickVisual() {
     if (!effectiveText) return;
     let multi = isFlow;
     if (textMode) {
-      const c = commitText();
+      const c = await commitText();
       if (!c) return;
       // 用刚解析的 case 判断多请求，避免 setRequests 异步导致 isFlow 滞后
       multi = c.requests.length >= 2 || c.requests.some((s) => s.outputs.length > 0 || s.dependsOn.length > 0);
@@ -2407,20 +2795,22 @@ function App() {
   }
 
   // application.yml：文本 ↔ 可视设置页
-  function enterConfigVisual() {
+  async function enterConfigVisual() {
     if (configVisual) return;
     // 以文本为准同步到可视（环境与请求设置同处一份文件）
-    setEnvironments(parseEnvironments(rawText));
-    setWsSettings(parseSettings(rawText));
+    const cfg = await parseAppConfig(rawText);
+    setEnvironments(cfg.environment);
+    setWsSettings(cfg.settings);
     setConfigVisual(true);
   }
-  function exitConfigVisual() {
+  async function exitConfigVisual() {
     if (!configVisual) return;
-    if (dirty) setRawText(dumpApplicationConfig(rawText, environments, wsSettings)); // 有编辑才回写文本（保留原注释除非改过）
+    // 有编辑才回写文本（保留原注释除非改过）
+    if (dirty) setRawText(await dumpAppConfig(rawText, environments, wsSettings));
     setConfigVisual(false);
   }
   // 可视设置页编辑环境：更新全局 environments + 保持 activeEnv 有效 + 标脏
-  function onEnvChange(next: Record<string, Record<string, string>>) {
+  function onEnvChange(next: Environments) {
     setEnvironments(next);
     const names = Object.keys(next);
     if (activeEnv && !names.includes(activeEnv)) setActiveEnv(names.includes("default") ? "default" : names[0] || "");
@@ -2439,7 +2829,7 @@ function App() {
     try {
       if (isAppConfig(currentCasePath) && configVisual) {
         // 可视设置页：把 environments 与请求设置一并序列化进 application.yml
-        const content = dumpApplicationConfig(rawText, environments, wsSettings);
+        const content = await dumpAppConfig(rawText, environments, wsSettings);
         await invoke("write_text_file", { path: currentCasePath, content });
         setRawText(content);
         const names = Object.keys(environments);
@@ -2448,15 +2838,16 @@ function App() {
         await invoke("write_text_file", { path: currentCasePath, content: rawText });
         // application.yml：保存后重载 environment / 请求设置，使切换与发请求即时生效
         if (isAppConfig(currentCasePath)) {
-          const envs = parseEnvironments(rawText);
+          const cfg = await parseAppConfig(rawText);
+          const envs = cfg.environment;
           setEnvironments(envs);
-          setWsSettings(parseSettings(rawText));
+          setWsSettings(cfg.settings);
           const names = Object.keys(envs);
           if (!names.includes(activeEnv)) setActiveEnv(names.includes("default") ? "default" : names[0] || "");
         }
         // 仅 .yml/.yaml：文本此时有效则回填结构态；非 case 文件（.txt/.json）不解析、保持纯文本
         if (isYamlFile(currentCasePath) && !isAppConfig(currentCasePath)) {
-          const res = analyzeCase(rawText);
+          const res = await analyzeCase(rawText);
           if (res.valid && res.case) {
             applyCase(res.case);
             setTextError(null);
@@ -2466,7 +2857,7 @@ function App() {
           }
         }
       } else {
-        const { text, error: err } = currentDump();
+        const { text, error: err } = await currentDump();
         if (err || text === undefined) {
           setError(err || "序列化失败");
           return;
@@ -2711,32 +3102,75 @@ function App() {
   }
 
   // ── 运行 ────────────────────────────────────────
-  // 工作空间请求设置 → 后端载荷：CA 相对路径在此还原为绝对路径（存盘用相对是为了随 git 走）。
-  // 只传偏离默认值的项，让后端的 Option 缺省语义（校验开启 / 无 CA / 不限超时）自然兜底。
-  const requestOptions = useMemo(() => {
-    const o: { verifySsl?: boolean; caCertPath?: string; timeoutMs?: number } = {};
-    if (!wsSettings.verifySsl) o.verifySsl = false;
-    if (wsSettings.useCustomCa && wsSettings.caCert.trim() && workspace) {
-      o.caCertPath = joinPath(workspace, wsSettings.caCert.trim());
-    }
-    if (wsSettings.timeoutMs > 0) o.timeoutMs = wsSettings.timeoutMs;
-    return o;
-  }, [wsSettings, workspace]);
+  //
+  // 前端在这条链路上只做两件事：把配置递给执行内核、把回来的结果画出来。
+  // 变量透传、请求组装、认证、断言、脱敏全在 Rust（core/src/runner.rs）。
 
-  // 单个请求执行：变量透传 → 发送 → 提取 outputs → 评估断言
-  async function runRequestWithCtx(sd: RequestDraft, ctx: RunContext): Promise<{ state: RunState; outputs: Record<string, unknown> }> {
+  /**
+   * 客户端级配置 = 代理（应用级偏好）+ 请求设置（工作空间 application.yml）。
+   * CA 的相对路径在此还原为绝对路径——存盘用相对是为了随 git 走、换机器仍有效。
+   * 只传偏离默认值的项，让后端的缺省语义（校验开启 / 无 CA / 不限超时）自然兜底。
+   */
+  const clientConfig = useMemo<ClientConfig>(() => {
+    const options: { verifySsl?: boolean; caCertPath?: string; timeoutMs?: number } = {};
+    if (!wsSettings.verifySsl) options.verifySsl = false;
+    if (wsSettings.useCustomCa && wsSettings.caCert.trim() && workspace) {
+      options.caCertPath = joinPath(workspace, wsSettings.caCert.trim());
+    }
+    if (wsSettings.timeoutMs > 0) options.timeoutMs = wsSettings.timeoutMs;
+    return { proxy: proxyPayload(proxyConfig), options };
+  }, [wsSettings, workspace, proxyConfig]);
+
+  /** 当前活动环境（运行时注入的变量来源）。 */
+  const activeEnvInfo = useMemo(
+    () => ({ name: activeEnv, vars: environments[activeEnv] || {} }),
+    [activeEnv, environments],
+  );
+
+  /**
+   * 调试运行的执行参数。**不脱敏、不截断**——响应区要看的就是真实内容；
+   * 脱敏与截断只在写进报告时才有意义（报告会被转发、归档）。
+   */
+  const debugOpts = useMemo<RunOpts>(
+    () => makeDebugOpts(activeEnvInfo, clientConfig),
+    [activeEnvInfo, clientConfig],
+  );
+
+  /** 编辑态 → 可执行的 step。请求非法（如 JSON body 写坏了）时返回错误而不是发一个残缺请求。 */
+  function stepOf(sd: RequestDraft): { step?: Request; error?: string } {
+    const { request, error } = draftToRequest(sd.req);
+    if (error || !request) return { error: error || "请求非法" };
+    return {
+      step: {
+        id: sd.id,
+        protocol: sd.protocol || "http",
+        http: request,
+        dependsOn: sd.dependsOn,
+        outputs: sd.outputs,
+        assertions: sd.assertions,
+        docs: sd.docs || undefined,
+      },
+    };
+  }
+
+  /**
+   * 单个请求执行 —— 交给执行内核，把结构化的 StepResult 折回响应区要的 RunState。
+   * **调试运行与批量运行是同一份执行语义**，只差脱敏与截断两个开关。
+   */
+  async function runOneStep(sd: RequestDraft, ctx: RunContext): Promise<{ state: RunState; outputs: Record<string, unknown> }> {
+    const { step: spec, error: buildErr } = stepOf(sd);
+    if (!spec) return { state: { status: "err", error: buildErr }, outputs: {} };
     try {
-      const resolved = resolveDraft(sd.req, ctx);
-      // 经 sendWithAuth 走一层：Digest 的 401 重发、OAuth 2.0 的 token 交换都在其中，
-      // 且共用同一个后端通道，代理设置对它们一样生效。
-      const result = await sendWithAuth(resolved, (request) =>
-        invoke<ApiResponse>("send_request", { request, proxy: proxyPayload(proxyConfig), options: requestOptions }),
-      );
-      const outputs = extractOutputs(sd.outputs, result.body);
-      const asserts = evalAssertions(sd.assertions, result);
-      const pass = asserts.every((a) => a.ok);
-      return { state: { status: pass ? "ok" : "err", resp: result, asserts }, outputs };
+      const { step, outputs } = await runStep(spec, ctx, debugOpts);
+      if (step.status === "error") {
+        return { state: { status: "err", error: step.error || "请求失败" }, outputs };
+      }
+      return {
+        state: { status: step.status === "passed" ? "ok" : "err", resp: respViewOf(step), asserts: step.assertions },
+        outputs,
+      };
     } catch (e) {
+      // IPC 本身失败（后端崩了 / 参数不合法）——与"请求失败"分开报，指向完全不同
       return { state: { status: "err", error: typeof e === "string" ? e : String(e) }, outputs: {} };
     }
   }
@@ -2749,9 +3183,9 @@ function App() {
       return;
     }
     // 变量优先级：case 级 vars 覆盖 environment（case-local 更具体）
-    const ctx: RunContext = { vars: { ...(environments[activeEnv] || {}), ...(caseVars || {}) }, requests: outputsCtx };
+    const ctx: RunContext = { vars: { ...(environments[activeEnv] || {}), ...(caseVars || {}) }, steps: outputsCtx };
     setRunMap((m) => ({ ...m, [reqId]: { status: "running" } }));
-    const { state, outputs } = await runRequestWithCtx(sd, ctx);
+    const { state, outputs } = await runOneStep(sd, ctx);
     setRunMap((m) => ({ ...m, [reqId]: state }));
     setOutputsCtx((prev) => ({ ...prev, [reqId]: outputs }));
     setRespTab("body");
@@ -2760,16 +3194,224 @@ function App() {
   async function onRunAll() {
     setRunningAll(true);
     // 本地上下文在 await 间同步透传 outputs（不依赖异步 state）
-    const local: RunContext = { vars: { ...(environments[activeEnv] || {}), ...(caseVars || {}) }, requests: {} };
+    const local: RunContext = { vars: { ...(environments[activeEnv] || {}), ...(caseVars || {}) }, steps: {} };
     setOutputsCtx({});
-    for (const sd of topoOrder(requests)) {
-      setRunMap((m) => ({ ...m, [sd.id]: { status: "running" } }));
-      const { state, outputs } = await runRequestWithCtx(sd, local);
-      local.requests[sd.id] = outputs;
-      setOutputsCtx({ ...local.requests });
-      setRunMap((m) => ({ ...m, [sd.id]: state }));
+    try {
+      // 顺序由执行内核排（成环兜底等边界只在那里有一份实现）；
+      // 循环留在前端是为了每跑完一步就刷新界面。
+      const specs = requests.map((sd) => stepOf(sd).step).filter((s): s is Request => !!s);
+      const order = await topoOrder(specs);
+      // 下标是按 specs 排的，而 specs 可能因组装失败少了几个 —— 用 id 回查才对得上
+      const byId = new Map(requests.map((r) => [r.id, r]));
+      for (const i of order) {
+        const sd = byId.get(specs[i].id);
+        if (!sd) continue;
+        setRunMap((m) => ({ ...m, [sd.id]: { status: "running" } }));
+        const { state, outputs } = await runOneStep(sd, local);
+        local.steps[sd.id] = outputs;
+        setOutputsCtx({ ...local.steps });
+        setRunMap((m) => ({ ...m, [sd.id]: state }));
+      }
+    } finally {
+      // 中途抛错也要把「运行中」的旗子放下，否则按钮永远转下去
+      setRunningAll(false);
     }
-    setRunningAll(false);
+  }
+
+  // ── 批量运行（目录 / 单用例 → 报告）──────────────
+
+  /**
+   * 递归发现目录下的用例文件。
+   * 过滤规则：仅 `.yml`/`.yaml`、排除 `application.yml`、跳过隐藏项与大目录。
+   * **按路径排序**——执行顺序要可预期、可控（用 `01-` / `02-` 前缀即可编排）。
+   */
+  async function discoverCases(target: string, isDir: boolean, recursive: boolean): Promise<string[]> {
+    if (!isDir) return isYamlFile(target) && !isAppConfig(target) ? [target] : [];
+    const out: string[] = [];
+    const walk = async (dir: string, depth: number) => {
+      let entries: DirEntry[] = [];
+      try {
+        entries = await invoke<DirEntry[]>("list_dir", { path: dir, showHidden: false });
+      } catch {
+        return; // 单个目录读不动不该中断整轮发现
+      }
+      for (const e of entries) {
+        if (e.isDir) {
+          if (recursive) await walk(e.path, depth + 1);
+        } else if (isYamlFile(e.path) && !isAppConfig(e.path)) {
+          out.push(e.path);
+        }
+      }
+    };
+    await walk(target, 0);
+    out.sort();
+    return out;
+  }
+
+  /** 打开运行配置对话框（右键「运行并生成报告…」）。 */
+  async function openRunDialog(target: string, isDir: boolean) {
+    if (!workspace) return;
+    setRunDialog({ target, isDir, recursive: true, env: activeEnv, files: null });
+    const files = await discoverCases(target, isDir, true);
+    setRunDialog((d) => (d && d.target === target ? { ...d, files } : d));
+  }
+
+  /** 对话框里改「递归 / 仅当前目录」后重扫——预览列表必须与实际要跑的一致。 */
+  async function setRunRecursive(recursive: boolean) {
+    setRunDialog((d) => (d ? { ...d, recursive, files: null } : d));
+    const d = runDialogRef.current;
+    if (!d) return;
+    const files = await discoverCases(d.target, d.isDir, recursive);
+    setRunDialog((cur) => (cur && cur.target === d.target ? { ...cur, recursive, files } : cur));
+  }
+
+  /** 报告输出目录：`<workspace>/.apicase/reports/<YYYYMMDD-HHmmss>/` */
+  function reportDirFor(at: Date): string {
+    const p = (n: number) => String(n).padStart(2, "0");
+    const stamp =
+      `${at.getFullYear()}${p(at.getMonth() + 1)}${p(at.getDate())}` +
+      `-${p(at.getHours())}${p(at.getMinutes())}${p(at.getSeconds())}`;
+    return joinPath(joinPath(workspace, REPORTS_REL), stamp);
+  }
+
+  /**
+   * 把 `.apicase/` 写进工作空间 `.gitignore`（报告是产物，不该进版本库）。
+   * 已有该行则不动；读不到 `.gitignore` 就新建。失败静默——写不进去不该挡住运行。
+   */
+  async function ensureGitignore() {
+    const gi = joinPath(workspace, ".gitignore");
+    try {
+      let text = "";
+      try {
+        text = await invoke<string>("read_text_file", { path: gi });
+      } catch {
+        text = "";
+      }
+      if (text.split(/\r?\n/).some((l) => l.trim() === ".apicase/" || l.trim() === ".apicase")) return;
+      const next = text && !text.endsWith("\n") ? `${text}\n.apicase/\n` : `${text}.apicase/\n`;
+      noteSelfWrite(gi);
+      await invoke("write_text_file", { path: gi, content: next });
+    } catch {
+      /* 写不进 .gitignore 不影响运行本身 */
+    }
+  }
+
+  /**
+   * 从对话框启动一次批量运行：开标签页 → 交给执行内核 → 订阅进度事件。
+   *
+   * 执行、报告渲染、周期写盘全在 Rust；前端只负责开标签、订阅事件、把 case
+   * 逐个追加进本地报告对象。进度按**增量**推送而不是每次整份重发——
+   * 一份跑了 200 个用例的报告可达数 MB，每完成一个就整份过一次 IPC 会把界面拖卡。
+   */
+  async function startRun(d: RunDialogState) {
+    const files = d.files || (await discoverCases(d.target, d.isDir, d.recursive));
+    setRunDialog(null);
+    if (!files.length) {
+      setError("没有找到可运行的用例");
+      return;
+    }
+    const at = new Date();
+    const runId = String(at.getTime());
+    const tabPath = RUN_TAB_PREFIX + runId;
+    const dir = reportDirFor(at);
+    const file = joinPath(dir, "report.html");
+
+    const targets = files.map((p) => ({ file: relPath(workspace, p), path: p }));
+    const opts = makeBatchOpts({ name: d.env, vars: environments[d.env] || {} }, clientConfig);
+    // 报告头里的运行参数**从 opts 派生**，不并列写第二遍——
+    // 半年后回看一份失败报告，"当时脱没脱敏、截断阈值多少"直接决定结论能不能信，
+    // 两处各写一份迟早会对不上。
+    const options = {
+      targets: [d.isDir ? relPath(workspace, d.target) || "（工作空间根）" : relPath(workspace, d.target)],
+      recursive: d.recursive,
+      environment: d.env,
+      concurrency: opts.concurrency,
+      stopOnFailure: opts.stopOnFailure,
+      redact: opts.redact,
+      maxBodyBytes: opts.maxBodyBytes,
+    };
+
+    setRunSessions((m) => ({ ...m, [runId]: { runId, report: null, file, dir, total: files.length } }));
+    setTabOrder((prev) => (prev.includes(tabPath) ? prev : [...prev, tabPath]));
+    openTab(tabPath);
+    await ensureGitignore();
+    // 报告目录由后端周期覆写，fs 监听会看到——先打个招呼免得触发误刷新
+    noteSelfWrite(file);
+
+    // 增量事件 → 本地报告对象。case 一经产出就不再变，故直接追加即可。
+    const unlisten = await listenRun(runId, (e) => {
+      setRunSessions((m) => {
+        const s = m[runId];
+        if (!s) return m;
+        if (e.kind === "start") return { ...m, [runId]: { ...s, report: e.report } };
+        if (!s.report) return m;
+        const report =
+          e.kind === "case"
+            ? { ...s.report, cases: [...s.report.cases, e.case], summary: e.summary, durationMs: e.durationMs }
+            : { ...s.report, status: e.status, finishedAt: e.finishedAt, summary: e.summary, durationMs: e.durationMs };
+        return { ...m, [runId]: { ...s, report } };
+      });
+      if (e.kind === "case") noteSelfWrite(file);
+    });
+
+    try {
+      const report = await runBatch({
+        runId,
+        targets,
+        meta: { workspace: { name: baseName(workspace), root: workspace }, toolVersion: APP_VERSION, options },
+        opts,
+        reportFile: file,
+      });
+      // 以返回的完整报告为准收尾：增量事件可能有漏网（窗口切换时的事件积压）
+      setRunSessions((m) => (m[runId] ? { ...m, [runId]: { ...m[runId], report } } : m));
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      unlisten();
+    }
+
+    // 报告落在隐藏目录里，而 fs 监听刻意跳过 `.` 开头的路径（否则周期覆写会把文件树刷爆）。
+    // 故运行结束后精准刷新一次已加载的相关目录——开着「显示隐藏文件」时新报告能立刻出现。
+    if (showHidden) {
+      const apicaseDir = joinPath(workspace, ".apicase");
+      for (const d of [workspace, apicaseDir, joinPath(workspace, REPORTS_REL)]) {
+        if (childrenMap[d]) void loadDir(d);
+      }
+    }
+  }
+
+  /** 取消一次运行（在 case 边界生效；已发出的 HTTP 不中断，避免服务端收到半截请求）。 */
+  function cancelRun(runId: string) {
+    if (!runSessions[runId]) return;
+    void cancelRunIpc(runId);
+    setRunSessions((m) => (m[runId] ? { ...m, [runId]: { ...m[runId], cancelling: true } } : m));
+  }
+
+  /**
+   * 「打开并运行」：打开标签后自动发送。
+   * 走 pendingRunRef 而非直接调 onSendRequest——openCase 是异步的，requests 此刻还没就绪。
+   */
+  function openAndRun(path: string) {
+    pendingRunRef.current = path;
+    openTab(path);
+  }
+
+  /** 打开一份历史报告（点 report.html 时走这里）。 */
+  function openReportTab(path: string, report: RunReport) {
+    const tabPath = RUN_TAB_PREFIX + reportKey(path);
+    setRunSessions((m) => ({
+      ...m,
+      [reportKey(path)]: {
+        runId: reportKey(path),
+        report,
+        file: path,
+        dir: dirName(path),
+        total: report.summary.total,
+        readOnly: true,
+      },
+    }));
+    setTabOrder((prev) => (prev.includes(tabPath) ? prev : [...prev, tabPath]));
+    openTab(tabPath);
   }
 
   // ── 文件管理（右键菜单触发）─────────────────────
@@ -2783,7 +3425,7 @@ function App() {
     const path = joinPath(dir, fname);
     const split = splitQueryFromUrl(url.trim());
     const c: Case = {
-      version: "0.1",
+      version: CASE_VERSION,
       requests: [
         {
           id: "step1",
@@ -2797,7 +3439,7 @@ function App() {
     };
     try {
       noteSelfWrite(path);
-      await invoke("create_file", { path, content: dumpCase(c) });
+      await invoke("create_file", { path, content: await dumpCase(c) });
       await loadDir(dir);
       setExpanded((prev) => new Set(prev).add(dir));
       openTab(path);
@@ -2989,6 +3631,19 @@ function App() {
     const items: CtxItem[] = [];
     // 新建只对目录 / 工作空间根（文件行新建到它所在目录反而容易误解）
     if (!entry || entry.isDir) items.push(...newItems(dir));
+
+    // ── 运行 ──
+    // 「打开并运行」= 调试（打开标签 + 自动发送）；「运行并生成报告…」= 回归（出一份可归档的报告）。
+    // 两者分成两项而非共用一个「运行」：同一个词做两件事，用户点第二次就会困惑。
+    const runTarget = entry ? entry.path : workspace;
+    const runIsDir = entry ? entry.isDir : true;
+    const canRun = runIsDir || (isYamlFile(runTarget) && !isAppConfig(runTarget));
+    if (canRun) {
+      if (items.length) items.push({ sep: true });
+      if (!runIsDir) items.push({ label: "打开并运行", onClick: () => openAndRun(runTarget) });
+      items.push({ label: "运行并生成报告…", onClick: () => openRunDialog(runTarget, runIsDir) });
+    }
+
     if (entry) {
       if (items.length) items.push({ sep: true });
       items.push({ label: "克隆", onClick: () => cloneEntry(entry) });
@@ -3064,6 +3719,20 @@ function App() {
     status: runMap[s.id]?.status ?? "idle",
   }));
 
+  const activeRunSession = isRunTab(currentCasePath) ? runSessions[runIdOf(currentCasePath)] : undefined;
+
+  /** 标签页显示名：普通文件用文件名，运行报告用「运行报告 · 起始时刻」（多次运行可并存对比）。 */
+  function tabLabel(path: string): string {
+    if (!isRunTab(path)) return baseName(path);
+    const s = runSessions[runIdOf(path)];
+    const iso = s?.report?.startedAt;
+    if (!iso) return "运行报告";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "运行报告";
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `运行报告 · ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
   const run = selected ? runMap[selected.id] : undefined;
   const resp = run?.resp || null;
   const runErr = run?.error || null;
@@ -3073,7 +3742,7 @@ function App() {
   const assertPass = assertResults.filter((r) => r.ok).length;
   const assertDefs = (selected?.assertions || []).filter((a) => a.target.trim() !== "");
 
-  // URL 里 {{变量}} 的高亮判定：当前环境变量 + case 级 vars（case 覆盖 env），值非空即视为「已设值」
+  // URL 里 ${{变量}} 的高亮判定：当前环境变量 + case 级 vars（case 覆盖 env），值非空即视为「已设值」
   const definedVars: Record<string, unknown> = { ...(environments[activeEnv] || {}), ...(caseVars || {}) };
   const isVarSet = (expr: string): boolean => {
     const name = expr.trim();
@@ -3300,6 +3969,13 @@ function App() {
                   )}
                 </div>
                 <button
+                  className={`tree-icon-btn ${showHidden ? "is-on" : ""}`}
+                  title={showHidden ? "隐藏「.」开头的文件与目录" : "显示「.」开头的文件与目录"}
+                  onClick={() => setShowHidden((v) => !v)}
+                >
+                  {showHidden ? <EyeIcon /> : <EyeOffIcon />}
+                </button>
+                <button
                   className="tree-add"
                   title="新建"
                   onClick={(e) => {
@@ -3409,6 +4085,7 @@ function App() {
                 tabs={tabOrder}
                 active={currentCasePath}
                 isDirty={isDirtyPath}
+                labelOf={tabLabel}
                 onSelect={openTab}
                 onClose={closeTab}
                 onContext={(e, p) => {
@@ -3447,6 +4124,26 @@ function App() {
                 })}
               </div>
             </div>
+          ) : isRunTab(currentCasePath) ? (
+            activeRunSession ? (
+              <RunReportPane
+                key={activeRunSession.runId}
+                session={activeRunSession}
+                theme={resolvedTheme}
+                onCancel={() => cancelRun(activeRunSession.runId)}
+                onOpenCase={(f) => {
+                  // 报告页来的路径不可信：必须落在当前工作空间内才打开
+                  const abs = joinPath(activeRunSession.report?.workspace.root || workspace, f);
+                  if (workspace && isUnder(abs, workspace)) openTab(abs);
+                }}
+                onOpenExternal={() => void openUrl(`file://${activeRunSession.file}`)}
+                onReveal={() => void revealItemInDir(activeRunSession.file)}
+              />
+            ) : (
+              <div className="workspace-empty">
+                <div className="empty-note">此次运行的会话已结束。</div>
+              </div>
+            )
           ) : binaryFile ? (
             <div className="binary-view">
               <svg className="binary-ico" viewBox="0 0 24 24" width="44" height="44" aria-hidden="true">
@@ -3884,6 +4581,17 @@ function App() {
             { label: "关闭全部标签页", onClick: () => closeAllTabs() },
           ]}
           onClose={() => setTabMenu(null)}
+        />
+      )}
+      {runDialog && (
+        <RunDialog
+          state={runDialog}
+          workspaceRoot={workspace}
+          environments={environments}
+          onRecursive={(v) => void setRunRecursive(v)}
+          onEnv={(v) => setRunDialog((d) => (d ? { ...d, env: v } : d))}
+          onRun={() => void startRun(runDialog)}
+          onCancel={() => setRunDialog(null)}
         />
       )}
       {promptState && (

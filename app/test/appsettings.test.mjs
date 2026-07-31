@@ -43,6 +43,7 @@ const DEFAULTS = {
   proxy: { mode: "system", url: "" },
   shortcuts: {},
   shortcutsEnabled: true,
+  showHiddenFiles: false,
 };
 
 eq(DEFAULT_APP_SETTINGS, DEFAULTS, "默认设置");
@@ -111,6 +112,14 @@ eq(messy.shortcutsEnabled, true, "非布尔的开关按启用兜底（仅显式 
 // 显式 false 才关闭
 store.setItem(CACHE, JSON.stringify({ shortcutsEnabled: false }));
 eq(loadCachedSettings().shortcutsEnabled, false, "显式 false 才关闭快捷键");
+
+// ── 显示隐藏文件：仅显式 true 才开（缺失 / 写错类型都按关闭这一保守侧兜底）──
+store.clear();
+eq(loadCachedSettings().showHiddenFiles, false, "缺字段时默认不显示隐藏文件");
+store.setItem(CACHE, JSON.stringify({ showHiddenFiles: true }));
+eq(loadCachedSettings().showHiddenFiles, true, "显式 true 才显示隐藏文件");
+store.setItem(CACHE, JSON.stringify({ showHiddenFiles: "yes" }));
+eq(loadCachedSettings().showHiddenFiles, false, "类型写错按关闭处理");
 
 // ── 坏 JSON / 非对象不抛错 ──
 store.clear();

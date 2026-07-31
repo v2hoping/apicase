@@ -1,0 +1,24 @@
+[package]
+name = "apicase-core"
+description = "apicase 执行内核：case 模型 / YAML / 变量 / 认证 / HTTP 执行 / 报告"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# 刻意**不依赖 tauri**：GUI 与将来的 CLI 都只是这层之上的壳。
+# 这条边界一旦破掉（比如为了发个事件而 use tauri::Emitter），CLI 就得把整个
+# GUI 框架拖进来编译——进度上报因此走回调注入，而不是直接 emit。
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+base64.workspace = true
+md5.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+# net / io-util 供 testutil 的本地 mock HTTP 服务用——执行引擎要测的正是
+# 「真把请求发出去」这条链路，拿假的 send 回调去测等于把被测对象换掉了。
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util"] }

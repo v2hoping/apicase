@@ -4147,3 +4147,254 @@ body.resizing-ai .ai-resizer::after {
   flex: 1;
   min-height: 0;
 }
+
+/* ══════════════════════════════════════════════════
+   批量运行与报告
+   ══════════════════════════════════════════════════ */
+
+/* ── 运行报告面板 = 原生工具栏（运行控制）+ 报告页 iframe（报告内容）──
+   分层的理由见 report.ts：报告内容只有一套渲染实现，apicase 内外像素级一致；
+   而「取消」这类运行控制留在 iframe 外——分发出去的报告里本就不该有它。 */
+.run-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--panel);
+}
+.run-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  height: 40px;
+  flex: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.run-bar-spacer {
+  flex: 1;
+}
+.run-count {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.run-progress {
+  width: 160px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+.run-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+/* 运行中的转圈：比闪烁的点更明确地表达「正在进行」 */
+.run-spinner {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid var(--accent-tint-strong);
+  border-top-color: var(--accent);
+  animation: run-spin 0.7s linear infinite;
+}
+@keyframes run-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.run-verdict {
+  font-size: 13px;
+  font-weight: 600;
+}
+.run-verdict.ok {
+  color: var(--green);
+}
+.run-verdict.bad {
+  color: var(--red);
+}
+/* 通过 / 失败 / 错误 / 跳过的计数：等宽数字，颜色即语义 */
+.run-stats {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.run-stats .ok {
+  color: var(--green);
+}
+.run-stats .bad {
+  color: var(--red);
+  font-weight: 600;
+}
+.run-stats .warn {
+  color: var(--amber);
+  font-weight: 600;
+}
+.run-stats .mute {
+  color: var(--muted);
+}
+/* 工具栏里的小号按钮（比模态里的主按钮矮一档，不喧宾夺主） */
+.btn-ghost.sm {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+.btn-ghost.sm:disabled {
+  opacity: 0.5;
+  cursor: default;
+  border-color: var(--border);
+  color: var(--muted);
+}
+.run-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: none;
+  background: var(--bg);
+}
+
+/* ── 运行配置对话框 ── */
+.run-modal {
+  width: 520px;
+  max-width: calc(100vw - 48px);
+}
+.run-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.run-opt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.run-opt-label {
+  width: 44px;
+  flex: none;
+  font-size: 13px;
+  color: var(--muted);
+}
+.run-opt-none {
+  font-size: 13px;
+  color: var(--muted);
+}
+/* 二选一段控件：与视图切换（.vs-btn）同一套观感 */
+.seg-radio {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.seg-radio button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  padding: 3px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.seg-radio button:hover {
+  color: var(--text);
+}
+.seg-radio button.on {
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 550;
+  box-shadow: 0 1px 2px var(--shadow-weak);
+}
+/* 将要运行的用例预览：Newman / Bruno 都没有，结果是用户不知道自己跑了什么 */
+.run-preview {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.run-preview-head {
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.run-preview-list {
+  margin: 0;
+  padding: 6px 0;
+  list-style: none;
+  max-height: 208px;
+  overflow-y: auto;
+}
+/* 不用 direction:rtl 截前保后：双向算法会把 `01-登录/…` 的数字前缀甩到末尾，
+   显示成 `登录/…-01`。常规 LTR 截尾，完整路径给 title。 */
+.run-preview-list li {
+  padding: 3px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.run-preview-empty {
+  padding: 14px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.run-preview-empty code {
+  font-size: 12px;
+}
+
+/* ── 文件树：显示隐藏文件开关 + 隐藏项淡显 ── */
+.tree-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.tree-icon-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.tree-icon-btn.is-on {
+  color: var(--accent);
+}
+/* 隐藏项淡一档（同 VSCode 对 gitignored 文件的处理）：一眼可辨「这不是普通用例」 */
+.tree-row.is-hidden-entry .tree-name,
+.tree-row.is-hidden-entry .tree-ico {
+  opacity: 0.55;
+}
+/* 运行报告标签的图标 */
+.ico-report {
+  color: var(--muted);
+}
+.file-tab.active .ico-report {
+  color: var(--accent);
+}
+/* 会话已结束的运行标签的占位说明 */
+.empty-note {
+  color: var(--muted);
+  font-size: 14px;
+}
