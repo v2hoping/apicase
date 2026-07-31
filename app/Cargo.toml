@@ -1,0 +1,42 @@
+# Cargo workspace 根。
+#
+# 两个成员：
+#   core/      —— apicase-core：执行内核（零 GUI / 零 Tauri 依赖）
+#   src-tauri/ —— 桌面壳：Tauri 命令层，薄薄一层转发到 core
+#
+# 建 workspace 而非 path 依赖，是为了让二者共用同一份 Cargo.lock 与 target/：
+# core 的依赖（reqwest / tokio 等）只编译一次，`cargo test -p apicase-core`
+# 不会因为独立 target 目录而把整棵依赖树重编一遍。
+# 将来的 `cli/`（apicase run）作为第三个成员加进来即可，无需再动构建结构。
+[workspace]
+members = ["core", "src-tauri"]
+resolver = "2"
+
+# 版本与依赖版本在此统一，成员用 `.workspace = true` 继承——
+# 避免 core 与 src-tauri 各写一个 reqwest 版本、编出两份不同的客户端实现。
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["apicase"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+# preserve_order：JSON 对象按插入序而非字母序。case 里 `body.json` 与 `vars` 是用户手写的
+# 结构，键序是作者的表达；按字母序重排会让每次保存都产生一片无意义的 diff。
+serde_json = { version = "1", features = ["preserve_order"] }
+# YAML：case 文件的解析入口。序列化不用它——输出格式由 core 自己的 emitter 决定（见 core/src/yaml/emit.rs）
+serde_yaml = "0.9"
+# HTTP 客户端：rustls 避免本地 OpenSSL 依赖，利于跨平台
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "multipart"] }
+tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "macros"] }
+base64 = "0.22"
+md5 = "0.7"
+regex = "1"
+
+# 发布构建：批量运行是 CPU + IO 混合负载，LTO 与单 CGU 对执行内核有实打实的收益。
+# 不设 `panic = "abort"`：桌面应用里一个后台线程 panic 不该连坐整个进程，
+# 且 abort 与 `cargo test --release` 不兼容。
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

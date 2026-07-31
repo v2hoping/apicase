@@ -1,0 +1,24 @@
+<div class="wrap">
+  <div class="head">
+    <div class="head-logo">a</div>
+    <div class="head-main">
+      <h1 class="head-title">运行报告 <span id="badge" class="badge run"><span class="dot"></span>准备中</span></h1>
+      <div class="head-sub" id="sub"></div>
+    </div>
+  </div>
+  <div class="progress" id="progress" hidden><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+  <div class="stats" id="stats"></div>
+  <div class="toolbar">
+    <div class="seg">
+      <button data-filter="all" class="on">全部</button>
+      <button data-filter="failed">失败</button>
+      <button data-filter="passed">通过</button>
+      <button data-filter="skipped">跳过</button>
+    </div>
+    <input class="search" id="search" type="search" placeholder="搜索用例名 / 路径 / URL" autocomplete="off">
+    <span class="count-hint" id="count-hint"></span>
+  </div>
+  <div class="cases" id="cases"></div>
+  <div class="empty" id="empty">暂无结果</div>
+  <div class="foot">由 apicase 生成</div>
+</div>

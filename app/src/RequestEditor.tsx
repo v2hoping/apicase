@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { KV, FormItem, AuthType, BodyType, Assertion, AssertOp, ASSERT_OPS, RequestOutput, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ReqDraft, DEFAULT_CONTENT_TYPE, guessContentType } from "./draft";
-import { AUTH_TYPE_METAS, authPreview, clearTokenCache } from "./auth";
+import { AUTH_TYPE_METAS, authPreview } from "./auth";
 import { MarkdownEditor } from "./markdown";
 import { VarInput } from "./VarInput";
 
@@ -134,7 +134,7 @@ function EyeIcon({ off }: { off?: boolean }) {
   );
 }
 
-// 认证里的普通文本字段：支持 {{变量}} 高亮（令牌/用户名常来自环境变量）
+// 认证里的普通文本字段：支持 ${{变量}} 高亮（令牌/用户名常来自环境变量）
 function AuthText({
   label,
   value,
@@ -199,11 +199,9 @@ function AuthPanel({
   isVarSet: (name: string) => boolean;
 }) {
   const meta = AUTH_TYPE_METAS.find((m) => m.value === d.authType) ?? AUTH_TYPE_METAS[0];
-  // 认证配置一改，之前换到的 access_token 就可能不再对应，直接作废缓存
-  const setAuth = (patch: Partial<ReqDraft>) => {
-    clearTokenCache();
-    set(patch);
-  };
+  // 改认证配置无需手动清 token 缓存：执行内核的缓存键含 tokenUrl / clientId /
+  // clientSecret / scope / clientAuth，任何一项变了就是另一把 token（见 core/src/auth.rs）
+  const setAuth = (patch: Partial<ReqDraft>) => set(patch);
   const preview = authPreview(d);
   return (
     <div className="auth-panel">
@@ -221,19 +219,19 @@ function AuthPanel({
 
       {d.authType === "basic" && (
         <>
-          <AuthText label="用户名" value={d.authBasicUser} onChange={(v) => setAuth({ authBasicUser: v })} placeholder="{{user}}" isVarSet={isVarSet} />
-          <AuthSecret label="密码" value={d.authBasicPass} onChange={(v) => setAuth({ authBasicPass: v })} placeholder="{{password}}" isVarSet={isVarSet} />
+          <AuthText label="用户名" value={d.authBasicUser} onChange={(v) => setAuth({ authBasicUser: v })} placeholder="${{user}}" isVarSet={isVarSet} />
+          <AuthSecret label="密码" value={d.authBasicPass} onChange={(v) => setAuth({ authBasicPass: v })} placeholder="${{password}}" isVarSet={isVarSet} />
         </>
       )}
 
       {d.authType === "bearer" && (
-        <AuthText label="令牌" value={d.authBearerToken} onChange={(v) => setAuth({ authBearerToken: v })} placeholder="{{token}}" isVarSet={isVarSet} />
+        <AuthText label="令牌" value={d.authBearerToken} onChange={(v) => setAuth({ authBearerToken: v })} placeholder="${{token}}" isVarSet={isVarSet} />
       )}
 
       {d.authType === "apikey" && (
         <>
           <AuthText label="键名" value={d.authApikeyKey} onChange={(v) => setAuth({ authApikeyKey: v })} placeholder="X-API-Key" isVarSet={isVarSet} />
-          <AuthSecret label="值" value={d.authApikeyValue} onChange={(v) => setAuth({ authApikeyValue: v })} placeholder="{{apiKey}}" isVarSet={isVarSet} />
+          <AuthSecret label="值" value={d.authApikeyValue} onChange={(v) => setAuth({ authApikeyValue: v })} placeholder="${{apiKey}}" isVarSet={isVarSet} />
           <div className="field-row">
             <label>位置</label>
             <Select
@@ -251,8 +249,8 @@ function AuthPanel({
 
       {d.authType === "digest" && (
         <>
-          <AuthText label="用户名" value={d.authDigestUser} onChange={(v) => setAuth({ authDigestUser: v })} placeholder="{{user}}" isVarSet={isVarSet} />
-          <AuthSecret label="密码" value={d.authDigestPass} onChange={(v) => setAuth({ authDigestPass: v })} placeholder="{{password}}" isVarSet={isVarSet} />
+          <AuthText label="用户名" value={d.authDigestUser} onChange={(v) => setAuth({ authDigestUser: v })} placeholder="${{user}}" isVarSet={isVarSet} />
+          <AuthSecret label="密码" value={d.authDigestPass} onChange={(v) => setAuth({ authDigestPass: v })} placeholder="${{password}}" isVarSet={isVarSet} />
         </>
       )}
 
@@ -265,12 +263,12 @@ function AuthPanel({
             placeholder="https://auth.example.com/oauth/token"
             isVarSet={isVarSet}
           />
-          <AuthText label="Client ID" value={d.authOauth2ClientId} onChange={(v) => setAuth({ authOauth2ClientId: v })} placeholder="{{clientId}}" isVarSet={isVarSet} />
+          <AuthText label="Client ID" value={d.authOauth2ClientId} onChange={(v) => setAuth({ authOauth2ClientId: v })} placeholder="${{clientId}}" isVarSet={isVarSet} />
           <AuthSecret
             label="Client Secret"
             value={d.authOauth2ClientSecret}
             onChange={(v) => setAuth({ authOauth2ClientSecret: v })}
-            placeholder="{{clientSecret}}"
+            placeholder="${{clientSecret}}"
             isVarSet={isVarSet}
           />
           <AuthText label="Scope" value={d.authOauth2Scope} onChange={(v) => setAuth({ authOauth2Scope: v })} placeholder="可选，空格分隔" isVarSet={isVarSet} />
@@ -394,6 +392,23 @@ export const OP_LABELS: Record<AssertOp, string> = {
   matches: "匹配",
 };
 
+// 表格恒有一行空白可填 —— **必须在渲染时算，不能只在编辑时追加**：
+// 已保存的 case 载入时行行填满（序列化会丢掉空行，见 core/src/yaml/mod.rs），
+// 环境变量 / 输出这类由父组件回写时也会过滤空行；只在 update 里 push 的话，
+// 这些场景末尾就没有落笔的地方，用户加不了下一条（本函数即为此 bug 而生）。
+export function kvRowsWithBlank(rows: FormItem[]): FormItem[] {
+  const last = rows[rows.length - 1];
+  const filled = !!last && !!(last.name || last.value || last.description || last.type);
+  return !last || filled ? [...rows, { name: "", value: "", enabled: true }] : rows;
+}
+
+/** 同 kvRowsWithBlank，用于断言表 */
+export function assertRowsWithBlank(rows: Assertion[]): Assertion[] {
+  const last = rows[rows.length - 1];
+  const filled = !!last && !!(last.target || last.value);
+  return !last || filled ? [...rows, { target: "", op: "eq", value: "" }] : rows;
+}
+
 // 通用键值表格（query / headers / 表单项复用）：末行填写自动追加空行，每行可勾选启用。
 // form-data 传 withType 多一列「类型」：该行可切文本 / 文件，文件行的值即本地文件路径。
 export function KVTable({
@@ -413,12 +428,9 @@ export function KVTable({
   withDescription?: boolean; // 多一列「描述」（数据模型支持 description 的场景，如参数/请求头/表单）
   withType?: boolean; // 多一列「类型」（仅 form-data：文本 / 文件）
 }) {
-  const display = rows.length ? rows : [{ name: "", value: "", enabled: true }];
+  const display = kvRowsWithBlank(rows);
   function update(i: number, patch: Partial<FormItem>) {
-    const next = display.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
-    const last = next[next.length - 1];
-    if (last.name || last.value || last.description) next.push({ name: "", value: "", enabled: true });
-    onChange(next);
+    onChange(display.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   }
   function remove(i: number) {
     onChange(display.filter((_, idx) => idx !== i));
@@ -523,12 +535,9 @@ function AssertTable({
   rows: Assertion[];
   onChange: (rows: Assertion[]) => void;
 }) {
-  const display: Assertion[] = rows.length ? rows : [{ target: "", op: "eq", value: "" }];
+  const display = assertRowsWithBlank(rows);
   function update(i: number, patch: Partial<Assertion>) {
-    const next = display.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
-    const last = next[next.length - 1];
-    if (last.target) next.push({ target: "", op: "eq", value: "" });
-    onChange(next);
+    onChange(display.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   }
   function remove(i: number) {
     onChange(display.filter((_, idx) => idx !== i));

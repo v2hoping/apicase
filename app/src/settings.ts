@@ -18,6 +18,7 @@ export interface AppSettings {
   proxy: ProxyConfig; // 代理设置
   shortcuts: Overrides; // 快捷键自定义绑定
   shortcutsEnabled: boolean; // 快捷键功能总开关
+  showHiddenFiles: boolean; // 文件树是否显示隐藏项（. 开头，如 .apicase/.env）
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -26,6 +27,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   proxy: { ...DEFAULT_PROXY },
   shortcuts: {},
   shortcutsEnabled: true,
+  showHiddenFiles: false,
 };
 
 /** 首帧同步读取用的镜像（localStorage）；权威源仍是 settings.json。 */
@@ -94,6 +96,7 @@ function parseAppSettings(v: unknown, fallback: Partial<AppSettings> = {}): AppS
     proxy: pick("proxy", normalizeProxyConfig),
     shortcuts: pick("shortcuts", normalizeOverrides),
     shortcutsEnabled: pick("shortcutsEnabled", (raw) => raw !== false),
+    showHiddenFiles: pick("showHiddenFiles", (raw) => raw === true),
   };
 }
 

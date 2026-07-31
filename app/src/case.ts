@@ -1,10 +1,18 @@
-// case 的 YAML schema 类型 + 解析/序列化。
-// 设计见 docs/0.latest/1.产品概念模型.md 与 docs/1.feature/20260630-case读写与格式/技术方案.md。
-// 前端用 js-yaml 解析（后端只做通用文件读写）；单/多请求统一为 `steps:` 列表（单 = 长度 1）。
-// 每步用 `protocol:` 显式声明协议（当前仅 http），报文承载于 `request:`（对应内存 HttpSpec）。
-import { load, dump } from "js-yaml";
+// case 的类型定义 + 解析/序列化的 IPC 封装。
+//
+// **YAML 的解析与序列化在 Rust**（`core/src/yaml/`），这里只有两样东西：
+// 与 Rust serde 模型逐字段对齐的 TS 类型，以及调用后端的薄封装。
+//
+// 为什么不在前端留一份 js-yaml 实现：CLI（`apicase run`）必须能自己读 case，
+// 所以 Rust 侧一定要有一份；再在前端留一份，就是两份实现同步维护——
+// 加一个字段要改两处，漏改的那次会以"界面能打开、CLI 读不了"的形式暴露出来。
+//
+// 这些调用都发生在**用户操作**边界（打开文件、切视图、保存），一次 IPC 往返
+// 不到 1ms，感知不到。真正在打字热路径上的只有 URL ↔ query 同步，它留在本文件末尾、
+// 仍是同步的纯字符串函数。
+import { invoke } from "@tauri-apps/api/core";
 
-/** 一行键值（query / headers / 表单项通用）；enabled 默认 true，为 true 时不落盘；description 可选备注 */
+/** 一行键值（query / headers / 表单项通用）；enabled 默认 true；description 可选备注 */
 export interface KV {
   name: string;
   value: string;
@@ -15,7 +23,7 @@ export interface KV {
 /**
  * form-data 的一项：在 KV 之上多一个类型。
  * 文件路径直接存进 `value`（不另立子键）—— 行结构与 KV 一致，
- * 禁用/备注/`{{变量}}` 替换全部复用；YAML 里 `type: file` 一眼可辨（借 Postman 的 `type: "file"`）。
+ * 禁用/备注/`${{变量}}` 替换全部复用；YAML 里 `type: file` 一眼可辨。
  */
 export interface FormItem extends KV {
   type?: "text" | "file"; // 默认 text（不落盘）；file 时 value 为本地文件路径
@@ -27,11 +35,11 @@ export type BodyType = "none" | "json" | "xml" | "text" | "form-urlencoded" | "f
 export interface BodySpec {
   type: BodyType;
   json?: unknown; // type=json：结构化对象（diff 友好）
-  xml?: string; // type=xml
-  text?: string; // type=text
+  xml?: string;
+  text?: string;
   contentType?: string; // type=text | binary 可选覆盖 Content-Type
-  urlencoded?: KV[]; // type=form-urlencoded
-  formData?: FormItem[]; // type=form-data：文本字段 + 文件字段（type: file）
+  urlencoded?: KV[];
+  formData?: FormItem[];
   filePath?: string; // type=binary：以原始字节发送的文件路径（由后端读盘）
 }
 
@@ -100,196 +108,16 @@ export type UiNodes = Record<string, { x: number; y: number }>;
 
 /** 一个 case：统一为 steps 列表（单请求 = 长度 1，多请求 = DAG）。 */
 export interface Case {
-  version: string; // apicase: "0.1"
+  version: string; // apicase: v0.1（带 v 前缀，故不是数字形态、落盘不必加引号）
   name?: string;
   vars?: Record<string, unknown>;
-  requests: Request[]; // 对应 YAML `steps:`（内部沿用 requests 命名）；至少 1 个
-  ui?: { nodes: UiNodes }; // 可选：画布坐标
-}
-
-// ── 工具 ───────────────────────────────────────────
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-const str = (v: unknown): string => (v == null ? "" : String(v));
-
-// ── 解析（YAML → 规范化内存模型）─────────────────────
-function normalizeKVRow(it: Record<string, unknown>): KV {
-  return {
-    name: str(it.name),
-    value: str(it.value),
-    enabled: it.enabled === false ? false : true,
-    description: typeof it.description === "string" && it.description !== "" ? it.description : undefined,
-  };
-}
-
-function normalizeKV(list: unknown): KV[] {
-  if (!Array.isArray(list)) return [];
-  return list.filter(isPlainObject).map(normalizeKVRow);
-}
-
-/** form-data 项：在 KV 之上认 `type: file`（其余一律视作 text，不写回该字段）。 */
-function normalizeFormData(list: unknown): FormItem[] {
-  if (!Array.isArray(list)) return [];
-  return list.filter(isPlainObject).map((it) => {
-    const row: FormItem = normalizeKVRow(it);
-    if (it.type === "file") row.type = "file";
-    return row;
-  });
-}
-
-function normalizeAuth(a: unknown): AuthSpec {
-  if (!isPlainObject(a) || typeof a.type !== "string") return { type: "none" };
-  const type = a.type as AuthType;
-  if (type === "bearer") {
-    const b = a.bearer as Record<string, unknown> | undefined;
-    return { type, bearer: { token: str(b?.token) } };
-  }
-  if (type === "basic") {
-    const b = a.basic as Record<string, unknown> | undefined;
-    return { type, basic: { username: str(b?.username), password: str(b?.password) } };
-  }
-  if (type === "apikey") {
-    const k = a.apikey as Record<string, unknown> | undefined;
-    return {
-      type,
-      apikey: { key: str(k?.key), value: str(k?.value), in: k?.in === "query" ? "query" : "header" },
-    };
-  }
-  if (type === "digest") {
-    const d = a.digest as Record<string, unknown> | undefined;
-    return { type, digest: { username: str(d?.username), password: str(d?.password) } };
-  }
-  if (type === "oauth2") {
-    const o = a.oauth2 as Record<string, unknown> | undefined;
-    return {
-      type,
-      oauth2: {
-        tokenUrl: str(o?.tokenUrl),
-        clientId: str(o?.clientId),
-        clientSecret: str(o?.clientSecret),
-        scope: o?.scope === undefined || o?.scope === null || str(o?.scope) === "" ? undefined : str(o.scope),
-        clientAuth: o?.clientAuth === "body" ? "body" : "header",
-      },
-    };
-  }
-  return { type: "none" };
-}
-
-function normalizeBody(b: unknown): BodySpec {
-  if (!isPlainObject(b) || typeof b.type !== "string") return { type: "none" };
-  const type = b.type as BodyType;
-  const ct = typeof b.contentType === "string" && b.contentType !== "" ? b.contentType : undefined;
-  if (type === "json") return { type, json: b.json };
-  if (type === "xml") return { type, xml: str(b.xml) };
-  if (type === "text") return { type, text: str(b.text), contentType: ct };
-  if (type === "form-urlencoded") return { type, urlencoded: normalizeKV(b.urlencoded) };
-  if (type === "form-data") return { type, formData: normalizeFormData(b.formData) };
-  if (type === "binary") return { type, filePath: str(b.filePath), contentType: ct };
-  return { type: "none" };
-}
-
-/** 规范化 HTTP 报文（原 normalizeRequest）。 */
-function normalizeHttp(r: unknown): HttpSpec {
-  const o = isPlainObject(r) ? r : {};
-  return {
-    method: (str(o.method) || "GET").toUpperCase(),
-    url: str(o.url),
-    query: normalizeKV(o.query),
-    headers: normalizeKV(o.headers),
-    auth: normalizeAuth(o.auth),
-    body: normalizeBody(o.body),
-  };
-}
-
-function normalizeOutputs(o: unknown): RequestOutput[] {
-  if (!isPlainObject(o)) return [];
-  return Object.entries(o).map(([name, path]) => ({ name, path: str(path) }));
-}
-
-function normalizeAssertions(list: unknown): Assertion[] {
-  if (!Array.isArray(list)) return [];
-  return list
-    .filter(isPlainObject)
-    .map((it) => ({
-      target: str(it.target),
-      op: (ASSERT_OPS.includes(str(it.op) as AssertOp) ? (str(it.op) as AssertOp) : "eq") as AssertOp,
-      value: it.value === undefined || it.value === null ? undefined : str(it.value),
-    }))
-    .filter((a) => a.target !== "");
-}
-
-/** 规范化一个 step。协议由 `protocol` 声明，报文承载于 `request:`。 */
-function normalizeRequest(s: unknown, i: number): Request {
-  const o = isPlainObject(s) ? s : {};
-  const id = str(o.id) || `step${i + 1}`;
-  const protocol = str(o.protocol) || "http";
-  const dependsOn = Array.isArray(o.dependsOn) ? o.dependsOn.map(str).filter(Boolean) : [];
-  return {
-    id,
-    protocol,
-    http: normalizeHttp(o.request),
-    dependsOn,
-    outputs: normalizeOutputs(o.outputs),
-    assertions: normalizeAssertions(o.assertions),
-    docs: typeof o.docs === "string" ? o.docs : undefined,
-  };
-}
-
-function normalizeUi(u: unknown): { nodes: UiNodes } | undefined {
-  if (!isPlainObject(u) || !isPlainObject(u.nodes)) return undefined;
-  const nodes: UiNodes = {};
-  for (const [k, v] of Object.entries(u.nodes)) {
-    if (isPlainObject(v) && typeof v.x === "number" && typeof v.y === "number") {
-      nodes[k] = { x: v.x, y: v.y };
-    }
-  }
-  return Object.keys(nodes).length ? { nodes } : undefined;
-}
-
-/**
- * 解析 case 文本为 steps 列表。**唯一格式**：顶层 `steps:` 列表（单节点 = 长度 1，
- * 每步含 `protocol:` 与 `request:`）。旧格式（`requests:` 列表、`http:` 报文键）一律不再兼容。
- */
-export function parseCase(text: string): Case {
-  let obj: unknown;
-  try {
-    obj = load(text) ?? {};
-  } catch (e) {
-    throw new Error(`YAML 解析失败: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  const o = isPlainObject(obj) ? obj : {};
-  const version = typeof o.apicase === "string" ? o.apicase : "0.1";
-  const name = typeof o.name === "string" ? o.name : undefined;
-  const vars = isPlainObject(o.vars) ? o.vars : undefined;
-  const arr = Array.isArray(o.steps) ? o.steps : [];
-  return { version, name, vars, requests: arr.map(normalizeRequest), ui: normalizeUi(o.ui) };
-}
-
-/**
- * 校验并解析 case 文本，用于「内容驱动默认视图 / 文本兜底」。
- * valid=true 仅当能 parse 成对象且含 `steps:` 列表；旧格式（`requests:` / `http:` 报文键）
- * 一律判为无效 → 回退纯文本编辑（不进可视化）。
- */
-export function analyzeCase(text: string): { valid: boolean; case?: Case; error?: string } {
-  let obj: unknown;
-  try {
-    obj = load(text) ?? {};
-  } catch (e) {
-    return { valid: false, error: `YAML 解析失败：${e instanceof Error ? e.message : String(e)}` };
-  }
-  if (!isPlainObject(obj)) return { valid: false, error: "顶层不是对象，不是有效的 case" };
-  if (!Array.isArray(obj.steps)) return { valid: false, error: "缺少 steps 列表" };
-  // 止损：steps 已是新格式，但某步仍用旧内层键 http: 而非 request: —— 判为无效、回退纯文本，
-  // 避免结构化编辑器读到空报文、保存时用 dumpCase 覆盖丢失原报文（不做旧格式兼容，仅防误删）。
-  const legacyStep = obj.steps.some((s) => isPlainObject(s) && "http" in s && !("request" in s));
-  if (legacyStep) return { valid: false, error: "step 使用了旧的 http: 报文键，请改为 request:" };
-  return { valid: true, case: parseCase(text) };
+  requests: Request[]; // 对应 YAML `steps:`（内部沿用 requests 命名）
+  ui?: { nodes: UiNodes };
 }
 
 /**
  * 工作空间级请求设置（application.yml 的 `settings:` 键）。跟随项目走 git，团队共享。
- * 三项都作用于**单请求与 flow 执行**——两者共用后端 send_request 通道。
+ * 三项都作用于**单请求与 flow 执行**——两者共用同一条执行内核通道。
  */
 export interface WorkspaceSettings {
   verifySsl: boolean; // SSL/TLS 证书验证；关闭后接受任何服务端证书（降安全，UI 警示）
@@ -305,227 +133,61 @@ export const DEFAULT_WS_SETTINGS: WorkspaceSettings = {
   timeoutMs: 0,
 };
 
-/**
- * 从 application.yml 文本解析 settings。
- * 容错同 parseEnvironments：解析失败 / 键缺失 / 类型不符一律回落默认，绝不抛错——
- * 配置文件是手写的，一处写错不该让整个请求功能瘫掉。
- */
-export function parseSettings(text: string): WorkspaceSettings {
-  let obj: unknown;
-  try {
-    obj = load(text) ?? {};
-  } catch {
-    return { ...DEFAULT_WS_SETTINGS };
-  }
-  if (!isPlainObject(obj) || !isPlainObject(obj.settings)) return { ...DEFAULT_WS_SETTINGS };
-  const s = obj.settings;
-  // 超时：非数字 / 负数 / 非有限值一律回 0（不限制），小数取整
-  const rawTimeout = typeof s.timeoutMs === "number" ? s.timeoutMs : Number(s.timeoutMs);
-  const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? Math.floor(rawTimeout) : 0;
-  return {
-    // 只有显式写 false 才关闭：键缺失或写错类型都按「校验开启」这一安全侧兜底
-    verifySsl: s.verifySsl !== false,
-    useCustomCa: s.useCustomCa === true,
-    caCert: typeof s.caCert === "string" ? s.caCert.trim() : "",
-    timeoutMs,
-  };
-}
+/** 环境表：`{ 环境名: { 变量: 值 } }`（顺序即 application.yml 里的书写顺序） */
+export type Environments = Record<string, Record<string, string>>;
 
-/** settings → YAML 对象；全为默认时返回 undefined，调用方据此整键不落盘（不给既有配置添噪）。 */
-function serializeSettings(s: WorkspaceSettings): Record<string, unknown> | undefined {
-  const o: Record<string, unknown> = {};
-  if (!s.verifySsl) o.verifySsl = false;
-  if (s.useCustomCa) o.useCustomCa = true;
-  if (s.caCert.trim()) o.caCert = s.caCert.trim();
-  if (s.timeoutMs > 0) o.timeoutMs = Math.floor(s.timeoutMs);
-  return Object.keys(o).length ? o : undefined;
-}
+// ── IPC 封装 ───────────────────────────────────────
 
-/** 从 application.yml 文本解析 environment：`{ 环境名: { 变量: 值 } }`（值统一转字符串）。 */
-export function parseEnvironments(text: string): Record<string, Record<string, string>> {
-  let obj: unknown;
-  try {
-    obj = load(text) ?? {};
-  } catch {
-    return {};
-  }
-  if (!isPlainObject(obj) || !isPlainObject(obj.environment)) return {};
-  const out: Record<string, Record<string, string>> = {};
-  for (const [env, vars] of Object.entries(obj.environment)) {
-    const m: Record<string, string> = {};
-    if (isPlainObject(vars)) {
-      for (const [k, v] of Object.entries(vars)) m[k] = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
-    }
-    out[env] = m;
-  }
-  return out;
+export interface AnalyzeResult {
+  valid: boolean;
+  case?: Case;
+  error?: string;
 }
 
 /**
- * 把可视化编辑的 environment / settings 写回 application.yml（保留其它顶层键，注释不可避免地丢失）。
- * settings 省略时不动原文该键；全为默认值则整键删除（避免写出一堆等于默认的噪声）。
+ * 校验并解析 case 文本，用于「内容驱动默认视图 / 文本兜底」。
+ * valid=true 仅当能解析成对象且含 `steps:` 列表；旧格式（`requests:` / `http:` 报文键）
+ * 一律判为无效 → 回退纯文本编辑（不进可视化）。
  */
-export function dumpApplicationConfig(
-  baseText: string,
-  environment: Record<string, Record<string, string>>,
-  settings?: WorkspaceSettings,
-): string {
-  let obj: unknown;
-  try {
-    obj = load(baseText);
-  } catch {
-    obj = {};
-  }
-  const base: Record<string, unknown> = isPlainObject(obj) ? { ...obj } : {};
-  base.environment = environment;
-  if (settings) {
-    // 只接管自己认得的四个键：原文里其它手写键（未来字段 / 用户自定义）原样保留，
-    // 否则一次可视化保存就会把它们悄悄吃掉。
-    const prev: Record<string, unknown> = isPlainObject(base.settings) ? { ...base.settings } : {};
-    for (const k of ["verifySsl", "useCustomCa", "caCert", "timeoutMs"]) delete prev[k];
-    const merged = { ...prev, ...(serializeSettings(settings) || {}) };
-    if (Object.keys(merged).length) base.settings = merged;
-    else delete base.settings;
-  }
-  return dump(base, { lineWidth: 100, noRefs: true });
-}
-
-// ── 序列化（内存模型 → YAML，裁剪默认值）──────────────
-function serializeKV(list: KV[]): Array<Record<string, unknown>> {
-  return (list || [])
-    .filter((kv) => kv.name.trim() !== "" || kv.value.trim() !== "")
-    .map((kv) => {
-      const o: Record<string, unknown> = { name: kv.name, value: kv.value };
-      if (kv.enabled === false) o.enabled = false;
-      if (kv.description && kv.description.trim() !== "") o.description = kv.description;
-      return o;
-    });
-}
-
-/** form-data 项：同 KV，额外落 `type: file`（text 是默认值，不落盘）。 */
-function serializeFormData(list: FormItem[]): Array<Record<string, unknown>> {
-  return (list || [])
-    .filter((it) => it.name.trim() !== "" || it.value.trim() !== "")
-    .map((it) => {
-      const o: Record<string, unknown> = { name: it.name };
-      if (it.type === "file") o.type = "file";
-      o.value = it.value;
-      if (it.enabled === false) o.enabled = false;
-      if (it.description && it.description.trim() !== "") o.description = it.description;
-      return o;
-    });
-}
-
-function serializeAuth(a: AuthSpec): Record<string, unknown> | null {
-  if (!a || a.type === "none") return null;
-  if (a.type === "bearer") return { type: "bearer", bearer: { token: a.bearer?.token || "" } };
-  if (a.type === "basic")
-    return { type: "basic", basic: { username: a.basic?.username || "", password: a.basic?.password || "" } };
-  if (a.type === "apikey")
-    return {
-      type: "apikey",
-      apikey: { key: a.apikey?.key || "", value: a.apikey?.value || "", in: a.apikey?.in || "header" },
-    };
-  if (a.type === "digest")
-    return {
-      type: "digest",
-      digest: { username: a.digest?.username || "", password: a.digest?.password || "" },
-    };
-  if (a.type === "oauth2") {
-    const o: Record<string, unknown> = {
-      tokenUrl: a.oauth2?.tokenUrl || "",
-      clientId: a.oauth2?.clientId || "",
-      clientSecret: a.oauth2?.clientSecret || "",
-    };
-    if (a.oauth2?.scope) o.scope = a.oauth2.scope;
-    if (a.oauth2?.clientAuth === "body") o.clientAuth = "body"; // header 为默认值，不落盘
-    return { type: "oauth2", oauth2: o };
-  }
-  return null;
-}
-
-function serializeBody(b: BodySpec): Record<string, unknown> | null {
-  if (!b || b.type === "none") return null;
-  if (b.type === "json") {
-    if (b.json === undefined || b.json === null || b.json === "") return null;
-    return { type: "json", json: b.json };
-  }
-  if (b.type === "xml") {
-    return b.xml ? { type: "xml", xml: b.xml } : null;
-  }
-  if (b.type === "text") {
-    if (!b.text) return null;
-    return b.contentType
-      ? { type: "text", contentType: b.contentType, text: b.text }
-      : { type: "text", text: b.text };
-  }
-  if (b.type === "binary") {
-    if (!b.filePath) return null;
-    return b.contentType
-      ? { type: "binary", contentType: b.contentType, filePath: b.filePath }
-      : { type: "binary", filePath: b.filePath };
-  }
-  if (b.type === "form-urlencoded") {
-    const u = serializeKV(b.urlencoded || []);
-    return u.length ? { type: "form-urlencoded", urlencoded: u } : null;
-  }
-  if (b.type === "form-data") {
-    const f = serializeFormData(b.formData || []);
-    return f.length ? { type: "form-data", formData: f } : null;
-  }
-  return null;
-}
-
-/** 序列化 HTTP 报文（原 serializeRequest）。 */
-function serializeHttp(r: HttpSpec): Record<string, unknown> {
-  const out: Record<string, unknown> = { method: r.method, url: r.url };
-  const q = serializeKV(r.query);
-  if (q.length) out.query = q;
-  const h = serializeKV(r.headers);
-  if (h.length) out.headers = h;
-  const auth = serializeAuth(r.auth);
-  if (auth) out.auth = auth;
-  const body = serializeBody(r.body);
-  if (body) out.body = body;
-  return out;
-}
-
-function serializeAssertions(list: Assertion[]): Array<Record<string, unknown>> {
-  return list
-    .filter((a) => a.target.trim() !== "")
-    .map((a) => {
-      const o: Record<string, unknown> = { target: a.target, op: a.op };
-      if (a.op !== "exists" && a.op !== "notExists" && a.value !== undefined && a.value !== "") o.value = a.value;
-      return o;
-    });
-}
-
-// 顺序对齐文档示例：id → protocol → dependsOn → request → outputs → assertions → docs
-function serializeRequest(s: Request): Record<string, unknown> {
-  const out: Record<string, unknown> = { id: s.id, protocol: s.protocol || "http" };
-  if (s.dependsOn.length) out.dependsOn = s.dependsOn;
-  out.request = serializeHttp(s.http);
-  const o: Record<string, string> = {};
-  for (const it of s.outputs) if (it.name.trim()) o[it.name.trim()] = it.path;
-  if (Object.keys(o).length) out.outputs = o;
-  const asserts = serializeAssertions(s.assertions);
-  if (asserts.length) out.assertions = asserts;
-  if (s.docs && s.docs.trim()) out.docs = s.docs;
-  return out;
+export function analyzeCase(text: string): Promise<AnalyzeResult> {
+  return invoke<AnalyzeResult>("analyze_case", { text });
 }
 
 /** 把 case 序列化为 YAML 文本（统一写 steps 列表；单请求 = 长度 1）。 */
-export function dumpCase(c: Case): string {
-  const out: Record<string, unknown> = { apicase: c.version || "0.1" };
-  if (c.name) out.name = c.name;
-  if (c.vars && Object.keys(c.vars).length) out.vars = c.vars;
-  out.steps = c.requests.map(serializeRequest);
-  if (c.ui && Object.keys(c.ui.nodes).length) out.ui = { nodes: c.ui.nodes };
-  return dump(out, { lineWidth: 100, noRefs: true });
+export function dumpCase(c: Case): Promise<string> {
+  return invoke<string>("dump_case", { case: c });
 }
 
-// ── query ↔ url 同步（不做 encode，避免破坏 {{var}}）──
-/** 从 url 拆出 base 与 query 数组（保留原样，含 {{var}}）。 */
+/**
+ * 一次读全 application.yml 的两块配置。
+ * 合成一个命令而非两个：这两样每次都一起用，分开就是两次 IPC + 两次 YAML 解析。
+ */
+export function parseAppConfig(text: string): Promise<{ environment: Environments; settings: WorkspaceSettings }> {
+  return invoke("parse_app_config", { text });
+}
+
+/**
+ * 把可视化编辑的 environment / settings 写回 application.yml。
+ * 保留原文的其它顶层键（注释不可避免地丢失）；settings 省略时不动原文该键。
+ */
+export function dumpAppConfig(
+  baseText: string,
+  environment: Environments,
+  settings?: WorkspaceSettings,
+): Promise<string> {
+  return invoke<string>("dump_app_config", { baseText, environment, settings: settings ?? null });
+}
+
+// ── query ↔ url 同步（前端同步实现）─────────────────
+//
+// 这两个函数**刻意留在前端且保持同步**：URL 输入框每敲一个字符都要调它们，
+// 走 IPC 会让打字变得黏手。执行侧 Rust 有等价实现（`core/src/request.rs`），
+// 用途不同——那边是"发送前把 query 合进 URL"，这边是"编辑时两个控件双向同步"。
+// 都是不到 20 行的纯字符串操作，两侧各有单测钉住。
+//
+// 全程**不做百分号编码**：`${{var}}` 里的花括号一编码就再也替换不回来了。
+
+/** 从 url 拆出 base 与 query 数组（保留原样，含 ${{var}}）。 */
 export function splitQueryFromUrl(url: string): { base: string; query: KV[] } {
   const idx = url.indexOf("?");
   if (idx < 0) return { base: url, query: [] };

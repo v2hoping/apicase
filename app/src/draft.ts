@@ -2,7 +2,26 @@
 // 为什么要独立草稿：编辑 JSON body 时允许中途非法文本（不即时 parse），
 // 故用字符串保存 body 文本，仅在保存/发送边界才校验并转回 HttpSpec。
 // 单请求与多请求 flow 的每个请求都复用同一份 ReqDraft，请求编辑器因而完全通用。
-import { HttpSpec, AuthSpec, AuthType, BodySpec, BodyType, KV, FormItem, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
+//
+// **这里只负责编辑态 ↔ HttpSpec 的互转**（纯前端、同步，服务于表单交互）。
+// 「HttpSpec → 真正发出去的报文」那一步在 Rust（`core/src/request.rs`）——
+// 认证头怎么加、Content-Type 怎么定、multipart 怎么组，都不在前端。
+import {
+  HttpSpec,
+  AuthSpec,
+  AuthType,
+  BodySpec,
+  BodyType,
+  KV,
+  FormItem,
+  Case,
+  Request,
+  RequestOutput,
+  Assertion,
+  UiNodes,
+  splitQueryFromUrl,
+  mergeQueryIntoUrl,
+} from "./case";
 import { baseName } from "./pathutil";
 
 export interface ReqDraft {
@@ -115,6 +134,44 @@ export function emptyDraft(method = "GET", url = ""): ReqDraft {
   };
 }
 
+/**
+ * case 内部统一模型：一个 step 的编辑态（单请求 = 只有 1 个）。
+ * 请求报文部分复用 ReqDraft，故请求编辑器对单节点与 flow step 完全通用。
+ */
+export interface RequestDraft {
+  id: string;
+  protocol: string;
+  dependsOn: string[];
+  outputs: RequestOutput[];
+  assertions: Assertion[];
+  docs: string;
+  req: ReqDraft;
+}
+
+/** valid 但 http 报文缺失时的兜底（极少数） */
+function emptyHttpSpec(): HttpSpec {
+  return { method: "GET", url: "", query: [], headers: [], auth: { type: "none" }, body: { type: "none" } };
+}
+
+/** Case → step 编辑态列表（+ 画布坐标）。空 steps 兜一个空请求，保证编辑器恒有内容可渲染。 */
+export function caseToRequests(c: Case): { requests: RequestDraft[]; ui?: UiNodes } {
+  const src: Request[] = c.requests.length
+    ? c.requests
+    : [{ id: "step1", protocol: "http", http: emptyHttpSpec(), dependsOn: [], outputs: [], assertions: [] }];
+  return {
+    requests: src.map((r) => ({
+      id: r.id,
+      protocol: r.protocol || "http",
+      dependsOn: r.dependsOn,
+      outputs: r.outputs,
+      assertions: r.assertions,
+      docs: r.docs || "",
+      req: requestToDraft(r.http),
+    })),
+    ui: c.ui?.nodes,
+  };
+}
+
 /** HttpSpec → 编辑态草稿（打开 case / 切换请求时用）。 */
 export function requestToDraft(r: HttpSpec): ReqDraft {
   const split = splitQueryFromUrl(r.url);
@@ -212,96 +269,13 @@ export function draftToRequest(d: ReqDraft): { request?: HttpSpec; error?: strin
   return { request };
 }
 
-// ── 组装实际发送的请求（合并 auth、body → 后端 send_request 载荷）──
-export interface HeaderEntry {
-  key: string;
-  value: string;
-}
-/** multipart 的一个 part：filePath 存在即文件字段（后端读盘），否则是文本字段。 */
-export interface FormDataEntry {
-  name: string;
-  value?: string;
-  filePath?: string;
-  fileName?: string; // 文件字段的 filename，取路径 basename
-  contentType?: string; // 该 part 的 Content-Type，按扩展名推断
-}
-export interface ApiRequestPayload {
-  method: string;
-  url: string;
-  headers: HeaderEntry[];
-  body: string | null;
-  bodyFile?: string; // binary：文件路径交给后端读盘，不把字节塞进 IPC
-  formData?: FormDataEntry[]; // form-data：由后端组 multipart（Content-Type 含 boundary）
-}
-
-/** UTF-8 安全的 base64：btoa 只吃 Latin-1，含中文的用户名/密码会直接抛错。 */
+/**
+ * UTF-8 安全的 base64。`btoa` 只吃 Latin-1，含中文的用户名 / 密码会直接抛错。
+ * 前端只在**认证面板的预览**里用它（"这种认证最终往报文上附加什么"）；
+ * 真正发送时的编码在 Rust（`core/src/request.rs`），两处互不依赖。
+ */
 export function utf8Base64(s: string): string {
   let bin = "";
   for (const b of new TextEncoder().encode(s)) bin += String.fromCharCode(b);
   return btoa(bin);
-}
-
-// digest / oauth2 不在这里注入 Authorization：前者要先拿服务端 401 challenge，
-// 后者要先换 access_token，都需要异步——统一在 auth.ts 的 sendWithAuth 里补齐。
-export function buildApiRequest(d: ReqDraft): ApiRequestPayload {
-  let finalUrl = d.url.trim();
-  const hdrs: HeaderEntry[] = d.headers
-    .filter((h) => h.enabled !== false && h.name.trim() !== "")
-    .map((h) => ({ key: h.name.trim(), value: h.value }));
-  const hasContentType = () => hdrs.some((h) => h.key.toLowerCase() === "content-type");
-  // auth
-  if (d.authType === "bearer" && d.authBearerToken) {
-    hdrs.push({ key: "Authorization", value: `Bearer ${d.authBearerToken}` });
-  } else if (d.authType === "basic") {
-    hdrs.push({ key: "Authorization", value: `Basic ${utf8Base64(`${d.authBasicUser}:${d.authBasicPass}`)}` });
-  } else if (d.authType === "apikey" && d.authApikeyKey) {
-    if (d.authApikeyIn === "header") {
-      hdrs.push({ key: d.authApikeyKey, value: d.authApikeyValue });
-    } else {
-      const cur = splitQueryFromUrl(finalUrl);
-      finalUrl = mergeQueryIntoUrl(finalUrl, [...cur.query, { name: d.authApikeyKey, value: d.authApikeyValue, enabled: true }]);
-    }
-  }
-  // body：文本类（json/xml/text/form-urlencoded）走 body 字符串，
-  // binary 走 bodyFile（后端读盘）、form-data 走 formData（后端组 multipart）
-  let bodyStr: string | null = null;
-  let bodyFile: string | undefined;
-  let formData: FormDataEntry[] | undefined;
-  // 手填的 Content-Type 优先级最高，默认值仅在未手填时补
-  const setCT = (v: string) => {
-    if (v && !hasContentType()) hdrs.push({ key: "Content-Type", value: v });
-  };
-  if ((d.bodyType === "json" || d.bodyType === "xml") && d.bodyText.trim() !== "") {
-    bodyStr = d.bodyText;
-    setCT(DEFAULT_CONTENT_TYPE[d.bodyType] || "");
-  } else if (d.bodyType === "text" && d.bodyText !== "") {
-    bodyStr = d.bodyText;
-    setCT(d.bodyContentType || DEFAULT_CONTENT_TYPE.text || "");
-  } else if (d.bodyType === "form-urlencoded") {
-    const pairs = d.bodyForm.filter((k) => k.enabled !== false && k.name.trim() !== "");
-    if (pairs.length) {
-      bodyStr = pairs.map((k) => `${encodeURIComponent(k.name)}=${encodeURIComponent(k.value)}`).join("&");
-      setCT(DEFAULT_CONTENT_TYPE["form-urlencoded"] || "");
-    }
-  } else if (d.bodyType === "form-data") {
-    // 文件行未选文件（路径空）直接跳过——发下去只会让后端报读盘失败
-    const pairs = d.bodyForm.filter(
-      (k) => k.enabled !== false && k.name.trim() !== "" && (k.type !== "file" || k.value.trim() !== ""),
-    );
-    // Content-Type 不能手工设：multipart 的 boundary 由后端 reqwest 生成
-    // 文件 part 的 filename 与 Content-Type 在前端算好（复用 binary 那份扩展名表），后端只管读盘
-    if (pairs.length) {
-      formData = pairs.map((k) => {
-        const name = k.name.trim();
-        if (k.type !== "file") return { name, value: k.value };
-        const filePath = k.value.trim();
-        return { name, filePath, fileName: baseName(filePath), contentType: guessContentType(filePath) };
-      });
-    }
-  } else if (d.bodyType === "binary" && d.bodyFilePath.trim() !== "") {
-    bodyFile = d.bodyFilePath.trim();
-    // 手填优先，否则按文件类型推断（兜底 octet-stream，故 binary 有文件时总带 Content-Type）
-    setCT(d.bodyContentType || guessContentType(bodyFile));
-  }
-  return { method: d.method, url: finalUrl, headers: hdrs, body: bodyStr, bodyFile, formData };
 }
