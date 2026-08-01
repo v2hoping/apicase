@@ -47,7 +47,7 @@ import { type AppSettings, loadCachedSettings, loadAppSettings, saveAppSettings,
 import { type ProxyConfig, type ProxyMode, proxyPayload } from "./proxy";
 import { AiChat } from "./AiChat";
 import { MarkdownEditor } from "./markdown";
-import { baseName, dirName, joinPath, relPath, isUnder, retargetPath, uniqueName } from "./pathutil";
+import { baseName, dirName, joinPath, relPath, isUnder, retargetPath, uniqueName, reportFileName } from "./pathutil";
 import {
   ACTIONS,
   ACTION_MAP,
@@ -199,8 +199,7 @@ const reportKey = (path: string): string => "file:" + path;
 interface RunSession {
   runId: string;
   report: RunReport | null;
-  file: string; // report.html 的绝对路径
-  dir: string; // 报告目录
+  file: string; // 报告 HTML 的绝对路径
   total: number; // 预计要跑的用例数（进度条分母；报告 summary 在跑完前不含未跑的）
   cancelling?: boolean;
   readOnly?: boolean; // 历史报告：没有进度条与取消
@@ -3265,13 +3264,14 @@ function App() {
     setRunDialog((cur) => (cur && cur.target === d.target ? { ...cur, recursive, files } : cur));
   }
 
-  /** 报告输出目录：`<workspace>/.apicase/reports/<YYYYMMDD-HHmmss>/` */
-  function reportDirFor(at: Date): string {
-    const p = (n: number) => String(n).padStart(2, "0");
-    const stamp =
-      `${at.getFullYear()}${p(at.getMonth() + 1)}${p(at.getDate())}` +
-      `-${p(at.getHours())}${p(at.getMinutes())}${p(at.getSeconds())}`;
-    return joinPath(joinPath(workspace, REPORTS_REL), stamp);
+  /**
+   * 报告输出文件：`<workspace>/.apicase/reports/<YYYYMMDDHHmmss>-<目标>.html`。
+   *
+   * 报告是**自包含单文件**（样式脚本数据全内联，就为了能整份转发），所以不给它套目录——
+   * 一个只装一个文件的目录，只是让每次查看都多进一层。命名规则见 `reportFileName`。
+   */
+  function reportFileFor(at: Date, target: string): string {
+    return joinPath(joinPath(workspace, REPORTS_REL), reportFileName(at, target));
   }
 
   /**
@@ -3313,8 +3313,8 @@ function App() {
     const at = new Date();
     const runId = String(at.getTime());
     const tabPath = RUN_TAB_PREFIX + runId;
-    const dir = reportDirFor(at);
-    const file = joinPath(dir, "report.html");
+    // 目标是工作空间根时 baseName 就是工作空间目录名，不必特判
+    const file = reportFileFor(at, d.target);
 
     const targets = files.map((p) => ({ file: relPath(workspace, p), path: p }));
     const opts = makeBatchOpts({ name: d.env, vars: environments[d.env] || {} }, clientConfig);
@@ -3331,7 +3331,7 @@ function App() {
       maxBodyBytes: opts.maxBodyBytes,
     };
 
-    setRunSessions((m) => ({ ...m, [runId]: { runId, report: null, file, dir, total: files.length } }));
+    setRunSessions((m) => ({ ...m, [runId]: { runId, report: null, file, total: files.length } }));
     setTabOrder((prev) => (prev.includes(tabPath) ? prev : [...prev, tabPath]));
     openTab(tabPath);
     await ensureGitignore();

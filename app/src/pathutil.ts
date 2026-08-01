@@ -47,6 +47,53 @@ export function splitExt(name: string): { stem: string; ext: string } {
 }
 
 /**
+ * 运行报告的文件名：`<YYYYMMDDHHmmss>-<目标名>.html`。
+ *
+ * **时间戳必须在前**：目录列表按名字排序，时间戳打头才能让字典序等于时间序；
+ * 目标名放前面就成了按目标分组，"最近跑的那次"得满目录翻。
+ *
+ * 时间戳内部**不加分隔符**（14 位连续数字，同 Rails migration 的时间戳）：
+ * 目标名自带连字符是常态（`01-方法`），时间戳里再插一个就得数着看边界；
+ * 连成一串之后"数字止于何处"即时间戳止于何处。
+ *
+ * 目标名只为认得出跑了什么（`20260728215758-01-方法.html`），故做三件事：
+ * 去掉 `.yml` 扩展名、把文件系统不收的字符换成 `-`（Windows 禁 `\ / : * ? " < > |`，
+ * macOS 只禁 `/`，按严的来）、按**字节**截到 60（目录名上限 255 字节，一个汉字占 3）。
+ * 净化后为空就只留时间戳——宁可少个后缀，也不能拼出一个建不出来的文件名。
+ */
+export function reportFileName(at: Date, target: string): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  const stamp =
+    `${at.getFullYear()}${p(at.getMonth() + 1)}${p(at.getDate())}` +
+    `${p(at.getHours())}${p(at.getMinutes())}${p(at.getSeconds())}`;
+  const name = clipBytes(
+    baseName(target)
+      .replace(/\.ya?ml$/i, "")
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\\/:*?"<>|\x00-\x1f]+/g, "-")
+      .replace(/-{2,}/g, "-")
+      .replace(/^[-.\s]+|[-.\s]+$/g, ""),
+    60,
+  );
+  return `${stamp}${name ? `-${name}` : ""}.html`;
+}
+
+/** 按 UTF-8 字节截断，切点落在字符边界上（别把一个汉字切成半个）。 */
+function clipBytes(s: string, max: number): string {
+  const enc = new TextEncoder();
+  if (enc.encode(s).length <= max) return s;
+  let out = "";
+  let used = 0;
+  for (const ch of s) {
+    const n = enc.encode(ch).length;
+    if (used + n > max) break;
+    out += ch;
+    used += n;
+  }
+  return out;
+}
+
+/**
  * 生成不重名的名称：`用例.yml` → `用例 副本.yml` → `用例 副本 2.yml` …
  * 已是「x 副本」/「x 副本 N」的从 x 继续排号，不会滚成「x 副本 副本」。
  * taken 由调用方给（通常是目标目录已有名称的集合）。
