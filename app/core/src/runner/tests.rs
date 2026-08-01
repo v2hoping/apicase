@@ -22,6 +22,7 @@ fn steps_with_deps(spec: &[(&str, &[&str])]) -> Vec<Step> {
         .map(|(id, deps)| Step {
             id: (*id).into(),
             protocol: "http".into(),
+            ui: None,
             http: Default::default(),
             depends_on: deps.iter().map(|d| d.to_string()).collect(),
             outputs: vec![],
@@ -72,10 +73,10 @@ steps:
     outputs:
       token: $.data.token
     assertions:
-      - target: status
+      - target: res.status
         op: eq
         value: 200
-      - target: $.data.token
+      - target: res.body.data.token
         op: exists
   - id: profile
     protocol: http
@@ -89,7 +90,7 @@ steps:
         bearer:
           token: ${{steps.login.outputs.token}}
     assertions:
-      - target: $.name
+      - target: res.body.name
         op: eq
         value: alice
 "#;
@@ -138,7 +139,7 @@ async fn failed_and_error_are_distinguished() {
     let opts = direct(&[("base", &srv.base)]);
 
     let failing = format!(
-        "apicase: v0.1\nsteps:\n  - id: a\n    request:\n      method: GET\n      url: {}/x\n    assertions:\n      - target: $.code\n        op: eq\n        value: '0'\n",
+        "apicase: v0.1\nsteps:\n  - id: a\n    request:\n      method: GET\n      url: {}/x\n    assertions:\n      - target: res.body.code\n        op: eq\n        value: '0'\n",
         srv.base
     );
     let r = run_case(&failing, "f.yml", &opts, &Cancel::new()).await;
@@ -333,7 +334,7 @@ fn meta() -> BatchMeta {
 
 fn case_hitting(base: &str, path: &str, expect_code: &str) -> String {
     format!(
-        "apicase: v0.1\nsteps:\n  - id: a\n    request:\n      method: GET\n      url: {base}{path}\n    assertions:\n      - target: $.code\n        op: eq\n        value: '{expect_code}'\n"
+        "apicase: v0.1\nsteps:\n  - id: a\n    request:\n      method: GET\n      url: {base}{path}\n    assertions:\n      - target: res.body.code\n        op: eq\n        value: '{expect_code}'\n"
     )
 }
 
@@ -445,7 +446,7 @@ async fn stop_on_failure_halts_the_batch() {
 async fn stop_on_failure_also_halts_steps_within_a_case() {
     let srv = MockServer::start(|_| Reply::json(r#"{"code":1}"#)).await;
     let text = format!(
-        "apicase: v0.1\nsteps:\n  - id: a\n    request:\n      method: GET\n      url: {b}/a\n    assertions:\n      - target: $.code\n        op: eq\n        value: '0'\n  - id: b\n    dependsOn:\n      - a\n    request:\n      method: GET\n      url: {b}/b\n",
+        "apicase: v0.1\nsteps:\n  - id: a\n    request:\n      method: GET\n      url: {b}/a\n    assertions:\n      - target: res.body.code\n        op: eq\n        value: '0'\n  - id: b\n    dependsOn:\n      - a\n    request:\n      method: GET\n      url: {b}/b\n",
         b = srv.base
     );
     let mut opts = direct(&[]);
@@ -611,7 +612,7 @@ async fn digest_retries_with_the_challenge() {
     .await;
 
     let text = format!(
-        "apicase: v0.1\nsteps:\n  - id: a\n    request:\n      method: GET\n      url: {}/secure\n      auth:\n        type: digest\n        digest:\n          username: u\n          password: p\n    assertions:\n      - target: status\n        op: eq\n        value: '200'\n",
+        "apicase: v0.1\nsteps:\n  - id: a\n    request:\n      method: GET\n      url: {}/secure\n      auth:\n        type: digest\n        digest:\n          username: u\n          password: p\n    assertions:\n      - target: res.status\n        op: eq\n        value: '200'\n",
         srv.base
     );
     let r = run_case(&text, "d.yml", &direct(&[]), &Cancel::new()).await;

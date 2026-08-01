@@ -7,6 +7,9 @@ name: GET 回显参数
 steps:
   - id: get
     protocol: http
+    ui:
+      x: 502
+      y: -70
     request:
       method: GET
       url: ${{baseUrl}}/get
@@ -16,23 +19,18 @@ steps:
         - name: page
           value: '2'
     assertions:
-      - target: status
+      - target: res.status
         op: eq
         value: 200
-      - target: $.args.foo
+      - target: res.body.args.foo
         op: eq
         value: bar
-      - target: $.args.page
+      - target: res.body.args.page
         op: eq
         value: 2
     docs: |
       httpbin `/get`：把 URL 的 query 参数原样回显到响应体 `$.args`。
       在「参数」页可看到 foo / page 两个查询参数（与 URL 双向同步）。
-ui:
-  nodes:
-    get:
-      x: 502
-      y: -70
 "#;
 
 /// 读进来再写出去，逐字不变。既钉住解析的完整性，也钉住输出格式。
@@ -51,9 +49,32 @@ fn ui_coordinate_key_y_is_not_quoted() {
     assert!(out.contains("      y: -70\n"), "y 不该带引号：\n{out}");
     assert!(!out.contains("'y'"), "输出里不该再出现 'y'：\n{out}");
     // 而 1.1 的引号写法仍要**读得进来**——仓库里已有的文件就是那么写的
-    let legacy = GOLDEN.replace("      y: -70", "      'y': -70");
+    let legacy = GOLDEN.replace("y: -70", "'y': -70");
     let c2 = parse_case(&legacy).expect("旧写法应仍能解析");
-    assert_eq!(c2.ui, c.ui, "两种写法解析结果必须一致");
+    assert_eq!(c2.requests[0].ui, c.requests[0].ui, "两种写法解析结果必须一致");
+}
+
+/// 坐标挂在 step 上，不再是与 `steps:` 并行的 id 映射表
+#[test]
+fn step_ui_replaces_the_top_level_node_table() {
+    let c = parse_case(GOLDEN).expect("应能解析");
+    assert_eq!(c.requests[0].ui, Some(StepUi { x: 502.0, y: -70.0 }));
+    // 顶层 ui: 块是旧格式，硬切换后不再识别（坐标丢失 → 回退自动布局）
+    let legacy = "apicase: v0.1\nsteps:\n  - id: a\n    protocol: http\nui:\n  nodes:\n    a:\n      x: 1\n      y: 2\n";
+    let c2 = parse_case(legacy).expect("应能解析");
+    assert_eq!(c2.requests[0].ui, None, "顶层 ui.nodes 不再被读取");
+    assert!(!dump_case(&c2).contains("ui:"), "也不该再写出来");
+}
+
+/// 坐标写坏了只丢坐标，不该废掉整条用例
+#[test]
+fn broken_coordinates_fall_back_to_auto_layout() {
+    for bad in ["ui: { x: 一, y: 2 }", "ui: { x: 1 }", "ui: hello", "ui: {}"] {
+        let text = format!("apicase: v0.1\nsteps:\n  - id: a\n    protocol: http\n    {bad}\n");
+        let c = parse_case(&text).unwrap_or_else(|e| panic!("{bad} 不该让解析失败：{e}"));
+        assert_eq!(c.requests[0].ui, None, "{bad} 应回退为无坐标");
+        assert_eq!(c.requests[0].id, "a", "{bad} 不该影响 step 本身");
+    }
 }
 
 fn sample_case() -> Case {
@@ -90,7 +111,7 @@ steps:
     outputs:
       token: $.data.token
     assertions:
-      - target: status
+      - target: res.status
         op: eq
         value: '200'
   - id: profile
@@ -105,7 +126,7 @@ steps:
         bearer:
           token: '{{steps.login.outputs.token}}'
     assertions:
-      - target: $.data.name
+      - target: res.body.data.name
         op: exists
 "#,
     )
@@ -169,7 +190,7 @@ steps:
         - name: X-Count
           value: 7
     assertions:
-      - target: status
+      - target: res.status
         op: eq
         value: 200
 "#,
@@ -277,7 +298,7 @@ steps:
       body:
         type: 也不认识
     assertions:
-      - target: status
+      - target: res.status
         op: equals
         value: '1'
       - op: eq
@@ -381,6 +402,7 @@ fn defaults_are_trimmed_on_dump() {
     c.requests.push(Step {
         id: "a".into(),
         protocol: "http".into(),
+        ui: None,
         http: HttpSpec {
             method: "GET".into(),
             url: "http://x".into(),
@@ -408,10 +430,11 @@ fn valueless_assert_ops_drop_their_value() {
     c.requests.push(Step {
         id: "a".into(),
         protocol: "http".into(),
+        ui: None,
         http: HttpSpec { url: "http://x".into(), ..Default::default() },
         depends_on: vec![],
         outputs: vec![],
-        assertions: vec![Assertion { target: "$.a".into(), op: AssertOp::Exists, value: Some("被忽略".into()) }],
+        assertions: vec![Assertion { target: "res.body.a".into(), op: AssertOp::Exists, value: Some("被忽略".into()) }],
         docs: None,
     });
     let out = dump_case(&c);

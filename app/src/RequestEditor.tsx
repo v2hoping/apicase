@@ -1,8 +1,9 @@
 // 通用请求编辑器：单请求 case 与多请求 flow 的每个请求都复用它。
 // 完全受控——父组件持有 ReqDraft，本组件只读 value、通过 onChange 汇报变更。
 // 切换 step 时父组件用 key 强制重挂载，从而重置内部 Tab 等瞬时状态。
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as KeyEvent } from "react";
 import { KV, FormItem, AuthType, BodyType, Assertion, AssertOp, ASSERT_OPS, RequestOutput, splitQueryFromUrl, mergeQueryIntoUrl } from "./case";
+import { suggestTargets, suggestValue, type RespLite, type Suggestion } from "./assertPath";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ReqDraft, DEFAULT_CONTENT_TYPE, guessContentType } from "./draft";
 import { AUTH_TYPE_METAS, authPreview } from "./auth";
@@ -526,14 +527,149 @@ export function KVTable({
   );
 }
 
+// 断言目标输入框：带路径补全。候选与当前值都来自最近一次响应（见 assertPath.ts）——
+// 路径取不取得到，选之前就看得见，不必跑一遍再对着 ∅ 猜是"服务端没返"还是"我写错了"。
+function TargetInput({ value, onChange, resp }: { value: string; onChange: (v: string) => void; resp?: RespLite }) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
+  const ref = useRef<HTMLInputElement>(null);
+  const items = open ? suggestTargets(value, resp) : [];
+  const at = Math.min(active, Math.max(items.length - 1, 0));
+
+  // 浮层 fixed 锚在输入框下沿：断言表在 .req-scroll 里，绝对定位会被滚动容器裁掉（同 .ctx-menu）
+  function show() {
+    const r = ref.current?.getBoundingClientRect();
+    if (r) setBox({ left: r.left, top: r.bottom + 2, width: Math.max(r.width, 260) });
+    setOpen(true);
+  }
+  function accept(s: Suggestion) {
+    onChange(s.more ? s.text + "." : s.text);
+    setActive(0);
+    setOpen(s.more); // 还有下一层就接着提示，一路点到底不用手打分隔符；到叶子就收起
+    ref.current?.focus();
+  }
+  function onKeyDown(e: KeyEvent<HTMLInputElement>) {
+    if (e.key === "Escape") {
+      if (open) e.stopPropagation(); // 面板开着时 Esc 只收面板，不外传给全局快捷键
+      setOpen(false);
+      return;
+    }
+    if (!items.length) {
+      if (e.key === "ArrowDown") show();
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((at + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length);
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      accept(items[at]);
+    }
+  }
+  return (
+    <div className="path-input">
+      <input
+        ref={ref}
+        value={value}
+        placeholder="res.status / res.body.data.token"
+        onChange={(e) => {
+          onChange(e.target.value);
+          setActive(0);
+          show();
+        }}
+        onFocus={show}
+        onClick={show}
+        onBlur={() => setOpen(false)}
+        onKeyDown={onKeyDown}
+      />
+      {open && items.length > 0 && box && (
+        <div className="path-menu" style={{ left: box.left, top: box.top, width: box.width }}>
+          {items.map((s, i) => (
+            <button
+              type="button"
+              key={s.text}
+              className={`path-item ${i === at ? "is-active" : ""}`}
+              // 必须拦下 mousedown：否则输入框先失焦、面板已关，click 落空
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => accept(s)}
+            >
+              <span className="path-label">{s.label}</span>
+              {s.hint && <span className="path-hint">{s.hint}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 期望值输入框：空着时把 target 的当前值摆在 placeholder 上（`当前：200`），
+// 聚焦后一条候选，点击 / 回车填入。**只建议、不自动填**——把返回值一键固化成期望值，
+// 很容易做出下次必红的脆弱断言，那一下得由人来点。
+function ValueInput({ value, onChange, suggestion }: { value: string; onChange: (v: string) => void; suggestion: string | null }) {
+  const [open, setOpen] = useState(false);
+  const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
+  const ref = useRef<HTMLInputElement>(null);
+  const has = suggestion !== null && !value; // 已经填了就别打扰
+
+  function show() {
+    if (!has) return;
+    const r = ref.current?.getBoundingClientRect();
+    if (r) setBox({ left: r.left, top: r.bottom + 2, width: Math.max(r.width, 200) });
+    setOpen(true);
+  }
+  function accept() {
+    if (suggestion === null) return;
+    onChange(suggestion);
+    setOpen(false);
+    ref.current?.focus();
+  }
+  return (
+    <div className="path-input">
+      <input
+        ref={ref}
+        value={value}
+        placeholder={has ? `当前：${suggestion}` : "期望值"}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(false); // 一开始打字就说明不要这条建议了
+        }}
+        onFocus={show}
+        onClick={show}
+        onBlur={() => setOpen(false)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            if (open) e.stopPropagation();
+            setOpen(false);
+          } else if (open && (e.key === "Enter" || e.key === "Tab")) {
+            e.preventDefault();
+            accept();
+          }
+        }}
+      />
+      {open && has && box && (
+        <div className="path-menu" style={{ left: box.left, top: box.top, width: box.width }}>
+          <button type="button" className="path-item is-active" onMouseDown={(e) => e.preventDefault()} onClick={accept}>
+            <span className="path-label">{suggestion}</span>
+            <span className="path-hint">当前值</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // 断言表：目标 / 操作符 / 期望值（仅配置；运行结果在响应区「断言」栏展示）
 // 视觉与参数/请求头表一致——同一套 .kv-table.grid Excel 网格
 function AssertTable({
   rows,
   onChange,
+  resp,
 }: {
   rows: Assertion[];
   onChange: (rows: Assertion[]) => void;
+  resp?: RespLite; // 最近一次响应：给目标列的路径补全当数据源
 }) {
   const display = assertRowsWithBlank(rows);
   function update(i: number, patch: Partial<Assertion>) {
@@ -558,7 +694,7 @@ function AssertTable({
           return (
             <tr key={i}>
               <td>
-                <input value={r.target} placeholder="status / $.data.token / header.X" onChange={(e) => update(i, { target: e.target.value })} />
+                <TargetInput value={r.target} onChange={(v) => update(i, { target: v })} resp={resp} />
               </td>
               <td className="op-col2">
                 <Select
@@ -570,7 +706,13 @@ function AssertTable({
               </td>
               {/* exists / notExists 无需期望值：单元格置灰示意不可填 */}
               <td className={noVal ? "na-cell" : ""}>
-                {!noVal && <input value={r.value || ""} placeholder="期望值" onChange={(e) => update(i, { value: e.target.value })} />}
+                {!noVal && (
+                  <ValueInput
+                    value={r.value || ""}
+                    onChange={(v) => update(i, { value: v })}
+                    suggestion={suggestValue(r.target, r.op, resp)}
+                  />
+                )}
               </td>
               <td className="op-cell">
                 {r.target && (
@@ -630,6 +772,7 @@ export function RequestEditor({
   protocol,
   onProtocol,
   isVarSet = () => true,
+  resp,
 }: {
   value: ReqDraft;
   onChange: (d: ReqDraft) => void;
@@ -647,6 +790,7 @@ export function RequestEditor({
   protocol?: string; // 请求协议（当前仅 http）
   onProtocol?: (p: string) => void;
   isVarSet?: (name: string) => boolean; // 判断某 {{变量}} 在当前环境是否已设值（用于 URL 高亮）
+  resp?: RespLite; // 本 step 最近一次响应：断言目标列按它的真实结构给补全候选
 }) {
   const [tab, setTab] = useState<string>("params");
   const d = value;
@@ -745,9 +889,10 @@ export function RequestEditor({
         {tab === "assert" && onAssertions && (
           <div className="assert-panel">
             <div className="panel-hint">
-              目标：<code>status</code> / JSONPath（<code>$.data.token</code>）/ <code>header.名称</code>；运行结果见响应区「断言」栏。
+              目标统一以 <code>res</code> 开头：<code>res.status</code> / <code>res.body.data.token</code> / <code>res.headers.名称</code>；
+              目标格输入时按最近一次响应逐层提示。运行结果见响应区「断言」栏。
             </div>
-            <AssertTable rows={assertions || []} onChange={onAssertions} />
+            <AssertTable rows={assertions || []} onChange={onAssertions} resp={resp} />
           </div>
         )}
         {tab === "docs" && onDocs && (

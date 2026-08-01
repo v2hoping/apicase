@@ -253,7 +253,7 @@ mod tests {
                 assertions: asserts
                     .iter()
                     .map(|ok| AssertRecord {
-                        target: "status".into(),
+                        target: "res.status".into(),
                         op: "eq".into(),
                         expected: "200".into(),
                         actual: "200".into(),

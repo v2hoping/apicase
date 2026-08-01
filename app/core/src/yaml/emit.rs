@@ -94,15 +94,21 @@ fn indent_to(out: &mut String, n: usize) {
     }
 }
 
+/// 写一对 `key:` 与它的值。映射与**序列项**共用同一份规则——序列项要把第一个 key
+/// 紧跟在 `- ` 后面，于是它有自己的 key 循环；规则各写一遍迟早只改一处而分叉。
+fn emit_pair(k: &str, v: &Value, indent: usize, q: Quote, out: &mut String) {
+    // key 恒用宽松规则：它永远按字符串取用，不存在类型歧义
+    out.push_str(&scalar_str(k, Quote::Loose));
+    out.push(':');
+    // 一旦进入宽松子树就整棵宽松，不再回退
+    let child = if q == Quote::Loose || LOOSE_SUBTREE_KEYS.contains(&k) { Quote::Loose } else { q };
+    emit_after_key(v, indent, child, out);
+}
+
 fn emit_map(m: &serde_json::Map<String, Value>, indent: usize, q: Quote, out: &mut String) {
     for (k, v) in m {
         indent_to(out, indent);
-        // key 恒用宽松规则：它永远按字符串取用，不存在类型歧义
-        out.push_str(&scalar_str(k, Quote::Loose));
-        out.push(':');
-        // 一旦进入宽松子树就整棵宽松，不再回退
-        let child = if q == Quote::Loose || LOOSE_SUBTREE_KEYS.contains(&k.as_str()) { Quote::Loose } else { q };
-        emit_after_key(v, indent, child, out);
+        emit_pair(k, v, indent, q, out);
     }
 }
 
@@ -143,11 +149,7 @@ fn emit_seq(a: &[Value], indent: usize, q: Quote, out: &mut String) {
                     if i > 0 {
                         indent_to(out, indent + 2);
                     }
-                    out.push_str(&scalar_str(k, Quote::Loose));
-                    out.push(':');
-                    let child =
-                        if q == Quote::Loose || LOOSE_SUBTREE_KEYS.contains(&k.as_str()) { Quote::Loose } else { q };
-                    emit_after_key(v, indent + 2, child, out);
+                    emit_pair(k, v, indent + 2, q, out);
                 }
             }
             Value::Array(inner) if !inner.is_empty() => {
@@ -556,13 +558,14 @@ mod tests {
         assert_eq!(scalar_str("true", Quote::Loose), "true");
     }
 
-    /// 就是用户贴出来的那个 ui.nodes 片段——不该再出现 `'y': -70`
+    /// step 的坐标按普通块式写，一行一个字段——全文件一套写法，不给坐标开小灶。
+    /// 顺带钉住 `y` 不带引号（YAML 1.1 把 y 当布尔别名，旧的 js-yaml 会写成 `'y'`）。
     #[test]
-    fn ui_nodes_have_no_stray_quotes() {
-        let v = json!({ "ui": { "nodes": { "get": { "x": 502, "y": -70 } } } });
+    fn step_ui_uses_block_style() {
+        let v = json!({ "steps": [{ "id": "a", "ui": { "x": 502, "y": -70 }, "request": { "method": "GET" } }] });
         assert_eq!(
             to_yaml(&v),
-            "ui:\n  nodes:\n    get:\n      x: 502\n      y: -70\n"
+            "steps:\n  - id: a\n    ui:\n      x: 502\n      y: -70\n    request:\n      method: GET\n"
         );
     }
 

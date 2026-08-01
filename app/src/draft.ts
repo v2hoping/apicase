@@ -158,6 +158,7 @@ export function caseToRequests(c: Case): { requests: RequestDraft[]; ui?: UiNode
   const src: Request[] = c.requests.length
     ? c.requests
     : [{ id: "step1", protocol: "http", http: emptyHttpSpec(), dependsOn: [], outputs: [], assertions: [] }];
+  const ui = Object.fromEntries(src.filter((r) => r.ui).map((r) => [r.id, r.ui!]));
   return {
     requests: src.map((r) => ({
       id: r.id,
@@ -168,7 +169,11 @@ export function caseToRequests(c: Case): { requests: RequestDraft[]; ui?: UiNode
       docs: r.docs || "",
       req: requestToDraft(r.http),
     })),
-    ui: c.ui?.nodes,
+    // 各 step 的坐标收成一张 id → 坐标表：画布按 id 查坐标最顺手，
+    // 文件里则跟着 step 走（见 case.ts 的 UiNodes 注释）。
+    // 一个坐标都没有时给 undefined 而非 `{}`——"没有布局"与"空布局"在下游是同一回事，
+    // 但 undefined 才是它本来的样子
+    ui: Object.keys(ui).length ? ui : undefined,
   };
 }
 

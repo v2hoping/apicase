@@ -365,7 +365,7 @@ impl From<&str> for AssertOp {
     }
 }
 
-/// 单条断言：`target` 为 `status` | `header.<名>` | JSONPath（如 `$.data.token`）。
+/// 单条断言：`target` 统一挂在 `res` 下 —— `res.status` | `res.headers.<名>` | `res.body<路径>`。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Assertion {
@@ -385,6 +385,9 @@ pub struct Step {
     pub id: String,
     #[serde(default = "http_proto")]
     pub protocol: String,
+    /// 画布坐标等前端属性；缺省时按 `dependsOn` 自动布局
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<StepUi>,
     /// 报文（YAML 键为 `request:`；内部沿用 http 命名承载 HttpSpec）
     #[serde(default)]
     pub http: HttpSpec,
@@ -403,16 +406,16 @@ fn http_proto() -> String {
     "http".into()
 }
 
-/// 画布坐标（与语义分离，规避 diff 噪声）；缺省时按 `dependsOn` 自动布局。
+/// step 的前端属性（当前只有画布坐标）——**与执行语义无关**，跟着所属的 step 走。
+///
+/// 早先坐标挂在顶层 `ui.nodes.<stepId>` 上，是一张与 `steps:` 并行的 id 映射表：
+/// 改个 id 要动两处、删个 step 会在那边留下孤儿坐标，diff 里也看不出坐标属于谁。
+/// 挂进 step 之后这三件事自然消失，代价只是坐标混在语义字段中间——
+/// 用一个 `ui:` 子键兜住就行，将来的前端属性（折叠、配色…）也往这里加。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct NodePos {
+pub struct StepUi {
     pub x: f64,
     pub y: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CaseUi {
-    pub nodes: std::collections::BTreeMap<String, NodePos>,
 }
 
 /// 一个 case：统一为 step 列表（单请求 = 长度 1，多请求 = DAG）。
@@ -433,13 +436,11 @@ pub struct Case {
     /// 对应 YAML `steps:`（内部沿用 requests 命名，与前端 TS 一致）
     #[serde(default)]
     pub requests: Vec<Step>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ui: Option<CaseUi>,
 }
 
 impl Default for Case {
     fn default() -> Self {
-        Self { version: CASE_VERSION.into(), name: None, vars: None, requests: Vec::new(), ui: None }
+        Self { version: CASE_VERSION.into(), name: None, vars: None, requests: Vec::new() }
     }
 }
 

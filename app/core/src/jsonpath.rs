@@ -59,7 +59,11 @@ enum Seg<'a> {
     Index(usize),
 }
 
-/// `.key` 里的标识符：字母 / `_` / `$` 开头，后接字母数字 / `_` / `$`。
+/// `.key` 里的标识符：字母 / `_` / `$` 开头，后接字母数字 / `_` / `$` / `-`。
+///
+/// 允许连字符是刻意的：JSON 的 key（`user-name`）与响应头名（`Content-Type`）带它很常见，
+/// 而这里的路径不是 JS 表达式、没有减法语义，放宽不引入歧义。
+/// （Bruno 把断言左侧当 JS 表达式跑，只能强制写 `res.headers['content-type']`。）
 fn read_ident<'a>(s: &'a str, i: &mut usize) -> Option<Seg<'a>> {
     let b = s.as_bytes();
     let start = *i;
@@ -71,7 +75,7 @@ fn read_ident<'a>(s: &'a str, i: &mut usize) -> Option<Seg<'a>> {
         return None;
     }
     let mut j = start + 1;
-    while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_' || b[j] == b'$') {
+    while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_' || b[j] == b'$' || b[j] == b'-') {
         j += 1;
     }
     *i = j;
@@ -121,7 +125,7 @@ mod tests {
 
     fn doc() -> Value {
         json!({
-            "data": { "token": "abc", "list": [10, 20, { "deep": true }], "空 键": 1, "a.b": 2 },
+            "data": { "token": "abc", "list": [10, 20, { "deep": true }], "空 键": 1, "a.b": 2, "user-name": "张三" },
             "n": 0,
             "arr": [],
             "nil": null
@@ -137,6 +141,14 @@ mod tests {
         assert_eq!(get(&d, "$.data.list[2].deep"), Some(&json!(true)));
         assert_eq!(get(&d, "$"), Some(&d), "单独的 $ 取根");
         assert_eq!(get(&d, "  $.n  "), Some(&json!(0)), "两端空白应忽略");
+    }
+
+    /// 连字符是标识符的一部分（JSON key 与响应头名常带它），点号形式即可取到
+    #[test]
+    fn hyphenated_keys() {
+        let d = doc();
+        assert_eq!(get(&d, "$.data.user-name"), Some(&json!("张三")));
+        assert_eq!(get(&d, "$.data['user-name']"), Some(&json!("张三")), "方括号形式同样可用");
     }
 
     /// 带引号的下标能取到点号 / 空格 / 中文这类标识符形式取不到的 key
