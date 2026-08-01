@@ -2712,6 +2712,7 @@ function App() {
         outputs: rd.outputs,
         assertions: rd.assertions,
         docs: rd.docs ? rd.docs : undefined,
+        ui: uiNodes?.[rd.id], // 坐标跟着 step 走：改 id / 删 step 不会在别处留下孤儿坐标
       });
     }
     if (out.length === 0) return { error: "无请求" };
@@ -2721,7 +2722,6 @@ function App() {
       vars: caseVars,
       requests: out,
     };
-    if (uiNodes && Object.keys(uiNodes).length) c.ui = { nodes: uiNodes };
     return { case: c };
   }
 
@@ -4316,6 +4316,7 @@ function App() {
                           protocol={selected.protocol}
                           onProtocol={setProtocol}
                           isVarSet={isVarSet}
+                          resp={run?.resp ?? undefined}
                         />
                       </div>
 

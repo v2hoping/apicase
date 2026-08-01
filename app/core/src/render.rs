@@ -141,7 +141,7 @@ mod tests {
                     }),
                     outputs: BTreeMap::new(),
                     assertions: vec![AssertRecord {
-                        target: "status".into(),
+                        target: "res.status".into(),
                         op: "eq".into(),
                         expected: "200".into(),
                         actual: "200".into(),

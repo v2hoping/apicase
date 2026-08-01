@@ -2585,6 +2585,51 @@ body.resizing-pane .pane-resizer::after {
   outline: 1.5px solid var(--accent);
   outline-offset: -1.5px;
 }
+/* 断言目标的路径补全浮层。
+   position: fixed —— 断言表在 .req-scroll 里，绝对定位的面板会被滚动容器裁掉（同 .ctx-menu）。 */
+.path-input {
+  display: block;
+}
+.path-menu {
+  position: fixed;
+  z-index: 1000;
+  max-height: 244px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px var(--shadow-med);
+}
+.path-item {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  width: 100%;
+  padding: 5px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.path-item:hover,
+.path-item.is-active {
+  background: var(--hover);
+}
+/* 值摘要靠右、可截断——它是参考信息，不该把候选名挤走 */
+.path-hint {
+  margin-left: auto;
+  overflow: hidden;
+  max-width: 55%;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 /* exists / notExists 行的期望值单元格：无需填值，置灰示意（配置表与结果表共用）*/
 .kv-table .na-cell {
   background: var(--panel-2);

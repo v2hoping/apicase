@@ -82,7 +82,7 @@ export interface RequestOutput {
 export type AssertOp = "eq" | "ne" | "contains" | "exists" | "notExists" | "gt" | "lt" | "matches";
 export const ASSERT_OPS: AssertOp[] = ["eq", "ne", "contains", "exists", "notExists", "gt", "lt", "matches"];
 
-/** 单条断言：target 为 `status` | `header.<名>` | JSONPath（如 $.data.token） */
+/** 单条断言：target 统一挂在 `res` 下 —— `res.status` | `res.headers.<名>` | `res.body<路径>` */
 export interface Assertion {
   target: string;
   op: AssertOp;
@@ -101,9 +101,13 @@ export interface Request {
   outputs: RequestOutput[]; // JSONPath 提取
   assertions: Assertion[]; // 响应断言
   docs?: string; // 该 step 的 markdown 文档（可选）
+  ui?: { x: number; y: number }; // 前端属性：画布坐标；缺省时按 dependsOn 自动布局
 }
 
-/** 画布坐标（与语义分离，规避 diff 噪声）；缺省时按 dependsOn 自动布局 */
+/**
+ * 画布坐标的**前端内部形态**：以 step id 为键的一张表，画布按 id 查坐标最顺手。
+ * 落盘时分发进各 step 的 `ui:`（见 draft.ts / App.tsx 的组装），文件里不存在这张表。
+ */
 export type UiNodes = Record<string, { x: number; y: number }>;
 
 /** 一个 case：统一为 steps 列表（单请求 = 长度 1，多请求 = DAG）。 */
@@ -112,7 +116,6 @@ export interface Case {
   name?: string;
   vars?: Record<string, unknown>;
   requests: Request[]; // 对应 YAML `steps:`（内部沿用 requests 命名）
-  ui?: { nodes: UiNodes };
 }
 
 /**

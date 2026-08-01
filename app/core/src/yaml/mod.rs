@@ -279,6 +279,7 @@ fn norm_step(v: &Value, i: usize) -> Step {
     Step {
         id: if id.is_empty() { format!("step{}", i + 1) } else { id },
         protocol: if protocol.is_empty() { "http".into() } else { protocol },
+        ui: norm_step_ui(field(m, "ui")),
         http: norm_http(field(m, "request")),
         depends_on: field(m, "dependsOn")
             .and_then(Value::as_array)
@@ -290,17 +291,13 @@ fn norm_step(v: &Value, i: usize) -> Step {
     }
 }
 
-fn norm_ui(v: Option<&Value>) -> Option<CaseUi> {
-    let nodes = v.and_then(obj)?.get("nodes").and_then(obj)?;
-    let mut out = std::collections::BTreeMap::new();
-    for (k, p) in nodes {
-        let Some(p) = obj(p) else { continue };
-        // 坐标必须是数字：写错类型的节点跳过，而不是把整个 ui 段丢掉
-        if let (Some(x), Some(y)) = (p.get("x").and_then(Value::as_f64), p.get("y").and_then(Value::as_f64)) {
-            out.insert(k.clone(), NodePos { x, y });
-        }
-    }
-    (!out.is_empty()).then_some(CaseUi { nodes: out })
+/// step 的前端属性。坐标必须是数字：写坏了当作没有（回退自动布局），
+/// 而不是让整个 step 解析失败——坐标是视图态，不该有能力废掉一条用例。
+fn norm_step_ui(v: Option<&Value>) -> Option<StepUi> {
+    let m = obj(v?)?;
+    let x = m.get("x").and_then(Value::as_f64)?;
+    let y = m.get("y").and_then(Value::as_f64)?;
+    Some(StepUi { x, y })
 }
 
 /// 解析 case 文本。**唯一格式**：顶层 `steps:` 列表（单节点 = 长度 1，每步含
@@ -322,7 +319,6 @@ pub fn parse_case(text: &str) -> Result<Case, String> {
             .and_then(Value::as_array)
             .map(|a| a.iter().enumerate().map(|(i, s)| norm_step(s, i)).collect())
             .unwrap_or_default(),
-        ui: norm_ui(field(m, "ui")),
     })
 }
 
@@ -544,6 +540,9 @@ fn ser_step(st: &Step) -> Value {
     let mut o = Map::new();
     o.insert("id".into(), json!(st.id));
     o.insert("protocol".into(), json!(if st.protocol.is_empty() { "http" } else { &st.protocol }));
+    if let Some(u) = st.ui {
+        o.insert("ui".into(), json!({ "x": num(u.x), "y": num(u.y) }));
+    }
     if !st.depends_on.is_empty() {
         o.insert("dependsOn".into(), json!(st.depends_on));
     }
@@ -603,13 +602,6 @@ pub fn dump_case(c: &Case) -> String {
         o.insert("vars".into(), Value::Object(v.clone()));
     }
     o.insert("steps".into(), Value::Array(c.requests.iter().map(ser_step).collect()));
-    if let Some(ui) = c.ui.as_ref().filter(|u| !u.nodes.is_empty()) {
-        let mut nodes = Map::new();
-        for (k, p) in &ui.nodes {
-            nodes.insert(k.clone(), json!({ "x": num(p.x), "y": num(p.y) }));
-        }
-        o.insert("ui".into(), json!({ "nodes": Value::Object(nodes) }));
-    }
     to_yaml(&Value::Object(o))
 }
 

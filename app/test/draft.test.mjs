@@ -87,6 +87,20 @@ const fallback = caseToRequests({ version: "0.1", requests: [] });
 eq(fallback.requests.length, 1, "空 case 兜底出一个空请求");
 eq(fallback.requests[0].id, "step1", "兜底请求的 id");
 
+// 坐标在文件里跟着 step 走，进了前端收成一张 id → 坐标表（画布按 id 查最顺手）
+const step = (id, ui) => ({ id, protocol: "http", http: spec, dependsOn: [], outputs: [], assertions: [], ui });
+eq(
+  caseToRequests({ version: "0.1", requests: [step("a", { x: 1, y: 2 }), step("b", { x: 3, y: 4 })] }).ui,
+  { a: { x: 1, y: 2 }, b: { x: 3, y: 4 } },
+  "各 step 的坐标收成 id → 坐标表",
+);
+eq(
+  caseToRequests({ version: "0.1", requests: [step("a", { x: 1, y: 2 }), step("b", undefined)] }).ui,
+  { a: { x: 1, y: 2 } },
+  "只有一部分 step 有坐标时，其余交给自动布局",
+);
+eq(caseToRequests({ version: "0.1", requests: [step("a", undefined)] }).ui, undefined, "一个坐标都没有时给 undefined 而非 {}");
+
 // ── 扩展名 → MIME（binary 选文件后自动定 Content-Type）──
 
 eq(guessContentType("a.png"), "image/png", "按扩展名推断");

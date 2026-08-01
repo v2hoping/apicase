@@ -60,20 +60,58 @@ pub fn eval_assertions(list: &[Assertion], resp: &RespView) -> Vec<AssertRecord>
         .collect()
 }
 
-/// `status` / `header.<名>` / JSONPath 三种取法。
+/// 断言目标统一挂在 `res` 命名空间下：`res.status` / `res.headers.<名>` / `res.body<路径>`。
+///
+/// **只认这一种写法**——旧的 `status` / `header.X` / `$.data.token` 判为无效目标（取不到值）。
+/// 统一前缀是为了对齐同类工具的直觉（"响应的东西都挂在 res 下"），而不是让用户记住
+/// "status 裸写、header 加前缀、body 用 $" 三套规则。
 fn actual_for(target: &str, resp: &RespView, body: Option<&Value>) -> Option<Value> {
-    if target == "status" {
+    // `res` 之后必须是 `.`：`res` 单独、`response.x` 都不是目标
+    let rest = target.trim().strip_prefix("res")?.strip_prefix('.')?;
+    if rest == "status" {
         return Some(Value::from(resp.status));
     }
-    if target.len() > 7 && target[..7].eq_ignore_ascii_case("header.") {
-        let want = target[7..].to_ascii_lowercase();
+    if let Some(after) = domain_rest(rest, "headers") {
+        let want = header_name(after)?.to_ascii_lowercase();
         return resp
             .headers
             .iter()
             .find(|h| h.key.to_ascii_lowercase() == want)
             .map(|h| Value::String(h.value.clone()));
     }
-    jsonpath::get(body?, target).cloned()
+    if let Some(after) = domain_rest(rest, "body") {
+        let Some(root) = body else {
+            // 响应体不是 JSON：`res.body` 仍给原文——HTML / 纯文本做 contains 是真实需求；
+            // 而 `res.body.x` 在这种响应上确实取不到，照旧算不存在。
+            return after.is_empty().then(|| Value::String(resp.body.to_string()));
+        };
+        return jsonpath::get(root, after).cloned();
+    }
+    None
+}
+
+/// 取 `res.` 之后某个域（`headers` / `body`）的剩余部分。
+/// 域名后必须是路径边界（`.` / `[`）或直接结束——`res.bodyfoo` 不算 body 域，
+/// 否则拼错的目标会被当成"取整个响应体"而静默通过。
+fn domain_rest<'a>(rest: &'a str, domain: &str) -> Option<&'a str> {
+    let after = rest.strip_prefix(domain)?;
+    (after.is_empty() || after.starts_with('.') || after.starts_with('[')).then_some(after)
+}
+
+/// `res.headers` 之后的头名：`.Content-Type` 或 `['Content-Type']` / `["Content-Type"]`。
+/// 点号形式把剩余整段当名字，不再按点切分——HTTP 头名里没有嵌套结构，
+/// 切了反而让 `res.headers.X.Y` 这种笔误变成"取不到的多层路径"而非"名字不存在"。
+fn header_name(after: &str) -> Option<&str> {
+    if let Some(name) = after.strip_prefix('.') {
+        let name = name.trim();
+        return (!name.is_empty()).then_some(name);
+    }
+    let inner = after.strip_prefix('[')?.strip_suffix(']')?;
+    let name = inner
+        .strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+        .or_else(|| inner.strip_prefix('"').and_then(|s| s.strip_suffix('"')))?;
+    (!name.is_empty()).then_some(name)
 }
 
 fn compare(actual: Option<&Value>, op: AssertOp, value: &str) -> bool {
@@ -144,84 +182,127 @@ mod tests {
 
     #[test]
     fn status_target() {
-        assert!(one("status", AssertOp::Eq, Some("200"), BODY).ok);
-        assert!(!one("status", AssertOp::Eq, Some("404"), BODY).ok);
-        assert!(one("status", AssertOp::Lt, Some("300"), BODY).ok);
-        assert!(one("status", AssertOp::Gt, Some("199"), BODY).ok);
+        assert!(one("res.status", AssertOp::Eq, Some("200"), BODY).ok);
+        assert!(!one("res.status", AssertOp::Eq, Some("404"), BODY).ok);
+        assert!(one("res.status", AssertOp::Lt, Some("300"), BODY).ok);
+        assert!(one(" res.status ", AssertOp::Gt, Some("199"), BODY).ok, "两端空白应忽略");
     }
 
     #[test]
     fn header_target_is_case_insensitive() {
-        assert!(one("header.content-type", AssertOp::Contains, Some("json"), BODY).ok);
-        assert!(one("Header.Content-Type", AssertOp::Contains, Some("json"), BODY).ok);
-        assert!(one("header.X-Count", AssertOp::Eq, Some("7"), BODY).ok);
-        let miss = one("header.nope", AssertOp::Exists, None, BODY);
+        assert!(one("res.headers.content-type", AssertOp::Contains, Some("json"), BODY).ok);
+        assert!(one("res.headers.Content-Type", AssertOp::Contains, Some("json"), BODY).ok);
+        assert!(one("res.headers.X-Count", AssertOp::Eq, Some("7"), BODY).ok);
+        let miss = one("res.headers.nope", AssertOp::Exists, None, BODY);
         assert!(!miss.ok);
         assert_eq!(miss.actual, "∅");
     }
 
+    /// 头名含点 / 空格时走方括号形式
     #[test]
-    fn jsonpath_target() {
-        assert!(one("$.data.token", AssertOp::Eq, Some("abcdef"), BODY).ok);
-        assert!(one("$.data.count", AssertOp::Eq, Some("7"), BODY).ok);
-        assert!(one("$.list[2]", AssertOp::Eq, Some("3"), BODY).ok);
-        assert!(one("$.data.flag", AssertOp::Eq, Some("true"), BODY).ok);
+    fn header_target_bracket_form() {
+        assert!(one("res.headers['content-type']", AssertOp::Contains, Some("json"), BODY).ok);
+        assert!(one("res.headers[\"X-Count\"]", AssertOp::Eq, Some("7"), BODY).ok);
+        assert_eq!(one("res.headers['nope']", AssertOp::Exists, None, BODY).actual, "∅");
+    }
+
+    #[test]
+    fn body_target() {
+        assert!(one("res.body.data.token", AssertOp::Eq, Some("abcdef"), BODY).ok);
+        assert!(one("res.body.data.count", AssertOp::Eq, Some("7"), BODY).ok);
+        assert!(one("res.body.list[2]", AssertOp::Eq, Some("3"), BODY).ok);
+        assert!(one("res.body.data.flag", AssertOp::Eq, Some("true"), BODY).ok);
+        assert!(one("res.body[\"data\"].token", AssertOp::Eq, Some("abcdef"), BODY).ok);
+    }
+
+    /// JSON 的 key 带连字符很常见，点号形式要能直接写
+    #[test]
+    fn body_key_with_hyphen() {
+        let b = r#"{"user-name":"张三","x":{"a-b-c":1}}"#;
+        assert!(one("res.body.user-name", AssertOp::Eq, Some("张三"), b).ok);
+        assert!(one("res.body.x.a-b-c", AssertOp::Eq, Some("1"), b).ok);
+    }
+
+    /// 旧写法（status / header.X / $.data.token）一律判无效——硬切换，不做双认
+    #[test]
+    fn legacy_targets_are_invalid() {
+        for t in ["status", "header.Content-Type", "$.data.token", "$", "data.token"] {
+            assert_eq!(one(t, AssertOp::Exists, None, BODY).actual, "∅", "{t} 应判为无效目标");
+        }
+    }
+
+    /// 域名必须落在路径边界上，拼错的目标要显式失败而不是撞上别的域
+    #[test]
+    fn malformed_targets_are_invalid() {
+        for t in ["res", "res.", "resbody", "response.status", "res.bodyfoo", "res.statusx", "res.headers", "res.headers.", "res.foo"] {
+            assert_eq!(one(t, AssertOp::Exists, None, BODY).actual, "∅", "{t} 应判为无效目标");
+        }
+    }
+
+    /// 整个响应体：JSON 给结构，非 JSON 给原文（HTML / 纯文本做 contains 是真实需求）
+    #[test]
+    fn whole_body_target() {
+        assert!(one("res.body", AssertOp::Contains, Some("abcdef"), BODY).ok);
+        assert!(one("res.body", AssertOp::Exists, None, BODY).ok);
+        let html = "<html>hello</html>";
+        assert!(one("res.body", AssertOp::Contains, Some("hello"), html).ok);
+        assert!(one("res.body", AssertOp::Matches, Some("^<html>"), html).ok);
     }
 
     /// 数字 200 与字符串 "200" 都该等于期望值 200
     #[test]
     fn comparison_is_loose_across_types() {
-        assert!(one("$.data.count", AssertOp::Eq, Some("7"), BODY).ok, "数字 vs 文本期望");
-        assert!(one("$.code", AssertOp::Eq, Some("0"), BODY).ok);
+        assert!(one("res.body.data.count", AssertOp::Eq, Some("7"), BODY).ok, "数字 vs 文本期望");
+        assert!(one("res.body.code", AssertOp::Eq, Some("0"), BODY).ok);
         let s = r#"{"n":"7"}"#;
-        assert!(one("$.n", AssertOp::Eq, Some("7"), s).ok, "字符串 vs 文本期望");
-        assert!(one("$.n", AssertOp::Gt, Some("6"), s).ok, "字符串也参与数值比较");
+        assert!(one("res.body.n", AssertOp::Eq, Some("7"), s).ok, "字符串 vs 文本期望");
+        assert!(one("res.body.n", AssertOp::Gt, Some("6"), s).ok, "字符串也参与数值比较");
     }
 
     /// 取到 null 与路径不存在都算"不存在"，但展示要能区分
     #[test]
     fn exists_treats_null_as_absent() {
-        assert!(!one("$.data.nil", AssertOp::Exists, None, BODY).ok);
-        assert!(one("$.data.nil", AssertOp::NotExists, None, BODY).ok);
-        assert!(one("$.data.token", AssertOp::Exists, None, BODY).ok);
-        assert!(one("$.nope", AssertOp::NotExists, None, BODY).ok);
-        assert_eq!(one("$.data.nil", AssertOp::Exists, None, BODY).actual, "null", "取到 null 显示 null");
-        assert_eq!(one("$.nope", AssertOp::Exists, None, BODY).actual, "∅", "路径不存在显示 ∅");
+        assert!(!one("res.body.data.nil", AssertOp::Exists, None, BODY).ok);
+        assert!(one("res.body.data.nil", AssertOp::NotExists, None, BODY).ok);
+        assert!(one("res.body.data.token", AssertOp::Exists, None, BODY).ok);
+        assert!(one("res.body.nope", AssertOp::NotExists, None, BODY).ok);
+        assert_eq!(one("res.body.data.nil", AssertOp::Exists, None, BODY).actual, "null", "取到 null 显示 null");
+        assert_eq!(one("res.body.nope", AssertOp::Exists, None, BODY).actual, "∅", "路径不存在显示 ∅");
     }
 
     /// exists / notExists 的期望值列用 — 占位
     #[test]
     fn valueless_ops_show_dash() {
-        assert_eq!(one("$.a", AssertOp::Exists, Some("忽略"), BODY).expected, "—");
-        assert_eq!(one("status", AssertOp::Eq, Some("200"), BODY).expected, "200");
+        assert_eq!(one("res.body.a", AssertOp::Exists, Some("忽略"), BODY).expected, "—");
+        assert_eq!(one("res.status", AssertOp::Eq, Some("200"), BODY).expected, "200");
     }
 
     #[test]
     fn contains_and_matches() {
-        assert!(one("$.msg", AssertOp::Contains, Some("o"), BODY).ok);
-        assert!(!one("$.msg", AssertOp::Contains, Some("zzz"), BODY).ok);
-        assert!(one("$.data.token", AssertOp::Matches, Some("^abc"), BODY).ok);
-        assert!(!one("$.data.token", AssertOp::Matches, Some("^xyz"), BODY).ok);
+        assert!(one("res.body.msg", AssertOp::Contains, Some("o"), BODY).ok);
+        assert!(!one("res.body.msg", AssertOp::Contains, Some("zzz"), BODY).ok);
+        assert!(one("res.body.data.token", AssertOp::Matches, Some("^abc"), BODY).ok);
+        assert!(!one("res.body.data.token", AssertOp::Matches, Some("^xyz"), BODY).ok);
         // 正则写错 → false，而不是 panic
-        assert!(!one("$.data.token", AssertOp::Matches, Some("[unclosed"), BODY).ok);
+        assert!(!one("res.body.data.token", AssertOp::Matches, Some("[unclosed"), BODY).ok);
     }
 
     /// 非数字参与 gt/lt 恒 false（JS 里的 NaN 语义）
     #[test]
     fn non_numeric_comparisons_are_false() {
-        assert!(!one("$.msg", AssertOp::Gt, Some("1"), BODY).ok);
-        assert!(!one("$.msg", AssertOp::Lt, Some("1"), BODY).ok);
-        assert!(!one("$.data.count", AssertOp::Gt, Some("非数字"), BODY).ok);
+        assert!(!one("res.body.msg", AssertOp::Gt, Some("1"), BODY).ok);
+        assert!(!one("res.body.msg", AssertOp::Lt, Some("1"), BODY).ok);
+        assert!(!one("res.body.data.count", AssertOp::Gt, Some("非数字"), BODY).ok);
     }
 
     /// 响应体不是 JSON 时，JSONPath 目标一律取不到——但不该崩
     #[test]
     fn non_json_body_is_handled() {
-        let r = one("$.a", AssertOp::Exists, None, "<html>not json</html>");
+        let r = one("res.body.a", AssertOp::Exists, None, "<html>not json</html>");
         assert!(!r.ok);
         assert_eq!(r.actual, "∅");
         // status 与 header 不依赖响应体，仍然可断言
-        assert!(one("status", AssertOp::Eq, Some("200"), "<html>").ok);
+        assert!(one("res.status", AssertOp::Eq, Some("200"), "<html>").ok);
     }
 
     /// 空 target 的断言（编辑器里的占位行）直接跳过，不产生结果行
@@ -230,11 +311,11 @@ mod tests {
         let hs = headers();
         let list = vec![
             Assertion { target: "  ".into(), op: AssertOp::Eq, value: Some("1".into()) },
-            Assertion { target: "status".into(), op: AssertOp::Eq, value: Some("200".into()) },
+            Assertion { target: "res.status".into(), op: AssertOp::Eq, value: Some("200".into()) },
         ];
         let out = eval_assertions(&list, &resp(BODY, &hs));
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].target, "status");
+        assert_eq!(out[0].target, "res.status");
     }
 
     #[test]
