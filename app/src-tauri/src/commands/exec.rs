@@ -158,15 +158,17 @@ pub struct BatchArgs {
 #[tauri::command]
 pub async fn run_batch(app: AppHandle, state: State<'_, RunState>, args: BatchArgs) -> Result<RunReport, String> {
     let BatchArgs { run_id, targets, meta, opts, report_file } = args;
-    let cancel = Cancel::new();
-    state.lock().insert(run_id.clone(), cancel.clone());
 
-    // 报告落在 `.apicase/reports/` 下，首次运行时这两级还不存在，先建出来
+    // 建目录放在登记取消令牌**之前**：这里 `?` 提前返回过，而返回路径上没有 remove——
+    // 那条令牌就永远留在表里了（每次失败漏一条，且 run_id 唯一、永不覆盖）
     if let Some(f) = report_file.as_deref() {
         if let Some(dir) = std::path::Path::new(f).parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("创建报告目录失败: {e}"))?;
         }
     }
+
+    let cancel = Cancel::new();
+    state.lock().insert(run_id.clone(), cancel.clone());
 
     let writer = report_file.map(ReportWriter::new);
     let seen = Arc::new(AtomicUsize::new(0));
@@ -220,10 +222,11 @@ fn strip_cases(r: &RunReport) -> RunReport {
     RunReport { cases: Vec::new(), ..r.clone() }
 }
 
-/// 周期写盘：运行中每 ≥1s 整份覆写一次报告，用户中途用浏览器打开刷新就能看到部分结果。
+/// 周期写盘：运行中整份覆写报告，用户中途用浏览器打开刷新就能看到部分结果。
 ///
-/// 整份重渲染就是几毫秒的字符串拼接，不值得为省这点开销去做增量；
-/// 但**写盘要串行**——两次写交错会让报告文件出现半截内容。
+/// 仍是整份重渲染（不做增量）——但**间隔随报告增大而拉长**，见 `interval`：
+/// 小报告几毫秒的字符串拼接不值得为它做增量，大报告则不该每秒把已完成的几十 MB 重渲一遍。
+/// 另外**写盘要串行**——两次写交错会让报告文件出现半截内容。
 #[derive(Clone)]
 struct ReportWriter {
     path: String,
@@ -237,9 +240,16 @@ impl ReportWriter {
         Self { path, last: Arc::new(Mutex::new(past)) }
     }
 
+    /// 写盘间隔随报告增大而拉长：每次落盘都要把**整份**报告渲染成 HTML，
+    /// 500 个用例可达几十 MB——固定 1 秒一次会让后半程一直在重复渲染同一堆已完成的数据。
+    /// 拉长它不影响体验：应用内的进度靠事件实时推送，落盘只是归档与崩溃兜底。
+    fn interval(cases: usize) -> std::time::Duration {
+        std::time::Duration::from_millis(1000.max(cases as u64 * 20))
+    }
+
     fn maybe_write(&self, r: &RunReport) {
         let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        if last.elapsed() < std::time::Duration::from_secs(1) {
+        if last.elapsed() < Self::interval(r.cases.len()) {
             return;
         }
         *last = std::time::Instant::now();
@@ -263,6 +273,18 @@ impl ReportWriter {
 mod tests {
     use super::*;
     use apicase_core::report::StepStatus;
+
+    /// 写盘节流：小报告保持 1 秒一次（崩溃兜底），大报告拉长——
+    /// 每次落盘都要渲染整份 HTML，后半程重复渲染的全是已完成的数据。
+    #[test]
+    fn report_write_interval_grows_with_report_size() {
+        use std::time::Duration;
+        assert_eq!(ReportWriter::interval(0), Duration::from_millis(1000));
+        assert_eq!(ReportWriter::interval(10), Duration::from_millis(1000), "小报告不受影响");
+        assert_eq!(ReportWriter::interval(50), Duration::from_millis(1000), "临界点仍是 1 秒");
+        assert_eq!(ReportWriter::interval(100), Duration::from_millis(2000));
+        assert_eq!(ReportWriter::interval(500), Duration::from_millis(10_000));
+    }
 
     /// 命令层是**转发**，不是重新实现——这些测试盯的是"接线对不对"：
     /// 参数进得来、产物出得去、序列化形状与前端 TS 类型对得上。

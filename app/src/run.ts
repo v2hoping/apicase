@@ -258,3 +258,33 @@ export function reportShell(): Promise<string> {
 export function parseReport(text: string): Promise<RunReport | null> {
   return invoke<RunReport | null>("parse_report", { text });
 }
+
+// ── 报告推送的增量决策 ──────────────────────────────
+
+/** 已推送给报告页的进度：哪一份报告、推到第几个 case。 */
+export interface SentMark {
+  runId: string;
+  count: number;
+}
+
+export type ReportPush = { kind: "full" } | { kind: "cases"; from: number };
+
+/**
+ * 决定这次该给报告页 postMessage 推什么：只推新增的 case，还是整份重发。
+ *
+ * 为什么不是每次都推整份：live 运行时每完成一个 case 都会触发一次推送，而结构化克隆
+ * 是按整份报告的大小走的——跑 N 个用例就克隆了 N 份逐渐变大的报告，累计
+ * **O(N²)** 的复制量（一份 500 用例、每步带 64KB 响应预览的报告可达几十 MB，
+ * 这个量级下界面会明显发涩，GC 压力也一并起来）。只推新增那一条则是 O(N)。
+ *
+ * 四种情况必须退回整份，否则报告页看到的会是一份缺东西的报告：
+ * 换了另一份报告、首次推送、case 数变少（重跑 / 读回历史）、以及运行收尾
+ * （收尾要带上 status / finishedAt，且只发生一次，整份最省心）。
+ */
+export function reportPush(sent: SentMark | null, runId: string, report: RunReport): ReportPush {
+  const n = report.cases.length;
+  if (!sent || sent.runId !== runId || n < sent.count) return { kind: "full" };
+  if (report.status !== "running") return { kind: "full" };
+  if (n === sent.count) return { kind: "cases", from: n }; // 无新增：调用方据此不发消息
+  return { kind: "cases", from: sent.count };
+}
