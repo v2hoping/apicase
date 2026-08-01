@@ -1,7 +1,7 @@
 // 路径工具单测：文件树的克隆 / 复制 / 剪切 / 粘贴全靠这几个纯函数算目标路径与新名字。
 import { loadModule, eq, ok, report } from "./harness.mjs";
 
-const { baseName, dirName, joinPath, relPath, isUnder, retargetPath, splitExt, uniqueName, reportFileName } =
+const { baseName, dirName, joinPath, relPath, isUnder, retargetPath, splitExt, uniqueName, reportFileName, resolveInWorkspace } =
   await loadModule("src/pathutil.ts");
 
 // ── baseName / dirName / joinPath ──
@@ -59,6 +59,26 @@ eq(splitExt(".gitignore"), { stem: ".gitignore", ext: "" }, "开头的点不算�
   const taken = new Set(["接口", "接口 副本"]);
   eq(uniqueName("接口", (n) => taken.has(n)), "接口 副本 2", "目录（无扩展名）同样排号");
 }
+
+// ── 报告页给的用例路径 → 工作空间内的绝对路径 ──
+// 这里出过一个真实的 bug：`isUnder(parent, p)` 两个参数同型，调用时写成了 isUnder(abs, workspace)
+// ——问的是"工作空间在不在这个 .yml 之下"，恒为 false，于是「在 apicase 中打开」点了永远没反应，
+// 且不报任何错。故把判断收进这一个函数，用例正着反着都钉一遍。
+
+const WS = "/Users/me/apitest";
+eq(resolveInWorkspace(WS, WS, "01-方法/get.yml"), "/Users/me/apitest/01-方法/get.yml", "相对路径解析到工作空间内");
+eq(resolveInWorkspace(WS, "", "a.yml"), "/Users/me/apitest/a.yml", "报告没记工作空间根时退回当前工作空间");
+ok(isUnder(WS, resolveInWorkspace(WS, WS, "a/b.yml")), "结果必须落在工作空间内（参数顺序回归）");
+
+// 报告会被转发，file 字段是不可信输入
+eq(resolveInWorkspace(WS, WS, "../../etc/passwd"), null, "含 .. 的路径拒绝——仅靠前缀检查挡不住它");
+eq(resolveInWorkspace(WS, WS, "a/../../../x.yml"), null, ".. 藏在中间同样拒绝");
+eq(resolveInWorkspace(WS, WS, "/etc/passwd"), null, "绝对路径拒绝");
+eq(resolveInWorkspace(WS, WS, "C:\\Windows\\x.yml"), null, "带盘符的绝对路径拒绝");
+eq(resolveInWorkspace(WS, "/other/workspace", "a.yml"), null, "报告来自别的工作空间：不打开");
+eq(resolveInWorkspace("", WS, "a.yml"), null, "没有打开工作空间时不打开");
+eq(resolveInWorkspace(WS, WS, ""), null, "空文件名不打开");
+eq(resolveInWorkspace(WS, WS, "..x/a.yml"), "/Users/me/apitest/..x/a.yml", "只拒绝完整的 .. 段，不误伤以点开头的目录名");
 
 // ── 运行报告的文件名 ──
 // 报告是自包含单文件，不套目录；名字要能一眼认出「什么时候跑的、跑了什么」。

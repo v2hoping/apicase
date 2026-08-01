@@ -109,7 +109,7 @@ steps:
           user: alice
           pwd: '123'
     outputs:
-      token: $.data.token
+      token: res.body.data.token
     assertions:
       - target: res.status
         op: eq
@@ -149,7 +149,7 @@ fn parses_structure() {
     assert!(!login.http.headers[1].enabled, "enabled: false 应被读到");
     assert_eq!(login.http.auth.kind, AuthType::Basic);
     assert_eq!(login.http.auth.basic.as_ref().unwrap().username, "u");
-    assert_eq!(login.outputs, vec![StepOutput { name: "token".into(), path: "$.data.token".into() }]);
+    assert_eq!(login.outputs, vec![StepOutput { name: "token".into(), path: "res.body.data.token".into() }]);
     // YAML 里写的是数字 200，模型里恒是字符串
     assert_eq!(login.assertions[0].value.as_deref(), Some("200"));
 

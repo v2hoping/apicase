@@ -47,6 +47,28 @@ export function splitExt(name: string): { stem: string; ext: string } {
 }
 
 /**
+ * 把报告页给的用例路径解析成工作空间内的绝对路径；不该打开的返回 `null`。
+ *
+ * **`file` 来自报告 HTML，是不可信输入**——报告会被转发，你打开的可能是别人给的文件。
+ * 三道关：
+ *
+ * 1. 含 `..` 段的直接拒绝。仅靠"绝对路径以工作空间开头"挡不住 `ws/../../etc/passwd`；
+ * 2. `file` 自己是绝对路径的拒绝（拼出来的东西已经不受工作空间约束）；
+ * 3. 最后才是落在工作空间内的检查。
+ *
+ * 抽成函数是因为第 3 步的 `isUnder(parent, p)` 两个参数同型、写反了照样编译，
+ * 而写反的后果是**永远返回 false**——按钮点了没反应，且没有任何报错（这个 bug 真发生过）。
+ */
+export function resolveInWorkspace(workspace: string, reportRoot: string, file: string): string | null {
+  if (!workspace || !file) return null;
+  const segs = file.split(/[\\/]/);
+  if (segs.some((s) => s === "..")) return null;
+  if (file.startsWith("/") || file.startsWith("\\") || /^[A-Za-z]:/.test(file)) return null;
+  const abs = joinPath(reportRoot || workspace, file);
+  return isUnder(workspace, abs) ? abs : null;
+}
+
+/**
  * 运行报告的文件名：`<YYYYMMDDHHmmss>-<目标名>.html`。
  *
  * **时间戳必须在前**：目录列表按名字排序，时间戳打头才能让字典序等于时间序；

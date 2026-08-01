@@ -72,7 +72,7 @@ export interface HttpSpec {
   body: BodySpec;
 }
 
-/** 一个请求的输出提取：outputs: { token: $.data.token } → { name:"token", path:"$.data.token" } */
+/** 一个请求的输出提取：outputs: { token: res.body.data.token } → { name:"token", path:"res.body.data.token" } */
 export interface RequestOutput {
   name: string;
   path: string;
@@ -98,7 +98,7 @@ export interface Request {
   protocol: string; // 协议标识：当前仅 "http"
   http: HttpSpec; // 报文（YAML 键为 `request:`；内部沿用 http 命名承载 HttpSpec）
   dependsOn: string[]; // DAG 依赖指针（借 Arazzo dependsOn / GHA needs）
-  outputs: RequestOutput[]; // JSONPath 提取
+  outputs: RequestOutput[]; // 输出提取：路径与断言目标同一套语法（res.status / res.headers.<名> / res.body<路径>）
   assertions: Assertion[]; // 响应断言
   docs?: string; // 该 step 的 markdown 文档（可选）
   ui?: { x: number; y: number }; // 前端属性：画布坐标；缺省时按 dependsOn 自动布局

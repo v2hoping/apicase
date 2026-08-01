@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "node test/case.test.mjs && node test/markdown.test.mjs && node test/pathutil.test.mjs && node test/appsettings.test.mjs && node test/draft.test.mjs && node test/kvtable.test.mjs && node test/assertpath.test.mjs && npm run check:ipc",
+    "test": "node test/case.test.mjs && node test/markdown.test.mjs && node test/pathutil.test.mjs && node test/appsettings.test.mjs && node test/draft.test.mjs && node test/kvtable.test.mjs && node test/assertpath.test.mjs && node test/htmlpreview.test.mjs && npm run check:ipc",
     "check:ipc": "python3 scripts/check-ipc.py"
   },
   "dependencies": {

@@ -1,6 +1,6 @@
 //! 把工作空间里的 case 文件迁移到最新格式。
 //!
-//! 做三件事，都是**语义保持**的：
+//! 做五件事，都是**语义保持**的：
 //!
 //! 1. **变量语法** `{{var}}` → `${{var}}`。`{` 是 YAML 的流式映射起始指示符，
 //!    以 `{{` 开头的值必须整行加引号（`url: '{{baseUrl}}/get'`）；`$` 不在指示符表里，
@@ -13,6 +13,8 @@
 //! 4. **画布坐标**从顶层 `ui.nodes.<stepId>` 挪进各 step 的 `ui:`。解析器已不认
 //!    顶层写法，所以这条得在**文本层**先把坐标捞出来（`parse_case` 之后就没了），
 //!    再按 id 灌回对应 step。捞不到 id 的坐标（step 已删）随之丢弃。
+//! 5. **输出提取的路径**与断言目标统一：`$.data.token` → `res.body.data.token`。
+//!    两者做的是同一件事（从这次响应里取一个值），此前却是两套语法。
 //!
 //! 随后经 `parse_case` → `dump_case` 走一遍，顺带把格式规范化（引号规则、序列缩进、
 //! 流式映射展开、默认值裁剪）。**语义等价由程序自己校验**：迁移前后的模型必须逐字段相同
@@ -60,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let before = analyzed.case.expect("valid 时必有 case");
         let mut migrated = yaml::parse_case(&upgrade_version(&upgrade_vars(&src)))?;
-        upgrade_targets(&mut migrated); // 断言目标在模型层改：文本替换分不清 target 与 outputs 的路径
+        upgrade_targets(&mut migrated); // 断言目标与 outputs 路径在模型层改：文本替换分不清哪个 `$.` 是哪个
         adopt_legacy_ui(&mut migrated, &src); // 坐标要先从原文里捞——解析器已经不认顶层 ui: 了
         let next = yaml::dump_case(&migrated);
 
@@ -178,6 +180,10 @@ fn upgrade_targets(c: &mut apicase_core::Case) {
     for step in &mut c.requests {
         for a in &mut step.assertions {
             a.target = upgrade_target(&a.target);
+        }
+        // outputs 的路径与断言目标是同一套语法，同一条规则
+        for o in &mut step.outputs {
+            o.path = upgrade_target(&o.path);
         }
     }
 }
