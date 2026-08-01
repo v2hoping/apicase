@@ -161,7 +161,7 @@ pub async fn run_batch(app: AppHandle, state: State<'_, RunState>, args: BatchAr
     let cancel = Cancel::new();
     state.lock().insert(run_id.clone(), cancel.clone());
 
-    // 报告目录可能是三级的 `.apicase/reports/<时间戳>/`，先建出来
+    // 报告落在 `.apicase/reports/` 下，首次运行时这两级还不存在，先建出来
     if let Some(f) = report_file.as_deref() {
         if let Some(dir) = std::path::Path::new(f).parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("创建报告目录失败: {e}"))?;

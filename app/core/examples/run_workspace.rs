@@ -102,10 +102,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let report = runner::run_batch(targets, meta, opts, Some(progress), Cancel::new()).await;
 
-    // ⑤ 落一份与桌面端**逐字相同**的报告
-    let out_dir = root.join(".apicase/reports/cli");
+    // ⑤ 落一份与桌面端**逐字相同**的报告（同一个目录、同样的单文件形态；
+    //    桌面端文件名带时间戳，这里用固定名，重跑覆盖即可）
+    let out_dir = root.join(".apicase/reports");
     std::fs::create_dir_all(&out_dir)?;
-    let out = out_dir.join("report.html");
+    let out = out_dir.join("cli.html");
     std::fs::write(&out, render::render_html(&report))?;
 
     let s = report.summary;

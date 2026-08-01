@@ -1,7 +1,8 @@
 // 路径工具单测：文件树的克隆 / 复制 / 剪切 / 粘贴全靠这几个纯函数算目标路径与新名字。
 import { loadModule, eq, ok, report } from "./harness.mjs";
 
-const { baseName, dirName, joinPath, relPath, isUnder, retargetPath, splitExt, uniqueName } = await loadModule("src/pathutil.ts");
+const { baseName, dirName, joinPath, relPath, isUnder, retargetPath, splitExt, uniqueName, reportFileName } =
+  await loadModule("src/pathutil.ts");
 
 // ── baseName / dirName / joinPath ──
 eq(baseName("/a/b/c.yml"), "c.yml", "POSIX 路径取最后一段");
@@ -58,5 +59,37 @@ eq(splitExt(".gitignore"), { stem: ".gitignore", ext: "" }, "开头的点不算�
   const taken = new Set(["接口", "接口 副本"]);
   eq(uniqueName("接口", (n) => taken.has(n)), "接口 副本 2", "目录（无扩展名）同样排号");
 }
+
+// ── 运行报告的文件名 ──
+// 报告是自包含单文件，不套目录；名字要能一眼认出「什么时候跑的、跑了什么」。
+
+const at = new Date(2026, 6, 28, 21, 57, 58); // 本地时间 2026-07-28 21:57:58（月份 0 起）
+eq(reportFileName(at, "/ws/01-方法"), "20260728215758-01-方法.html", "目录：时间戳 + 目录名");
+eq(reportFileName(at, "/ws/07-多步flow/登录取token链.yml"), "20260728215758-登录取token链.html", "单文件：去掉 .yml");
+eq(reportFileName(at, "/ws/a.YAML"), "20260728215758-a.html", "扩展名大小写不敏感");
+eq(reportFileName(at, "/Users/me/apitest"), "20260728215758-apitest.html", "工作空间根用它自己的目录名");
+
+// 时间戳打头，字典序才等于时间序——排序错了就得满目录找"最近那次"
+const later = reportFileName(new Date(2026, 6, 28, 22, 0, 0), "/ws/aaa");
+ok(reportFileName(at, "/ws/zzz") < later, "先跑的排在前面，与目标名无关");
+
+// 各字段补零：9 月 3 日 08:07:06 不能写成 202693876
+eq(reportFileName(new Date(2026, 8, 3, 8, 7, 6), "/ws/x"), "20260903080706-x.html", "月日时分秒一律补零");
+
+// 文件系统不收的字符（Windows 禁 \ / : * ? " < > |）换成 -，且不留连续/首尾的 -
+eq(reportFileName(at, '/ws/a:b*c?d"e<f>g|h'), "20260728215758-a-b-c-d-e-f-g-h.html", "非法字符换成连字符");
+eq(reportFileName(at, "/ws/--怪 名字--"), "20260728215758-怪 名字.html", "首尾的连字符与空白去掉");
+
+// 目录名上限 255 字节，一个汉字 3 字节：截到 60 字节且不切碎汉字
+{
+  const name = reportFileName(at, "/ws/" + "长".repeat(50));
+  const suffix = name.slice("20260728215758-".length, -".html".length);
+  eq(suffix, "长".repeat(20), "按字节截断，切点落在字符边界上");
+  ok(new TextEncoder().encode(suffix).length <= 60, "截断后不超过 60 字节");
+}
+
+// 净化后什么都不剩时只留时间戳——宁可少个后缀，也不能拼出建不出来的文件名
+eq(reportFileName(at, "/ws/..."), "20260728215758.html", "全是点");
+eq(reportFileName(at, "/ws/:::"), "20260728215758.html", "全是非法字符");
 
 report();
