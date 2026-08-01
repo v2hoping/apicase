@@ -38,6 +38,8 @@ import {
   reportShell,
   parseReport,
   topoOrder,
+  reportPush,
+  type SentMark,
 } from "./run";
 import { RequestEditor, KVTable, METHODS, methodClass, Select, OP_LABELS } from "./RequestEditor";
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
@@ -187,6 +189,9 @@ function isHtmlFile(path: string): boolean {
 
 /** 运行报告的输出位置（相对工作空间根）。隐藏目录：默认不出现在文件树，用例树保持干净。 */
 const REPORTS_REL = ".apicase/reports";
+
+/** 自写回声的抑制时间窗：超过这个时长的写入记录既不再抑制，也就不必再留着。 */
+const SELF_WRITE_WINDOW_MS = 2500;
 
 /**
  * 运行报告标签用**伪路径**占位。tabOrder 存的是路径字符串，加前缀即可与真实文件分流——
@@ -1630,9 +1635,20 @@ function RunReportPane({
     if (readyRef.current) post({ type: "theme", mode: theme });
   }, [theme]);
 
+  // 只推新增的 case，不是每次都重发整份——理由见 run.ts 的 reportPush
+  const sentRef = useRef<SentMark | null>(null);
   useEffect(() => {
-    if (readyRef.current && report) post({ type: "report", report });
-  }, [report]);
+    if (!readyRef.current || !report) return;
+    const push = reportPush(sentRef.current, session.runId, report);
+    if (push.kind === "full") {
+      post({ type: "report", report });
+    } else {
+      for (let i = push.from; i < report.cases.length; i++) {
+        post({ type: "case", case: report.cases[i], summary: report.summary, durationMs: report.durationMs });
+      }
+    }
+    sentRef.current = { runId: session.runId, count: report.cases.length };
+  }, [report, session.runId]);
 
   const s = report?.summary;
   const done = s ? s.passed + s.failed + s.error + s.skipped : 0;
@@ -2271,9 +2287,14 @@ function App() {
     loaded.forEach((d) => void loadDir(d));
   }, [showHidden]);
 
-  // 记录本应用自身发起的写操作路径，令监听回声可被识别并抑制
+  // 记录本应用自身发起的写操作路径，令监听回声可被识别并抑制。
+  // 顺手清掉过期条目：这张表只增不减的话，一次长会话里编辑过的每个文件都会在里面留一条，
+  // 而超出时间窗的条目已经没有任何用处了。
   function noteSelfWrite(...paths: string[]) {
     const now = Date.now();
+    for (const [p, t] of selfWritesRef.current) {
+      if (now - t >= SELF_WRITE_WINDOW_MS) selfWritesRef.current.delete(p);
+    }
     paths.forEach((p) => selfWritesRef.current.set(p, now));
   }
 
@@ -2931,7 +2952,7 @@ function App() {
     const now = Date.now();
     const isEcho = (p: string) => {
       const t = selfWritesRef.current.get(p);
-      return t !== undefined && now - t < 2500; // 本应用刚写过：忽略回声
+      return t !== undefined && now - t < SELF_WRITE_WINDOW_MS; // 本应用刚写过：忽略回声
     };
 
     // 1) 目录树：刷新受影响且「已加载」的目录（懒加载一致——不主动展开新目录）
@@ -3389,8 +3410,9 @@ function App() {
       unlisten();
     }
 
-    // 报告落在隐藏目录里，而 fs 监听刻意跳过 `.` 开头的路径（否则周期覆写会把文件树刷爆）。
-    // 故运行结束后精准刷新一次已加载的相关目录——开着「显示隐藏文件」时新报告能立刻出现。
+    // 运行期间报告文件被周期覆写，这些写入都记进了 noteSelfWrite 从而不触发刷新
+    // （否则文件树每秒抖一次）。跑完精准刷新一次已加载的相关目录——
+    // 开着「显示隐藏文件」时新报告能立刻出现。
     if (showHidden) {
       const apicaseDir = joinPath(workspace, ".apicase");
       for (const d of [workspace, apicaseDir, joinPath(workspace, REPORTS_REL)]) {

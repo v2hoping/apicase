@@ -285,6 +285,17 @@
     render();
   }
 
+  // 运行中逐条追加，而不是每完成一个 case 就重收一份整报告：
+  // 后者的传输量按报告大小走，跑 N 个用例就是 O(N²) 的结构化克隆。
+  // 收尾时宿主仍会推一次整份（带 status / finishedAt），所以这里不必管终态。
+  function appendCase(d) {
+    if (!state.report || !d.case) return;
+    state.report.cases.push(d.case);
+    if (d.summary) state.report.summary = d.summary;
+    if (typeof d.durationMs === "number") state.report.durationMs = d.durationMs;
+    render();
+  }
+
   // ── 事件 ──
   document.addEventListener("click", function (e) {
     var seg = e.target.closest ? e.target.closest(".seg button") : null;
@@ -327,6 +338,7 @@
       return;
     }
     if (d.type === "report") { setReport(d.report); return; }
+    if (d.type === "case") { appendCase(d); return; }
   });
 
   // 内联数据（落盘的报告自带；空壳则等宿主推送）
