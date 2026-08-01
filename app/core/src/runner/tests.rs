@@ -71,7 +71,7 @@ steps:
         json:
           user: alice
     outputs:
-      token: $.data.token
+      token: res.body.data.token
     assertions:
       - target: res.status
         op: eq
@@ -181,7 +181,7 @@ async fn cases_do_not_share_outputs() {
     let opts = direct(&[("base", &srv.base)]);
 
     let producer = format!(
-        "apicase: v0.1\nsteps:\n  - id: p\n    request:\n      method: GET\n      url: {}/a\n    outputs:\n      leaked: $.v\n",
+        "apicase: v0.1\nsteps:\n  - id: p\n    request:\n      method: GET\n      url: {}/a\n    outputs:\n      leaked: res.body.v\n",
         srv.base
     );
     let consumer = format!(
@@ -234,7 +234,7 @@ steps:
       method: POST
       url: {base}/login
     outputs:
-      token: $.data.token
+      token: res.body.data.token
   - id: use
     dependsOn:
       - login

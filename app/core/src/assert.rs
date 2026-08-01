@@ -19,22 +19,23 @@ pub struct RespView<'a> {
     pub body: &'a str,
 }
 
-/// 从响应体按 `outputs` 提取变量。
-/// 提取不到记 `null`——**键要在**，否则下游 `{{steps.x.outputs.y}}` 会因为
+/// 按 `outputs` 从响应里提取变量。
+///
+/// 路径与断言目标**同一套语法**（`res.status` / `res.headers.<名>` / `res.body<路径>`）：
+/// 两者做的本就是同一件事——从这次响应里取一个值。分两套语法的代价不只是多记一套，
+/// 还把输出**限死在响应体内**：拿响应头里的 token 当下游变量是常见需求，旧的 `$.` 写法做不到。
+///
+/// 提取不到记 `null`——**键要在**，否则下游 `${{steps.x.outputs.y}}` 会因为
 /// "变量不存在"而保留字面量，看起来像是没配，实际是上游没返回。
-pub fn extract_outputs(outputs: &[StepOutput], body: &str) -> BTreeMap<String, Value> {
-    let parsed = jsonpath::parse_json(body);
+pub fn extract_outputs(outputs: &[StepOutput], resp: &RespView) -> BTreeMap<String, Value> {
+    let parsed = jsonpath::parse_json(resp.body);
     let mut out = BTreeMap::new();
     for o in outputs {
         let name = o.name.trim();
         if name.is_empty() {
             continue;
         }
-        let v = parsed
-            .as_ref()
-            .and_then(|root| jsonpath::get(root, &o.path))
-            .cloned()
-            .unwrap_or(Value::Null);
+        let v = actual_for(o.path.trim(), resp, parsed.as_ref()).unwrap_or(Value::Null);
         out.insert(name.to_string(), v);
     }
     out
@@ -320,13 +321,14 @@ mod tests {
 
     #[test]
     fn extracts_outputs() {
+        let hs = headers();
         let outs = vec![
-            StepOutput { name: "token".into(), path: "$.data.token".into() },
-            StepOutput { name: "n".into(), path: "$.data.count".into() },
-            StepOutput { name: "missing".into(), path: "$.nope".into() },
-            StepOutput { name: "  ".into(), path: "$.code".into() },
+            StepOutput { name: "token".into(), path: "res.body.data.token".into() },
+            StepOutput { name: "n".into(), path: "res.body.data.count".into() },
+            StepOutput { name: "missing".into(), path: "res.body.nope".into() },
+            StepOutput { name: "  ".into(), path: "res.body.code".into() },
         ];
-        let got = extract_outputs(&outs, BODY);
+        let got = extract_outputs(&outs, &resp(BODY, &hs));
         assert_eq!(got.get("token"), Some(&json!("abcdef")));
         assert_eq!(got.get("n"), Some(&json!(7)));
         // 提取不到也要有键（值为 null），否则下游看起来像"没配变量"
@@ -334,9 +336,45 @@ mod tests {
         assert_eq!(got.len(), 3, "空名字的输出被跳过");
     }
 
+    /// 与断言同一套语法之后，输出不再限死在响应体内——
+    /// 拿响应头里的 token 当下游变量是常见需求，旧的 `$.` 写法做不到
+    #[test]
+    fn outputs_can_read_status_and_headers() {
+        let hs = headers();
+        let outs = vec![
+            StepOutput { name: "code".into(), path: "res.status".into() },
+            StepOutput { name: "ct".into(), path: "res.headers.Content-Type".into() },
+            StepOutput { name: "cnt".into(), path: "res.headers['X-Count']".into() },
+        ];
+        let got = extract_outputs(&outs, &resp(BODY, &hs));
+        assert_eq!(got.get("code"), Some(&json!(200)));
+        assert_eq!(got.get("ct"), Some(&json!("application/json")));
+        assert_eq!(got.get("cnt"), Some(&json!("7")));
+    }
+
+    /// 旧写法（`$.data.token`）不再识别——硬切换，与断言目标同步
+    #[test]
+    fn legacy_output_paths_yield_null() {
+        let hs = headers();
+        let outs = vec![
+            StepOutput { name: "a".into(), path: "$.data.token".into() },
+            StepOutput { name: "b".into(), path: "data.token".into() },
+        ];
+        let got = extract_outputs(&outs, &resp(BODY, &hs));
+        assert_eq!(got.get("a"), Some(&Value::Null));
+        assert_eq!(got.get("b"), Some(&Value::Null));
+    }
+
     #[test]
     fn extract_outputs_on_non_json_body() {
-        let outs = vec![StepOutput { name: "t".into(), path: "$.a".into() }];
-        assert_eq!(extract_outputs(&outs, "plain text").get("t"), Some(&Value::Null));
+        let hs = headers();
+        let outs = vec![
+            StepOutput { name: "t".into(), path: "res.body.a".into() },
+            StepOutput { name: "raw".into(), path: "res.body".into() },
+        ];
+        let got = extract_outputs(&outs, &resp("plain text", &hs));
+        assert_eq!(got.get("t"), Some(&Value::Null));
+        // 非 JSON 响应体整体仍取得到（与断言的 res.body 一致）
+        assert_eq!(got.get("raw"), Some(&json!("plain text")));
     }
 }

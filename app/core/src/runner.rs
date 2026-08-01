@@ -177,11 +177,10 @@ pub async fn run_step(step: &Step, ctx: &RunContext, opts: &RunOpts) -> (StepRes
     match send_with_auth(&resolved, &opts.client).await {
         Ok((sent, resp)) => {
             result.request = Some(record_request(&sent, &secrets, opts));
-            let outputs = extract_outputs(&step.outputs, &resp.body);
-            let assertions = eval_assertions(
-                &step.assertions,
-                &RespView { status: resp.status, headers: &resp.headers, body: &resp.body },
-            );
+            // 输出提取与断言看的是同一个响应切面（路径语法也是同一套）
+            let view = RespView { status: resp.status, headers: &resp.headers, body: &resp.body };
+            let outputs = extract_outputs(&step.outputs, &view);
+            let assertions = eval_assertions(&step.assertions, &view);
             result.status = if assertions.iter().all(|a| a.ok) { StepStatus::Passed } else { StepStatus::Failed };
             result.response = Some(ResponseRecord {
                 status: resp.status,

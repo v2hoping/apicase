@@ -5,7 +5,7 @@
 // 且**不能**改动已有行（否则会把用户数据顺序搅乱）。
 import { loadModule, eq, ok, report } from "./harness.mjs";
 
-const { kvRowsWithBlank, assertRowsWithBlank } = await loadModule("src/RequestEditor.tsx");
+const { kvRowsWithBlank, assertRowsWithBlank, outputRowsWithBlank } = await loadModule("src/RequestEditor.tsx");
 
 const blank = { name: "", value: "", enabled: true };
 const p1 = { name: "a", value: "1", enabled: true };
@@ -43,5 +43,17 @@ eq(assertRowsWithBlank([]), [blankA], "空断言表给一行空白");
 eq(assertRowsWithBlank([a1, a2]), [a1, a2, blankA], "断言填满 → 补新行");
 eq(assertRowsWithBlank([a1, blankA]), [a1, blankA], "末行已空则不再补");
 ok(assertRowsWithBlank([{ target: "", op: "eq", value: "200" }]).length === 2, "只填了期望值也算有内容");
+
+// ── 输出表 ──────────────────────────────────────────
+
+const blankO = { name: "", path: "" };
+eq(outputRowsWithBlank([]), [blankO], "空表给一行空白");
+eq(
+  outputRowsWithBlank([{ name: "token", path: "res.body.data.token" }]),
+  [{ name: "token", path: "res.body.data.token" }, blankO],
+  "填满则补空行",
+);
+eq(outputRowsWithBlank([blankO]), [blankO], "末行已空则不再补");
+eq(outputRowsWithBlank([{ name: "", path: "res.status" }]), [{ name: "", path: "res.status" }, blankO], "只填了路径也算有内容");
 
 report();

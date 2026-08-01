@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openUrl, openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Case,
@@ -47,7 +47,8 @@ import { type AppSettings, loadCachedSettings, loadAppSettings, saveAppSettings,
 import { type ProxyConfig, type ProxyMode, proxyPayload } from "./proxy";
 import { AiChat } from "./AiChat";
 import { MarkdownEditor } from "./markdown";
-import { baseName, dirName, joinPath, relPath, isUnder, retargetPath, uniqueName, reportFileName } from "./pathutil";
+import { HtmlPreview } from "./HtmlPreview";
+import { baseName, dirName, joinPath, relPath, isUnder, retargetPath, uniqueName, reportFileName, resolveInWorkspace } from "./pathutil";
 import {
   ACTIONS,
   ACTION_MAP,
@@ -134,6 +135,8 @@ interface TabSnapshot {
   textError: string | null;
   binaryFile: boolean;
   configVisual: boolean;
+  htmlVisual: boolean;
+  htmlReport: RunReport | null;
   runMap: Record<string, RunState>;
   outputsCtx: Record<string, Record<string, unknown>>;
   respTab: "body" | "headers" | "assert";
@@ -1897,6 +1900,8 @@ function App() {
   const [textError, setTextError] = useState<string | null>(null);
   const [binaryFile, setBinaryFile] = useState(false); // 二进制/不支持编码：显示占位提示
   const [configVisual, setConfigVisual] = useState(false); // application.yml：可视设置页 vs 文本
+  const [htmlVisual, setHtmlVisual] = useState(true); // .html：可视化渲染 vs 源码文本（默认可视化）
+  const [htmlReport, setHtmlReport] = useState<RunReport | null>(null); // 当前 HTML 若是 apicase 报告，解析结果在此
 
   // 批量运行：会话（live 或历史报告）与运行配置对话框。
   // 会话独立于 tabCacheRef——伪路径标签不是编辑态，不进快照体系。
@@ -2004,6 +2009,7 @@ function App() {
   const caseEligible = !!currentCasePath && isYamlFile(currentCasePath) && !isAppConfig(currentCasePath);
   const isConfig = !!currentCasePath && isAppConfig(currentCasePath);
   const isMarkdown = !!currentCasePath && !binaryFile && isMarkdownFile(currentCasePath);
+  const isHtml = !!currentCasePath && !binaryFile && isHtmlFile(currentCasePath);
 
   // 点击菜单外部时关闭工作空间下拉
   useEffect(() => {
@@ -2430,6 +2436,8 @@ function App() {
       textError,
       binaryFile,
       configVisual,
+      htmlVisual,
+      htmlReport,
       runMap,
       outputsCtx,
       respTab,
@@ -2454,6 +2462,8 @@ function App() {
     setTextError(s.textError);
     setBinaryFile(s.binaryFile);
     setConfigVisual(s.configVisual);
+    setHtmlVisual(s.htmlVisual);
+    setHtmlReport(s.htmlReport);
     setRunMap(s.runMap);
     setOutputsCtx(s.outputsCtx);
     setRespTab(s.respTab);
@@ -2518,10 +2528,15 @@ function App() {
     }
   }
 
-  /** 关闭运行报告标签：运行中的一并取消（不能留个跑着的孤儿），并释放会话。 */
+  /**
+   * 关闭标签时释放它占的运行会话：运行中的一并取消（不能留个跑着的孤儿）。
+   *
+   * 两种标签会持有会话——伪路径的 live 运行标签，以及打开了一份 apicase 报告的
+   * `.html` 文件标签（报告数据挂在 `reportKey(路径)` 上，不清就会一直攒在内存里）。
+   */
   function disposeRunTab(path: string) {
-    if (!isRunTab(path)) return;
-    const id = runIdOf(path);
+    const id = isRunTab(path) ? runIdOf(path) : isHtmlFile(path) ? reportKey(path) : "";
+    if (!id) return;
     const s = runSessions[id];
     if (s && !s.readOnly) void cancelRunIpc(id);
     setRunSessions((m) => {
@@ -2539,6 +2554,7 @@ function App() {
     const wasActive = path === currentCasePath;
     const rest = tabOrder.filter((p) => p !== path);
     delete tabCacheRef.current[path];
+    disposeRunTab(path); // 文件被外部删除同样要释放它持有的报告会话
     setTabOrder(rest);
     if (wasActive) {
       setExternalStale(false);
@@ -2642,15 +2658,18 @@ function App() {
         return;
       }
       const text = fc.text;
-      // apicase 自己生成的运行报告 → 报告视图（与刚跑完时看到的完全一致）。
-      // **只认自己的报告**：提取不到结构化数据的普通 HTML 一律落纯文本，
-      // 把任意 HTML 塞进 iframe 既无产品价值，又等于在应用里跑一份来源不明的页面。
-      if (isHtmlFile(path)) {
-        const parsed = await parseReport(text);
-        if (parsed) {
-          openReportTab(path, parsed);
-          return;
-        }
+      // HTML 一律走普通文件标签，进去再切「文本 | 可视」——所有 .html 行为一致。
+      // 可视化里分两种：apicase 自己生成的报告用报告视图（与刚跑完时完全一致，
+      // 认得出靠内联的结构化数据，见 render::parse_report_html）；其余是来源不明的页面，
+      // 走禁脚本禁外链的沙箱预览（HtmlPreview）。
+      const report = isHtmlFile(path) ? await parseReport(text) : null;
+      setHtmlReport(report);
+      setHtmlVisual(isHtmlFile(path)); // HTML 默认可视化
+      if (report) {
+        setRunSessions((m) => ({
+          ...m,
+          [reportKey(path)]: { runId: reportKey(path), report, file: path, total: report.summary.total, readOnly: true },
+        }));
       }
       setTabOrder((prev) => (prev.includes(path) ? prev : [...prev, path]));
       setBinaryFile(false);
@@ -3380,6 +3399,36 @@ function App() {
     }
   }
 
+  /**
+   * 「在浏览器中打开」：交给系统默认程序打开这份报告 HTML。
+   *
+   * 必须走 `openPath` 而不是 `openUrl("file://…")`——opener 插件的默认权限集
+   * （`allow-default-urls`）只放行 `http(s)` / `mailto` / `tel`，`file://` 会被 ACL 拒掉，
+   * 而调用处 `void` 掉了 Promise，表现就是"点了没反应"。故另需 `opener:allow-open-path`。
+   */
+  async function openReportExternally(path: string) {
+    try {
+      await openPath(path);
+    } catch (e) {
+      setError(`打开失败：${String(e)}`);
+    }
+  }
+
+  /**
+   * 报告页里点「在 apicase 中打开」：把它给的相对路径解析到当前工作空间再打开。
+   *
+   * 解析不出来**要出声**——报告可能是别人转发过来的（记的工作空间根跟你现在打开的不是
+   * 同一个），静默不动的话表现就是"按钮点了没反应"，没人分得清是坏了还是被拦了。
+   */
+  function openCaseFromReport(reportRoot: string, file: string) {
+    const abs = resolveInWorkspace(workspace, reportRoot, file);
+    if (abs) {
+      openTab(abs);
+      return;
+    }
+    setError(`用例 ${file} 不在当前工作空间内，无法打开（这份报告可能来自另一个工作空间）`);
+  }
+
   /** 取消一次运行（在 case 边界生效；已发出的 HTTP 不中断，避免服务端收到半截请求）。 */
   function cancelRun(runId: string) {
     if (!runSessions[runId]) return;
@@ -3394,24 +3443,6 @@ function App() {
   function openAndRun(path: string) {
     pendingRunRef.current = path;
     openTab(path);
-  }
-
-  /** 打开一份历史报告（点 report.html 时走这里）。 */
-  function openReportTab(path: string, report: RunReport) {
-    const tabPath = RUN_TAB_PREFIX + reportKey(path);
-    setRunSessions((m) => ({
-      ...m,
-      [reportKey(path)]: {
-        runId: reportKey(path),
-        report,
-        file: path,
-        dir: dirName(path),
-        total: report.summary.total,
-        readOnly: true,
-      },
-    }));
-    setTabOrder((prev) => (prev.includes(tabPath) ? prev : [...prev, tabPath]));
-    openTab(tabPath);
   }
 
   // ── 文件管理（右键菜单触发）─────────────────────
@@ -3762,6 +3793,21 @@ function App() {
             文本
           </button>
           <button className={`vs-btn ${configVisual ? "active" : ""}`} onClick={enterConfigVisual} title="可视化设置">
+            可视
+          </button>
+        </div>
+        <button className="save-btn ghost" onClick={saveCase} disabled={!dirty}>
+          保存
+        </button>
+      </div>
+    ) : isHtml ? (
+      // 所有 .html 一套控件：报告与普通页面都是「文本 | 可视」，只是可视化的内容不同
+      <div className="tab-controls">
+        <div className="view-switch">
+          <button className={`vs-btn ${!htmlVisual ? "active" : ""}`} onClick={() => setHtmlVisual(false)} title="HTML 源码">
+            文本
+          </button>
+          <button className={`vs-btn ${htmlVisual ? "active" : ""}`} onClick={() => setHtmlVisual(true)} title={htmlReport ? "运行报告视图" : "页面渲染"}>
             可视
           </button>
         </div>
@@ -4125,25 +4171,24 @@ function App() {
               </div>
             </div>
           ) : isRunTab(currentCasePath) ? (
-            activeRunSession ? (
-              <RunReportPane
-                key={activeRunSession.runId}
-                session={activeRunSession}
-                theme={resolvedTheme}
-                onCancel={() => cancelRun(activeRunSession.runId)}
-                onOpenCase={(f) => {
-                  // 报告页来的路径不可信：必须落在当前工作空间内才打开
-                  const abs = joinPath(activeRunSession.report?.workspace.root || workspace, f);
-                  if (workspace && isUnder(abs, workspace)) openTab(abs);
-                }}
-                onOpenExternal={() => void openUrl(`file://${activeRunSession.file}`)}
-                onReveal={() => void revealItemInDir(activeRunSession.file)}
-              />
-            ) : (
-              <div className="workspace-empty">
-                <div className="empty-note">此次运行的会话已结束。</div>
-              </div>
-            )
+            <>
+              {error && <div className="error-box">⚠ {error}</div>}
+              {activeRunSession ? (
+                <RunReportPane
+                  key={activeRunSession.runId}
+                  session={activeRunSession}
+                  theme={resolvedTheme}
+                  onCancel={() => cancelRun(activeRunSession.runId)}
+                  onOpenCase={(f) => openCaseFromReport(activeRunSession.report?.workspace.root || "", f)}
+                  onOpenExternal={() => void openReportExternally(activeRunSession.file)}
+                  onReveal={() => void revealItemInDir(activeRunSession.file)}
+                />
+              ) : (
+                <div className="workspace-empty">
+                  <div className="empty-note">此次运行的会话已结束。</div>
+                </div>
+              )}
+            </>
           ) : binaryFile ? (
             <div className="binary-view">
               <svg className="binary-ico" viewBox="0 0 24 24" width="44" height="44" aria-hidden="true">
@@ -4153,6 +4198,26 @@ function App() {
               </svg>
               <div className="binary-msg">此文件是二进制文件或使用了不受支持的文本编码，所以无法在文本编辑器中显示。</div>
             </div>
+          ) : isHtml && htmlVisual ? (
+            <>
+              {/* 报告里那两个动作（打开用例 / 用浏览器打开）失败时要能看见——
+                  它们此前都是静默失败，"点了没反应"正是这么来的 */}
+              {error && <div className="error-box">⚠ {error}</div>}
+              {/* 是 apicase 报告 → 报告视图（与刚跑完时完全一致）；其余 → 沙箱预览 */}
+              {htmlReport && runSessions[reportKey(currentCasePath)] ? (
+                <RunReportPane
+                  key={currentCasePath}
+                  session={runSessions[reportKey(currentCasePath)]}
+                  theme={resolvedTheme}
+                  onCancel={() => {}}
+                  onOpenCase={(f) => openCaseFromReport(htmlReport.workspace.root || "", f)}
+                  onOpenExternal={() => void openReportExternally(currentCasePath)}
+                  onReveal={() => void revealItemInDir(currentCasePath)}
+                />
+              ) : (
+                <HtmlPreview html={rawText} />
+              )}
+            </>
           ) : isMarkdown ? (
             <>
               {error && <div className="error-box">⚠ {error}</div>}

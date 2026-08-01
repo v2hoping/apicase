@@ -403,6 +403,13 @@ export function kvRowsWithBlank(rows: FormItem[]): FormItem[] {
   return !last || filled ? [...rows, { name: "", value: "", enabled: true }] : rows;
 }
 
+/** 同 kvRowsWithBlank，用于输出表 */
+export function outputRowsWithBlank(rows: RequestOutput[]): RequestOutput[] {
+  const last = rows[rows.length - 1];
+  const filled = !!last && !!(last.name || last.path);
+  return !last || filled ? [...rows, { name: "", path: "" }] : rows;
+}
+
 /** 同 kvRowsWithBlank，用于断言表 */
 export function assertRowsWithBlank(rows: Assertion[]): Assertion[] {
   const last = rows[rows.length - 1];
@@ -660,6 +667,61 @@ function ValueInput({ value, onChange, suggestion }: { value: string; onChange: 
   );
 }
 
+// 输出提取表：变量名 + 路径。
+// 路径与断言目标是**同一套语法**（都是"从这次响应里取一个值"），所以共用同一个带补全的
+// 输入框——没有理由让用户记两套写法、面对两种输入体验。
+function OutputsTable({
+  rows,
+  onChange,
+  resp,
+}: {
+  rows: RequestOutput[];
+  onChange: (rows: RequestOutput[]) => void;
+  resp?: RespLite;
+}) {
+  const display = outputRowsWithBlank(rows);
+  // 空行只是给下一条留的落笔处，不该落进模型
+  const commit = (next: RequestOutput[]) => onChange(next.filter((r) => r.name || r.path));
+  return (
+    <table className="kv-table grid">
+      <thead>
+        <tr>
+          <th>变量名</th>
+          <th>路径</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {display.map((r, i) => (
+          <tr key={i}>
+            <td>
+              <input
+                value={r.name}
+                placeholder="变量名"
+                onChange={(e) => commit(display.map((x, idx) => (idx === i ? { ...x, name: e.target.value } : x)))}
+              />
+            </td>
+            <td>
+              <TargetInput
+                value={r.path}
+                onChange={(v) => commit(display.map((x, idx) => (idx === i ? { ...x, path: v } : x)))}
+                resp={resp}
+              />
+            </td>
+            <td className="op-cell">
+              {(r.name || r.path) && (
+                <button className="row-del" title="删除" onClick={() => commit(display.filter((_, idx) => idx !== i))}>
+                  <TrashIcon />
+                </button>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 // 断言表：目标 / 操作符 / 期望值（仅配置；运行结果在响应区「断言」栏展示）
 // 视觉与参数/请求头表一致——同一套 .kv-table.grid Excel 网格
 function AssertTable({
@@ -877,21 +939,18 @@ export function RequestEditor({
         {tab === "body" && <BodyPanel d={d} set={set} />}
         {tab === "outputs" && onOutputs && (
           <div className="outputs-panel">
-            <div className="panel-hint">从响应提取变量，供下游请求 <code>{"{{requests.本请求.outputs.变量名}}"}</code> 引用。</div>
-            <KVTable
-              rows={(outputs || []).map((o) => ({ name: o.name, value: o.path, enabled: true }))}
-              onChange={(rows) => onOutputs(rows.filter((r) => r.name || r.value).map((r) => ({ name: r.name, path: r.value })))}
-              namePlaceholder="变量名"
-              valuePlaceholder="JSONPath 如 $.data.token"
-            />
+            {/* 变量语法必须带 `$`（内核只认 ${{}}，无 $ 的原样保留、不替换）；
+                前缀是 steps.（requests. 是内核仍兼容的早期写法，不该再教给用户）。
+                请求 ID 直接填真实值，照着复制就能用 */}
+            <div className="panel-hint">
+              从响应提取变量，供下游请求 <code>{"${{steps." + (stepId || "本请求ID") + ".outputs.变量名}}"}</code> 引用。
+            </div>
+            <OutputsTable rows={outputs || []} onChange={onOutputs} resp={resp} />
           </div>
         )}
         {tab === "assert" && onAssertions && (
           <div className="assert-panel">
-            <div className="panel-hint">
-              目标统一以 <code>res</code> 开头：<code>res.status</code> / <code>res.body.data.token</code> / <code>res.headers.名称</code>；
-              目标格输入时按最近一次响应逐层提示。运行结果见响应区「断言」栏。
-            </div>
+            {/* 不放说明文字：目标怎么写由输入框的逐层补全现场告知，比一行静态说明有效得多 */}
             <AssertTable rows={assertions || []} onChange={onAssertions} resp={resp} />
           </div>
         )}
