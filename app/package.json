@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "cli:stage": "node scripts/stage-cli.mjs",
+    "cli:stage:debug": "node scripts/stage-cli.mjs --debug",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "node test/case.test.mjs && node test/markdown.test.mjs && node test/pathutil.test.mjs && node test/appsettings.test.mjs && node test/draft.test.mjs && node test/kvtable.test.mjs && node test/assertpath.test.mjs && node test/htmlpreview.test.mjs && node test/reportpush.test.mjs && node test/cookies.test.mjs && node test/datetime.test.mjs && node test/reportfmt.test.mjs && npm run check:ipc",
