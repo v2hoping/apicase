@@ -14,6 +14,7 @@
 //! 这条边界一旦破掉（比如为了省事把变量替换写进 `exec`），`apicase run` CLI
 //! 就得把那段逻辑重写一遍——那正是这次改造要消灭的东西。
 
+pub mod ai;
 pub mod app;
 pub mod cookies;
 pub mod exec;

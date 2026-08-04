@@ -95,7 +95,8 @@ CLI 的产物叫 `apicase`，因为用户敲的是 `apicase run`。
 ```bash
 cargo build -p apicase-cli --release        # 产出 target/release/apicase
 
-apicase init                                # 把当前目录初始化为工作空间
+apicase init                                # 准备好这个目录：配置 + 命令行工具进 PATH + AGENTS.md
+apicase self install                        # 只把 apicase 装进 PATH（软链，不覆盖别人的同名命令）
 apicase new 登录 -X POST --url https://api.example.com/login
 apicase check                               # 只解析不发请求，查出依赖断裂 / 断言目标写错等
 apicase run                                 # 跑整个工作空间，落一份 HTML 报告
@@ -110,7 +111,16 @@ apicase docs assertions                     # 查用例 YAML 的格式规范
 **退出码**：`0` 全部通过 · `1` 断言失败（被测服务的问题）· `2` 用法 / 配置错误 · `3` 请求发不出去（环境或用例自身的问题）。
 `1` 与 `3` 分开，是因为这两者的排查方向完全不同。
 
-### MCP（给 AI Agent 用）
+### 让 AI Agent 用起来
+
+**首选 `AGENTS.md`**（`apicase init` 会生成）：Linux Foundation 的开放标准，
+Codex / Cursor / Copilot / Gemini CLI / Windsurf / Zed / Aider 等三十多个 Agent 原生读，
+Claude Code 也读。**零配置**——文件在目录里就生效，还随 git 走到每个同事的机器上。
+
+内容只有二十来行，**指路而不复制**：告诉 AI 敲 `apicase docs` 查格式、
+`apicase check` 自检、`apicase run --json` 验证，不把 YAML 规范抄一份进去。
+
+**MCP 是另一条路**，适合只放行工具、不给 shell 的受管控环境，但要在每个客户端里配一次：
 
 ```json
 { "mcpServers": { "apicase": { "command": "apicase", "args": ["mcp", "-w", "/path/to/workspace"] } } }
@@ -137,11 +147,13 @@ environment:
 
 ### case.yml（用例）
 
-一个 `.yml` 即一个 case，模型上是 DAG；写盘时恒定使用 `requests:` 列表（单节点也是长度为 1 的列表）。
+一个 `.yml` 即一个 case，模型上是 DAG；写盘时恒定使用 `steps:` 列表（单节点也是长度为 1 的列表）。
 
-**顶层字段**：`apicase`（版本，必填）· `name`（可选）· `vars`（case 级变量，可选）· `requests`（请求节点列表，必填）· `ui.nodes`（画布坐标，可选）。
+**顶层字段**：`apicase`（版本，必填）· `name`（可选）· `vars`（case 级变量，可选）· `steps`（请求节点列表，必填）。
 
-**请求节点**（顺序 `id → dependsOn → http → outputs → assertions`）：`id` 唯一标识 · `dependsOn` 上游依赖 · `http` 报文（`method/url/query/headers/auth/body`）· `outputs` 输出提取 · `assertions` 断言。
+**step 字段**（顺序 `id → protocol → ui → dependsOn → request → outputs → assertions → docs`）：
+`id` 唯一标识 · `protocol` 协议（当前仅 `http`）· `dependsOn` 上游依赖 · `request` 报文
+（`method/url/query/headers/auth/body`）· `outputs` 输出提取 · `assertions` 断言。
 
 **单节点用例**（等价于「发一个 API」）：
 
@@ -150,14 +162,15 @@ apicase: v0.1
 name: 获取用户
 vars:
   baseUrl: https://api.example.com
-requests:
+steps:
   - id: getUser
-    http:
+    protocol: http
+    request:
       method: GET
       url: ${{baseUrl}}/users/1
     assertions:
-      - { target: status, op: eq, value: "200" }
-      - { target: $.data.id, op: exists }
+      - { target: res.status, op: eq, value: 200 }
+      - { target: res.body.data.id, op: exists }
 ```
 
 **多节点用例**（登录 → 下单，`dependsOn` 声明依赖、`outputs` 提取变量供下游透传）：
@@ -167,36 +180,43 @@ apicase: v0.1
 name: 登录并下单
 vars:
   baseUrl: https://api.example.com
-requests:
+steps:
   - id: login
-    http:
+    protocol: http
+    request:
       method: POST
       url: ${{baseUrl}}/login
       body:
         type: json
         json: { username: admin, password: "123456" }
     outputs:
-      - { name: token, path: $.data.token }
+      token: res.body.data.token
     assertions:
-      - { target: status, op: eq, value: "200" }
+      - { target: res.status, op: eq, value: 200 }
   - id: createOrder
+    protocol: http
     dependsOn: [login]
-    http:
+    request:
       method: POST
       url: ${{baseUrl}}/orders
       headers:
-        - { name: Authorization, value: Bearer ${{steps.login.outputs.token}} }
+        - name: Authorization
+          value: Bearer ${{steps.login.outputs.token}}
       body:
         type: json
         json: { sku: A-1001, qty: 2 }
     assertions:
-      - { target: $.code, op: eq, value: "0" }
+      - { target: res.body.code, op: eq, value: 0 }
 ```
 
-- **auth 类型**：`none` / `bearer` `{ token }` / `basic` `{ username, password }` / `apikey` `{ key, value, in: header|query }`。
-- **body 类型**：`none` / `json` / `text`（可选 `contentType`）/ `form-urlencoded` / `form-data`。
-- **断言目标**：`status` / `header.<名>` / JSONPath（如 `$.code`）。
-- **变量**：`${{name}}`；跨节点引用上游输出用 `${{steps.<请求id>.outputs.<输出名>}}`；未解析保留字面量。
+- **auth 类型**：`none` / `bearer` / `basic` / `apikey` / `digest` / `oauth2`。
+- **body 类型**：`none` / `json` / `xml` / `text` / `form-urlencoded` / `form-data` / `binary`。
+- **断言与提取目标**统一挂在 `res` 下：`res.status` / `res.headers.<名>` / `res.body<路径>`。
+  旧写法（`status`、`header.X`、`$.data.token`）**不再识别**。
+- **变量**：`${{name}}`；跨节点引用上游输出用 `${{steps.<step id>.outputs.<输出名>}}`；未解析保留字面量。
+
+> 上面这份是摘要，**唯一权威是 [3.YAML格式规范](docs/0.latest/3.YAML格式规范.md)**——
+> 或者直接敲 `apicase docs`，那是同一份内容。
 
 ## 仓库结构
 

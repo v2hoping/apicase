@@ -154,8 +154,13 @@ pub enum Command {
     /// 新建用例
     New(NewArgs),
 
-    /// 把目录初始化为工作空间
+    /// 把目录准备好：工作空间配置 + 命令行工具 + AGENTS.md
     Init(InitArgs),
+
+    /// 管理 apicase 命令本身（装进 PATH / 移除 / 查状态）
+    #[command(subcommand)]
+    #[command(name = "self")]
+    Zelf(SelfCommand),
 
     /// 查看用例 YAML 的格式规范
     Docs(DocsArgs),
@@ -384,6 +389,25 @@ pub struct InitArgs {
     /// 目录（默认当前目录）
     #[arg(value_name = "目录")]
     pub dir: Option<PathBuf>,
+
+    /// 不生成 AGENTS.md
+    #[arg(long)]
+    pub no_agents: bool,
+
+    /// 不把 apicase 装进 PATH
+    #[arg(long)]
+    pub no_link: bool,
+}
+
+/// `self` 是 Rust 关键字，枚举变体只能叫别的；命令名由 `#[command(name = "self")]` 指定。
+#[derive(Subcommand, Debug)]
+pub enum SelfCommand {
+    /// 查看 apicase 命令在不在 PATH 里、指向哪
+    Status,
+    /// 把 apicase 装进 PATH（软链，不覆盖别人的同名命令）
+    Install,
+    /// 从 PATH 移除
+    Uninstall,
 }
 
 #[derive(Args, Debug)]

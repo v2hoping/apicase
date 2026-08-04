@@ -4988,3 +4988,61 @@ body.resizing-ai .ai-resizer::after {
   color: var(--muted);
   font-size: 14px;
 }
+
+/* ── 设置页「AI」分区 ────────────────────────────────
+   三行操作项（命令行工具 / AGENTS.md / 自动补齐）+ 一段 MCP 配置。
+   状态用左侧圆点表示：亮 = 就绪。比在标题里写「已安装 / 未安装」更好扫。 */
+.ai-settings { display: flex; flex-direction: column; gap: 14px; }
+.settings-lead { margin: 0 0 2px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+
+.ai-row {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.ai-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--border);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--border) 40%, transparent);
+}
+.ai-dot.is-on {
+  background: #22a06b;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #22a06b 25%, transparent);
+}
+.ai-row-text { min-width: 0; }
+.ai-row-title { font-size: 13.5px; font-weight: 600; }
+.ai-row-hint {
+  margin-top: 2px; font-size: 12px; color: var(--muted); line-height: 1.5;
+  overflow-wrap: anywhere;   /* 路径很长，不能把面板撑破 */
+}
+
+.ai-note {
+  margin: -6px 0 0 22px; font-size: 12px; color: var(--warn, #b26a00); line-height: 1.5;
+}
+
+.ai-auto { display: flex; gap: 9px; align-items: flex-start; padding: 2px 2px 0; cursor: pointer; }
+.ai-auto input { margin-top: 3px; flex: none; }
+.ai-auto span { font-size: 13px; line-height: 1.5; }
+.ai-auto em { display: block; font-style: normal; font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.ai-msg { font-size: 12.5px; padding: 8px 12px; border-radius: 6px; line-height: 1.5; }
+.ai-msg.is-ok { background: color-mix(in srgb, #22a06b 12%, transparent); color: #1a7d52; }
+.ai-msg.is-err { background: color-mix(in srgb, #d64545 12%, transparent); color: #b93b3b; overflow-wrap: anywhere; }
+
+.ai-mcp {
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px;
+}
+.ai-code {
+  margin: 0; width: 100%; box-sizing: border-box;
+  padding: 10px 12px; border-radius: 6px;
+  background: var(--code-bg, rgba(127, 127, 127, 0.1));
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px; line-height: 1.55;
+  overflow-x: auto;   /* 配置行较长，让它自己横向滚，别把面板顶宽 */
+}
