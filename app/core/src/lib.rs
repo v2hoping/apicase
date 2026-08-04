@@ -20,8 +20,10 @@
 //! `workspace` 与 `discover` 是这条链路的入口侧：从一个路径找到工作空间、读出配置、
 //! 发现要跑哪些用例。它们同样只有一份——上层三处（桌面壳 / CLI / MCP）走的是同一条路。
 
+pub mod agents;
 pub mod assert;
 pub mod auth;
+pub mod cli_link;
 pub mod cookie;
 pub mod discover;
 pub mod http;

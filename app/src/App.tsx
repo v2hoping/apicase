@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl, openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import AiSettings from "./AiSettings";
 import {
   Case,
   Request,
@@ -62,7 +63,7 @@ import { RequestEditor, KVTable, METHODS, methodClass, Select, OP_LABELS, TrashI
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
 import { TerminalPane } from "./TerminalPane";
 import { type ThemeMode, resolveTheme, applyTheme } from "./theme";
-import { type AppSettings, loadCachedSettings, loadAppSettings, saveAppSettings, filterExistingPaths, pathExists } from "./settings";
+import { type AppSettings, DEFAULT_APP_SETTINGS, loadCachedSettings, loadAppSettings, saveAppSettings, filterExistingPaths, pathExists } from "./settings";
 import { type ProxyConfig, type ProxyMode, proxyPayload } from "./proxy";
 import { AiChat } from "./AiChat";
 import { MarkdownEditor } from "./markdown";
@@ -1217,7 +1218,7 @@ function PathRow({
 
 // 设置页导航分两组：上＝跟随**项目**（工作空间 / application.yml），下＝跟随**应用**（settings.json）。
 // 提到模块级是因为顶栏的快捷入口要能指名跳到某个分区。
-const NAV_PROJECT = ["通用", "环境", "Cookies"] as const;
+const NAV_PROJECT = ["通用", "环境", "Cookies", "AI"] as const;
 const NAV_APP = ["主题", "代理", "快捷键", "关于"] as const;
 const SETTINGS_NAV = [...NAV_PROJECT, ...NAV_APP] as const;
 export type SettingsSection = (typeof SETTINGS_NAV)[number];
@@ -1239,6 +1240,8 @@ function SettingsPage({
   onProxyChange,
   wsSettings,
   onWsSettingsChange,
+  aiAutoSetup,
+  onAiAutoSetupChange,
 }: {
   environments: Record<string, Record<string, string>>;
   onChange: (next: Record<string, Record<string, string>>) => void;
@@ -1260,6 +1263,8 @@ function SettingsPage({
   onProxyChange: (next: ProxyConfig) => void;
   wsSettings: WorkspaceSettings;
   onWsSettingsChange: (next: WorkspaceSettings) => void;
+  aiAutoSetup: boolean;
+  onAiAutoSetupChange: (next: boolean) => void;
 }) {
   const NAV = SETTINGS_NAV;
   const setSection = onSectionChange;
@@ -1955,6 +1960,13 @@ function SettingsPage({
             onToggleEnabled={onShortcutsEnabledChange}
           />
         )}
+        {section === "AI" && (
+            <AiSettings
+              workspace={workspacePath}
+              autoSetup={aiAutoSetup}
+              onAutoSetupChange={onAiAutoSetupChange}
+            />
+          )}
         {section === "关于" && <AboutSettings />}
       </div>
       {cookieEdit && (
@@ -2505,6 +2517,10 @@ function App() {
   const onShortcutsEnabledChange = setScEnabled;
   // 文件树显示隐藏项（. 开头）。报告目录 .apicase/ 靠它可见，但这是通用能力——
   // 用户的 .env / .gitignore / .gitlab-ci.yml 本来也该能看到。
+  const [aiAutoSetup, setAiAutoSetup] = useState<boolean>(DEFAULT_APP_SETTINGS.aiAutoSetup);
+  // applyWorkspace 是普通函数，直接读 state 会拿到闭包捕获的旧值（同 saveRef 的既有模式）
+  const aiAutoSetupRef = useRef(aiAutoSetup);
+  aiAutoSetupRef.current = aiAutoSetup;
   const [showHidden, setShowHidden] = useState<boolean>(cachedSettings.showHiddenFiles);
   // 代理设置：控制发请求是否走系统代理
   const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(cachedSettings.proxy);
@@ -2532,6 +2548,7 @@ function App() {
       setScOverrides(s.shortcuts);
       setScEnabled(s.shortcutsEnabled);
       setShowHidden(s.showHiddenFiles);
+      setAiAutoSetup(s.aiAutoSetup);
       const alive = await filterExistingPaths(s.recentWorkspaces);
       setRecentWorkspaces((prev) => Array.from(new Set([...prev, ...alive])).slice(0, 10));
       lastSavedRef.current = JSON.stringify({ ...s, recentWorkspaces: alive });
@@ -2567,12 +2584,13 @@ function App() {
       shortcuts: scOverrides,
       shortcutsEnabled: scEnabled,
       showHiddenFiles: showHidden,
+      aiAutoSetup,
     };
     const serialized = JSON.stringify(next);
     if (serialized === lastSavedRef.current) return;
     lastSavedRef.current = serialized;
     saveAppSettings(next);
-  }, [recentWorkspaces, themeMode, proxyConfig, scOverrides, scEnabled, showHidden]);
+  }, [recentWorkspaces, themeMode, proxyConfig, scOverrides, scEnabled, showHidden, aiAutoSetup]);
 
   const mark = () => setDirty(true);
 
@@ -2933,6 +2951,18 @@ function App() {
     setLayout((l) => ({ ...l, left: true }));
     // 启动/切换文件系统监听：外部对该工作空间的增删改将实时回传
     invoke("watch_workspace", { path }).catch(() => {});
+    // 「设置 → AI → 自动补齐」开着时，缺什么补什么（命令行工具进 PATH + AGENTS.md）。
+    // 默认关，因为 AGENTS.md 会随 git 走——往别人的仓库里自动塞文件是冒犯。
+    // 全程静默：这是后台便利，不是需要用户确认的动作；失败也不打扰（设置页里看得到状态）。
+    if (aiAutoSetupRef.current) {
+      invoke("ai_status", { workspace: path })
+        .then(async (st) => {
+          const s = st as { linkState: string; agents: boolean };
+          if (s.linkState === "missing") await invoke("ai_install_cli").catch(() => {});
+          if (!s.agents) await invoke("ai_write_agents", { workspace: path }).catch(() => {});
+        })
+        .catch(() => {});
+    }
   }
 
   // 读取工作空间 application.yml：environment（挑选活动环境）+ settings（请求设置）
@@ -4950,6 +4980,8 @@ function App() {
                   onChange={onEnvChange}
                   workspacePath={workspace}
                   configPath={currentCasePath}
+                  aiAutoSetup={aiAutoSetup}
+                  onAiAutoSetupChange={setAiAutoSetup}
                   section={settingsSection}
                   onSectionChange={setSettingsSection}
                   shortcutOverrides={scOverrides}

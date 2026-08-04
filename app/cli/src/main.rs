@@ -80,6 +80,7 @@ async fn dispatch(cli: Cli) -> Result<u8, String> {
         Command::Report(args) => cmd_report(&global, args),
         Command::New(args) => cmd_new(&global, args),
         Command::Init(args) => cmd_init(&global, args),
+        Command::Zelf(c) => cmd_self(&global, c),
         Command::Docs(args) => cmd_docs(&global, args),
         Command::Mcp(_) => cmd_mcp(&global).await,
         Command::Completion(args) => {
@@ -541,12 +542,129 @@ fn cmd_new(g: &GlobalOpts, args: cli::NewArgs) -> Result<u8, String> {
     Ok(exit::OK)
 }
 
+/// 把一个目录准备好。三件事，**全部幂等**：
+///
+/// 1. `application.yml` —— 声明边界。有了它才有向上查找、才有环境变量的位置、
+///    才敢落报告与会话、才敢在省略目标时扫整个目录。
+/// 2. 命令行工具进 PATH —— AI Agent 读了 AGENTS.md 会直接敲 `apicase`，敲不到就是硬失败。
+/// 3. `AGENTS.md` —— 告诉 AI 这是什么、怎么用。
+///
+/// 后两件可以用 `--no-link` / `--no-agents` 关掉：有人只是要一个工作空间，不打算让 AI 碰。
 fn cmd_init(g: &GlobalOpts, args: cli::InitArgs) -> Result<u8, String> {
     let dir = args.dir.or_else(|| g.workspace.clone()).unwrap_or_else(|| PathBuf::from("."));
     Workspace::init(&dir)?;
     let root = dir.canonicalize().unwrap_or(dir);
-    println!("已初始化工作空间：{}", root.display());
-    println!("{}", Style::for_stdout(g.color).dim("下一步：apicase new 用例名 && apicase run"));
+    let style = Style::for_stdout(g.color);
+    println!("{} {}", style.pass("✓"), format_args!("工作空间 {}", root.display()));
+
+    // ② 命令行工具。装不上不算 init 失败——工作空间已经建好了，
+    //    这一步只是让 AI 敲得到；说清楚原因让用户自己决定就行。
+    let mut on_path = matches!(link_status(), Some(apicase_core::cli_link::LinkStatus::Installed { .. }));
+    if !args.no_link && !on_path {
+        match self_source().map(|s| apicase_core::cli_link::install(&s)) {
+            Some(Ok(r)) => {
+                on_path = true;
+                println!("{} 命令行工具 {}", style.pass("✓"), r.link.display());
+                if r.needs_path_setup {
+                    on_path = false; // 装了但敲不到，AGENTS.md 仍要带兜底
+                    println!("  {}", style.warn(&format!(
+                        "{} 不在 PATH 里，请加进 shell 配置后重开终端",
+                        r.link.parent().map(|p| p.display().to_string()).unwrap_or_default()
+                    )));
+                }
+            }
+            Some(Err(e)) => println!("{} 命令行工具：{}", style.warn("!"), style.dim(&e)),
+            None => {}
+        }
+    } else if on_path {
+        println!("{} 命令行工具已在 PATH 里", style.pass("✓"));
+    }
+
+    // ③ AGENTS.md
+    if !args.no_agents {
+        use apicase_core::agents::Written;
+        match apicase_core::agents::write(&root, on_path)? {
+            Written::Unchanged => println!("{} AGENTS.md 已是最新", style.pass("✓")),
+            Written::Created => println!("{} AGENTS.md", style.pass("✓")),
+            Written::Appended => println!("{} AGENTS.md（已追加 apicase 段落）", style.pass("✓")),
+            Written::Updated => println!("{} AGENTS.md（已更新 apicase 段落）", style.pass("✓")),
+        }
+    }
+
+    println!("\n{}", style.dim("下一步：apicase new 用例名 && apicase run"));
+    Ok(exit::OK)
+}
+
+/// 自己这个可执行文件的真实路径——`self install` 就是把它接进 PATH。
+fn self_source() -> Option<PathBuf> {
+    std::env::current_exe().ok().map(|p| p.canonicalize().unwrap_or(p))
+}
+
+fn link_status() -> Option<apicase_core::cli_link::LinkStatus> {
+    self_source().map(|s| apicase_core::cli_link::status(&s))
+}
+
+fn cmd_self(g: &GlobalOpts, command: cli::SelfCommand) -> Result<u8, String> {
+    use apicase_core::cli_link::LinkStatus;
+    let style = Style::for_stdout(g.color);
+    let source = self_source().ok_or("取不到自身路径")?;
+
+    match command {
+        cli::SelfCommand::Status => {
+            let json = output_format(g) == Format::Json;
+            let st = apicase_core::cli_link::status(&source);
+            if json {
+                let v = match &st {
+                    LinkStatus::Installed { link } => serde_json::json!(
+                        { "state": "installed", "link": link, "source": source }),
+                    LinkStatus::Foreign { link } => serde_json::json!(
+                        { "state": "foreign", "link": link, "source": source }),
+                    LinkStatus::Missing { target, needs_path_setup } => serde_json::json!(
+                        { "state": "missing", "suggested": target, "needsPathSetup": needs_path_setup,
+                          "source": source }),
+                };
+                println!("{}", json_pretty(&v)?);
+            } else {
+                match st {
+                    LinkStatus::Installed { link } => {
+                        println!("{} 已安装  {}", style.pass("✓"), link.display());
+                        println!("  {}", style.dim(&format!("→ {}", source.display())));
+                    }
+                    LinkStatus::Foreign { link } => {
+                        println!("{} {} 是另一个 apicase，不是这一份", style.warn("!"), link.display());
+                        println!("  {}", style.dim(&format!("这一份在 {}", source.display())));
+                    }
+                    LinkStatus::Missing { target, needs_path_setup } => {
+                        println!("{} 未安装", style.dim("○"));
+                        if let Some(t) = target {
+                            println!("  {}", style.dim(&format!("建议装到 {}", t.display())));
+                            if needs_path_setup {
+                                println!("  {}", style.warn("该目录还不在 PATH 里，装完需要自行加入"));
+                            }
+                        }
+                        println!("  {}", style.dim("运行 apicase self install 安装"));
+                    }
+                }
+            }
+        }
+        cli::SelfCommand::Install => {
+            let r = apicase_core::cli_link::install(&source)?;
+            if r.already {
+                println!("{} 早已安装  {}", style.pass("✓"), r.link.display());
+            } else {
+                println!("{} 已安装  {}", style.pass("✓"), r.link.display());
+            }
+            if r.needs_path_setup {
+                let dir = r.link.parent().map(|p| p.display().to_string()).unwrap_or_default();
+                println!("\n{}", style.warn(&format!("{dir} 不在 PATH 里。加进 shell 配置后重开终端：")));
+                println!("  {}", style.dim(&format!("echo 'export PATH=\"{dir}:$PATH\"' >> ~/.zshrc")));
+            }
+        }
+        cli::SelfCommand::Uninstall => match apicase_core::cli_link::uninstall(&source)? {
+            Some(link) => println!("{} 已移除  {}", style.pass("✓"), link.display()),
+            None => println!("{}", style.dim("本来就没装")),
+        },
+    }
     Ok(exit::OK)
 }
 

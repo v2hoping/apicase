@@ -112,7 +112,9 @@ for path, name, keys in sorted(calls, key=lambda c: (c[1], c[0])):
         opt_note = "".join(f" +可选{a}" for a, o in cmds[name] if o and a not in keys)
         print(f"  ✓ {name:20} {keys if keys else '（无参数）'}{opt_note}")
 
-registered = set(re.findall(r'\b(?:exec|app|cookies|fs|watch|terminal)::(\w+),', pathlib.Path('src-tauri/src/lib.rs').read_text()))
+# 不写死模块名：新增一个 commands 子模块时，这里若忘了跟着改，
+# 表现是「明明注册了却报未注册」——白名单本身成了误报源。按 `模块::函数,` 的形状匹配即可。
+registered = set(re.findall(r'\b[a-z_]+::(\w+),', pathlib.Path('src-tauri/src/lib.rs').read_text()))
 called = {c[1] for c in calls}
 print(f"\n定义了 {len(cmds)} 个命令，注册 {len(registered)} 个，前端调用 {len(called)} 个")
 missing_reg = sorted(set(cmds) - registered)

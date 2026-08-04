@@ -10,7 +10,7 @@
 
 mod commands;
 
-use commands::{app, cookies, exec, fs, terminal, watch};
+use commands::{ai, app, cookies, exec, fs, terminal, watch};
 
 pub fn run() {
     tauri::Builder::default()
@@ -37,6 +37,11 @@ pub fn run() {
             cookies::save_cookie,
             cookies::delete_cookie,
             cookies::clear_cookies,
+            // 设置页「AI」：命令行工具接进 PATH / 生成 AGENTS.md
+            ai::ai_status,
+            ai::ai_install_cli,
+            ai::ai_uninstall_cli,
+            ai::ai_write_agents,
             // 应用级
             app::init_workspace,
             app::startup_workspace,
