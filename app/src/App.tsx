@@ -426,6 +426,23 @@ const SETTINGS_NAV_ICONS: Record<string, ReactNode> = {
       <path fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" d="M4 6.5h.01M6.4 6.5h.01M8.8 6.5h.01M11.2 6.5h.01M5 9.5h6" />
     </>
   ),
+  // AI：双闪光（sparkles）—— 当下 AI 的通用视觉符号，用户零学习成本。
+  // **单颗星不行**：那会被读成「收藏 / 星标」，双星才指向 AI。
+  // 大星描边 + 小星实心，是本组一贯的手法（同 Cookies 的豆子、关于的 i 点）——
+  // 纯描边的小星在 16px 下内部没有空隙，糊成一个块；实心反而更清楚。
+  // 坐标留了 0.7 的边距：描边宽 1.3 会向外扩 0.65，贴边画会被 viewBox 裁掉一线。
+  AI: (
+    <>
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+        d="M6.4 2.4 Q7.2 7.5 12.1 8.3 Q7.2 9.1 6.4 14.2 Q5.6 9.1 0.7 8.3 Q5.6 7.5 6.4 2.4 Z"
+      />
+      <path fill="currentColor" d="M12.9 1 Q13.25 2.9 15.2 3.3 Q13.25 3.7 12.9 5.6 Q12.55 3.7 10.6 3.3 Q12.55 2.9 12.9 1 Z" />
+    </>
+  ),
   // 关于：信息 i
   关于: (
     <>
