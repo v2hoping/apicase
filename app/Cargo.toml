@@ -1,15 +1,19 @@
 # Cargo workspace 根。
 #
-# 两个成员：
-#   core/      —— apicase-core：执行内核（零 GUI / 零 Tauri 依赖）
-#   src-tauri/ —— 桌面壳：Tauri 命令层，薄薄一层转发到 core
+# 三个成员，包名对齐（`cargo build -p <包名>` 因此成对）：
+#   core/      —— apicase-core    ：执行内核（零 GUI / 零 Tauri 依赖）
+#   cli/       —— apicase-cli     ：命令行与 MCP 服务器，产物是 `apicase`
+#   src-tauri/ —— apicase-desktop ：桌面壳，Tauri 命令层，薄薄一层转发到 core
 #
-# 建 workspace 而非 path 依赖，是为了让二者共用同一份 Cargo.lock 与 target/：
+# 建 workspace 而非 path 依赖，是为了让三者共用同一份 Cargo.lock 与 target/：
 # core 的依赖（reqwest / tokio 等）只编译一次，`cargo test -p apicase-core`
 # 不会因为独立 target 目录而把整棵依赖树重编一遍。
-# 将来的 `cli/`（apicase run）作为第三个成员加进来即可，无需再动构建结构。
+#
+# **cli 与 src-tauri 是平行的两层外壳**，互不依赖：CLI 因此不会把整个 WebView 框架
+# 拖进编译，也才能在没装桌面环境的机器上跑起来（那种机器上 Tauri 二进制连动态链接
+# 都过不去，压根没有「提示原因」的机会）。
 [workspace]
-members = ["core", "src-tauri"]
+members = ["cli", "core", "src-tauri"]
 resolver = "2"
 
 # 版本与依赖版本在此统一，成员用 `.workspace = true` 继承——
@@ -27,11 +31,24 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # YAML：case 文件的解析入口。序列化不用它——输出格式由 core 自己的 emitter 决定（见 core/src/yaml/emit.rs）
 serde_yaml = "0.9"
 # HTTP 客户端：rustls 避免本地 OpenSSL 依赖，利于跨平台
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "multipart"] }
+# cookies：装自定义 cookie_provider 用（重定向链上的 Set-Cookie 与回带只有 reqwest 内部看得见）
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "multipart", "cookies"] }
+# Cookie jar：RFC 6265 的域/路径匹配、过期、公共后缀防护。这套规则自己写的每一种错法，
+# 表现都是「某个 cookie 莫名其妙没带上」，极难排查——用 reqwest 官方示例同款的实现。
+cookie_store = "0.22"
 tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "macros"] }
 base64 = "0.22"
 md5 = "0.7"
 regex = "1"
+
+# ── 以下只有 cli 用到 ──────────────────────────────
+# 命令行解析：Rust 生态的事实标准，顺带带来规范的 --help、子命令与 shell 补全生成。
+# 这些手写很快会失控，而「遵循业界规范」正是 CLI 的核心诉求。
+clap = { version = "4", features = ["derive", "wrap_help"] }
+clap_complete = "4"
+# 本地时区偏移（报告文件名的时间戳是给人看的，UTC 会让下午三点跑的那份写着 07）。
+# core 仍不引时区库——它产出的是 UTC 的 ISO 时间戳，跨时区归档用。
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # 发布构建：批量运行是 CPU + IO 混合负载，LTO 与单 CGU 对执行内核有实打实的收益。
 # 不设 `panic = "abort"`：桌面应用里一个后台线程 panic 不该连坐整个进程，

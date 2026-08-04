@@ -9,31 +9,50 @@ use tauri::{AppHandle, Manager};
 
 /// Tauri 命令：把一个目录初始化为 apicase 工作空间。
 /// 工作空间根需有 `application.yml`（工作空间配置文件）；若不存在则写入一份初始模板。
+///
+/// 转发给 core —— 模板内容与「什么算工作空间」的判据只该有一份，`apicase init` 走的是同一个函数。
 #[tauri::command]
 pub fn init_workspace(path: String) -> Result<(), String> {
     let dir = std::path::Path::new(&path);
     if !dir.is_dir() {
         return Err(format!("目录不存在: {path}"));
     }
-    let cfg = dir.join("application.yml");
-    if !cfg.exists() {
-        let content = "# apicase 工作空间配置\n\
-# environment：支持多套环境，可切换（dev / test / prod…）\n\
-environment:\n  default: {}\n";
-        std::fs::write(&cfg, content).map_err(|e| format!("写入 application.yml 失败: {e}"))?;
-    }
-    Ok(())
+    apicase_core::workspace::Workspace::init(dir)
+}
+
+/// Tauri 命令：启动参数里指定的工作空间（`Apicase /path/to/ws`）。
+///
+/// 这是 **`apicase gui <路径>` 落地的一半**：CLI 找到桌面端后把工作空间作为参数传进来，
+/// 界面起来就直接进那个目录，而不是停在「请选择工作空间」。顺带也让
+/// 「把目录拖到应用图标上」这类系统集成有了着落。
+///
+/// **只认「存在且是目录」的参数**，其余一律忽略：macOS 从 Finder 启动会塞一个
+/// `-psn_0_123456`（进程序列号），Windows / Linux 的桌面项也可能带自己的开关。
+/// 逐个筛而不是取 `argv[1]`，这些参数出现的位置并不固定。
+#[tauri::command]
+pub fn startup_workspace() -> Option<String> {
+    pick_workspace_arg(std::env::args().skip(1))
+}
+
+/// argv → 工作空间路径。抽成纯函数是为了能测：读 `std::env::args()` 的版本在单测里没法喂参数，
+/// 而「哪些参数该跳过」正是这里唯一容易写错的地方。
+fn pick_workspace_arg(args: impl Iterator<Item = String>) -> Option<String> {
+    args.map(std::path::PathBuf::from)
+        .find(|p| p.is_dir())
+        // 规范化：CLI 可能传的是相对路径，而界面里一切都按绝对路径走
+        .map(|p| p.canonicalize().unwrap_or(p).to_string_lossy().into_owned())
 }
 
 /// 应用设置文件路径：应用配置目录下的 settings.json。
 /// 该目录只按应用 identifier 定位（与启动方式无关），跨 dev / 打包一致。
 /// macOS: ~/Library/Application Support/com.apicase.app/settings.json
-fn app_settings_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("获取应用配置目录失败: {e}"))?;
-    Ok(dir.join("settings.json"))
+///
+/// **走 core 的实现而不是 Tauri 的 `PathResolver`**：CLI 也要读这个文件里的代理设置
+/// （否则「界面里设了直连、CLI 照样走系统代理」），而 CLI 里没有 Tauri。
+/// 两份路径推导必然漂移，而漂移的表现是「用户的设置凭空丢了」——
+/// 所以只留一份，桌面端跟着用。下方有测试比对两者的结果。
+fn app_settings_path(_app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    apicase_core::paths::app_settings_file().ok_or_else(|| "获取应用配置目录失败".to_string())
 }
 
 /// 应用侧的存储位置（设置页「通用 → 位置」展示用）。
@@ -199,6 +218,60 @@ pub fn system_info() -> SystemInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **core 的配置目录推导必须与 Tauri 的逐字一致**。
+    ///
+    /// 桌面端此前用 `PathResolver::app_config_dir()`，现在改走 `core::paths`——
+    /// 因为 CLI 也要读同一个 `settings.json` 里的代理设置，而 CLI 里没有 Tauri。
+    /// 两份推导一旦漂移，用户看到的是「设置凭空丢了」（其实是读了另一个位置），
+    /// 而且不会有任何报错。这条断言就是为它准备的。
+    ///
+    /// 比的是**配置根**（`config_dir()`，不含 identifier）——mock app 的 identifier
+    /// 是空串，用 `app_config_dir()` 比会被那个空串的 join 干扰。
+    /// identifier 那一层是双方共用的常量，不会漂。
+    #[test]
+    fn core_config_dir_matches_tauri() {
+        let app = tauri::test::mock_app();
+        let tauri_base = app.path().config_dir().expect("Tauri 应能给出配置根");
+        let from_core = apicase_core::paths::app_config_dir().expect("core 应能给出配置目录");
+
+        assert_eq!(
+            Some(tauri_base.as_path()),
+            from_core.parent(),
+            "配置根不一致：Tauri 给 {}，core 给 {}",
+            tauri_base.display(),
+            from_core.display()
+        );
+        assert!(
+            from_core.ends_with(apicase_core::paths::APP_IDENTIFIER),
+            "core 的目录要以 identifier 结尾：{}",
+            from_core.display()
+        );
+    }
+
+    /// 启动参数里只认「存在且是目录」的那一个：macOS 从 Finder 启动会塞 `-psn_0_123456`，
+    /// 桌面项也可能带自己的开关。取 argv[1] 就会把这些当成工作空间。
+    #[test]
+    fn startup_arg_picks_the_only_real_directory() {
+        let base = std::env::temp_dir().join("apicase-startup-arg");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("建目录");
+        std::fs::write(base.join("a.yml"), b"x").expect("写文件");
+        let dir = base.to_string_lossy().into_owned();
+        let want = base.canonicalize().unwrap_or(base.clone()).to_string_lossy().into_owned();
+
+        let got = pick_workspace_arg(
+            ["-psn_0_123456".into(), "--flag".into(), "/绝不存在的目录".into(), dir.clone()].into_iter(),
+        );
+        assert_eq!(got.as_deref(), Some(want.as_str()), "要跳过开关与不存在的路径");
+
+        // 文件不是工作空间
+        assert!(pick_workspace_arg([base.join("a.yml").to_string_lossy().into_owned()].into_iter()).is_none());
+        // 什么都没给 = 停在「请选择工作空间」，不是错
+        assert!(pick_workspace_arg(std::iter::empty()).is_none());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     /// list_cert_files：按扩展名筛、递归、返回相对路径、跳过隐藏项与大目录（无需联网）
     #[test]

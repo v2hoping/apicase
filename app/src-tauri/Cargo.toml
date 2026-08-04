@@ -1,5 +1,7 @@
+# 包名与另两个成员对齐：apicase-core / apicase-cli / apicase-desktop。
+# 脚手架给的默认名是 `app`，那会让 `cargo build -p app` 与 `-p apicase-cli` 不成对。
 [package]
-name = "app"
+name = "apicase-desktop"
 description = "apicase — API 调试、管理与用例编排桌面应用"
 version.workspace = true
 edition.workspace = true
@@ -8,11 +10,17 @@ authors.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "app_lib"
+# `_lib` 后缀不是冗余：库名与 bin 名必须不同，否则 Windows 上会冲突
+# （见 https://github.com/rust-lang/cargo/issues/8519）。`main.rs` 按这个名字调 run()。
+name = "apicase_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# 二进制名与包名同名，本可省略这一段；显式写出来是因为**它不能叫 `apicase`**——
+# macOS 与 Windows 的文件系统默认大小写不敏感，与 CLI 同名会在同一个目录里撞成一个文件。
+# 打包后 macOS bundle 内的可执行名另由 `tauri.conf.json` 的 productName 决定（`Apicase`）。
+[[bin]]
+name = "apicase-desktop"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -34,3 +42,6 @@ portable-pty = "0.9"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# `test` feature 提供 mock_app()，用于比对 core 的配置目录推导与 Tauri 自己的是否一致。
+# 两者一旦漂移，表现是「用户的设置凭空丢了」（其实是读了另一个位置）。
+tauri = { version = "2", features = ["test"] }

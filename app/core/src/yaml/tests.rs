@@ -492,6 +492,59 @@ fn broken_config_falls_back_to_defaults() {
     assert_eq!(parse_settings("settings:\n  timeoutMs: 很久\n").timeout_ms, 0);
     // 只有显式 false 才关校验
     assert!(parse_settings("settings:\n  verifySsl: 随便\n").verify_ssl);
+    // 失败传播同理：只有显式 true 才放行，默认（阻断）是更安全的一侧
+    for bad in ["随便", "'true'", "1"] {
+        let s = parse_settings(&format!("settings:\n  continueOnAssertionFailure: {bad}\n"));
+        assert!(!s.continue_on_assertion_failure, "写坏了应按阻断处理：{bad}");
+    }
+    assert!(parse_settings("settings:\n  continueOnAssertionFailure: true\n").continue_on_assertion_failure);
+    // cookie 同 verifySsl：只有显式 false 才关闭
+    assert!(parse_settings("settings:\n  cookies: 随便\n").cookies);
+    assert!(!parse_settings("settings:\n  cookies: false\n").cookies);
+}
+
+/// cookie 默认开，故只有**关闭**时才落盘
+#[test]
+fn cookies_only_persist_when_off() {
+    let base = "environment:\n  dev: {}\n";
+    let envs = parse_environments(base);
+
+    let out = dump_application_config(base, &envs, Some(&WorkspaceSettings::default()));
+    assert!(!out.contains("cookies"), "默认（开）不该落盘：\n{out}");
+
+    let off = WorkspaceSettings { cookies: false, ..Default::default() };
+    let out = dump_application_config(base, &envs, Some(&off));
+    assert!(out.contains("cookies: false"), "关闭后要落盘：\n{out}");
+    assert!(!parse_settings(&out).cookies, "读得回来");
+}
+
+/// 把一项从「非默认」改回「默认」时，文件里的旧值必须被清掉。
+/// 默认值不落盘 ⇒ 写回时没有键去覆盖它，漏清就表现为「界面上关掉了、重开又变回来」。
+#[test]
+fn switching_a_setting_back_to_default_clears_the_stale_key() {
+    let base = "settings:\n  continueOnAssertionFailure: true\n  cookies: false\n";
+    let envs = parse_environments(base);
+    let out = dump_application_config(base, &envs, Some(&WorkspaceSettings::default()));
+
+    let back = parse_settings(&out);
+    assert!(!back.continue_on_assertion_failure, "旧的 true 不该残留：\n{out}");
+    assert!(back.cookies, "旧的 false 不该残留：\n{out}");
+}
+
+/// 写默认值的键不落盘（同 case 序列化的裁剪风格）
+#[test]
+fn continue_on_assertion_failure_only_persists_when_on() {
+    let base = "environment:\n  dev: {}\n";
+    let envs = parse_environments(base);
+
+    let off = WorkspaceSettings::default();
+    let out = dump_application_config(base, &envs, Some(&off));
+    assert!(!out.contains("continueOnAssertionFailure"), "默认值不该落盘：\n{out}");
+
+    let on = WorkspaceSettings { continue_on_assertion_failure: true, ..Default::default() };
+    let out = dump_application_config(base, &envs, Some(&on));
+    assert!(out.contains("continueOnAssertionFailure: true"), "开启后要落盘：\n{out}");
+    assert!(parse_settings(&out).continue_on_assertion_failure, "读得回来");
 }
 
 /// 写回时必须保留原文里我们不认识的顶层键 —— 否则一次可视化保存就把它们吃掉了

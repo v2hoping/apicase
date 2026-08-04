@@ -1,6 +1,6 @@
 use super::*;
 use crate::http::{ProxyConfig, RequestOptions};
-use crate::testutil::{MockServer, Reply};
+use crate::testutil::{MockServer, Recorded, Reply};
 use serde_json::json;
 
 /// 一律走 `proxy: none`：开发机上常设 HTTPS_PROXY，不绕开就根本到不了本地 mock。
@@ -11,6 +11,7 @@ fn direct(env_vars: &[(&str, &str)]) -> RunOpts {
     o.client = ClientConfig {
         proxy: Some(ProxyConfig { mode: "none".into(), url: None }),
         options: Some(RequestOptions { timeout_ms: Some(10_000), ..Default::default() }),
+        ..Default::default()
     };
     o
 }
@@ -53,6 +54,191 @@ fn topo_order_survives_cycles() {
     // 指向不存在的 step：忽略该依赖，不丢掉这一步
     let steps = steps_with_deps(&[("a", &["幽灵"])]);
     assert_eq!(topo_order(&steps).len(), 1);
+}
+
+/// `--step` 的地基：点名一个 step，上游要跟着进来，无关分支不进来
+#[test]
+fn with_dependencies_pulls_in_the_upstream_closure() {
+    // login → order → pay，另有一条独立的 health
+    let steps = steps_with_deps(&[
+        ("login", &[]),
+        ("order", &["login"]),
+        ("pay", &["order"]),
+        ("health", &[]),
+    ]);
+    let ids = |v: Vec<usize>| -> Vec<&str> { v.into_iter().map(|i| steps[i].id.as_str()).collect() };
+
+    assert_eq!(
+        ids(with_dependencies(&steps, &["pay".into()])),
+        vec!["login", "order", "pay"],
+        "隔着两层的上游也要补齐，且按拓扑序"
+    );
+    assert_eq!(ids(with_dependencies(&steps, &["health".into()])), vec!["health"], "独立分支不带别人进来");
+    assert_eq!(
+        ids(with_dependencies(&steps, &["health".into(), "order".into()])),
+        vec!["login", "order", "health"],
+        "多个点名取并集，顺序仍由拓扑序决定"
+    );
+    assert!(with_dependencies(&steps, &["幽灵".into()]).is_empty(), "认不出的 id 忽略");
+    assert!(with_dependencies(&steps, &[]).is_empty());
+}
+
+/// 成环时不能死循环（环是配置错误，但 --step 不该因此挂住）
+#[test]
+fn with_dependencies_survives_cycles() {
+    let steps = steps_with_deps(&[("a", &["b"]), ("b", &["a"]), ("c", &[])]);
+    assert_eq!(with_dependencies(&steps, &["a".into()]).len(), 2, "环里的两个都收下，收一次");
+}
+
+// ── 跳过传播 ────────────────────────────────────────
+
+/// 传播沿依赖闭包走：连累链上的每一个，且**根因始终指向最上面那个**。
+#[test]
+fn blocking_propagates_along_the_dependency_closure() {
+    // a → b → c 一条链，d 独立
+    let steps = steps_with_deps(&[("a", &[]), ("b", &["a"]), ("c", &["b"]), ("d", &[])]);
+    let out = blocked_steps(&steps, &["a".to_string()]);
+    assert_eq!(
+        out,
+        vec![
+            BlockedStep { id: "b".into(), cause: "a".into() },
+            BlockedStep { id: "c".into(), cause: "a".into() },
+        ],
+        "c 隔了一层也要被连累，且根因是 a 而不是 b"
+    );
+}
+
+/// DAG 的价值所在：独立分支不该被另一条分支连累
+#[test]
+fn independent_branches_are_untouched() {
+    // 左：a → b；右：x → y。两条互不相干
+    let steps = steps_with_deps(&[("a", &[]), ("b", &["a"]), ("x", &[]), ("y", &["x"])]);
+    let out = blocked_steps(&steps, &["a".to_string()]);
+    assert_eq!(out.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), vec!["b"]);
+}
+
+/// 多个上游只要有一个挂了就跳过（等价于 GitHub Actions 的 `needs` 语义）
+#[test]
+fn any_failed_dependency_blocks() {
+    let steps = steps_with_deps(&[("a", &[]), ("b", &[]), ("c", &["a", "b"])]);
+    let out = blocked_steps(&steps, &["b".to_string()]);
+    assert_eq!(out, vec![BlockedStep { id: "c".into(), cause: "b".into() }]);
+    // 没有阻断源时谁都不跳
+    assert!(blocked_steps(&steps, &[]).is_empty());
+}
+
+/// 一个 case：a 失败 → b、c 被连累；d 独立照跑。
+/// 返回 (各 step 的 (id, 状态, skipReason)、服务端实际收到的路径)
+async fn run_chain_with_switch(
+    continue_on_assertion_failure: bool,
+    a_path: &str,
+) -> (Vec<(String, StepStatus, Option<String>)>, Vec<String>, CaseStatus) {
+    let srv = MockServer::start(|r: &Recorded| match r.path.as_str() {
+        "/bad" => Reply::json(r#"{"code":1}"#), // 200 但业务码不对 → 断言失败
+        _ => Reply::json(r#"{"code":0}"#),
+    })
+    .await;
+    // a 挂 → b → c；d 独立
+    let text = format!(
+        "apicase: v0.1\nsteps:\n\
+         \x20 - id: a\n    request:\n      method: GET\n      url: {b}{a_path}\n\
+         \x20   assertions:\n      - target: res.body.code\n        op: eq\n        value: '0'\n\
+         \x20 - id: b\n    dependsOn:\n      - a\n    request:\n      method: GET\n      url: {b}/b\n\
+         \x20 - id: c\n    dependsOn:\n      - b\n    request:\n      method: GET\n      url: {b}/c\n\
+         \x20 - id: d\n    request:\n      method: GET\n      url: {b}/d\n",
+        b = srv.base
+    );
+    let mut opts = direct(&[]);
+    opts.continue_on_assertion_failure = continue_on_assertion_failure;
+    let r = run_case(&text, "chain.yml", &opts, &Cancel::new()).await;
+    let steps = r.steps.iter().map(|s| (s.id.clone(), s.status, s.skip_reason.clone())).collect();
+    let mut paths: Vec<String> = srv.requests().iter().map(|q| q.path.clone()).collect();
+    paths.sort();
+    (steps, paths, r.status)
+}
+
+/// `run_case` 的流式传播与 `blocked_from_outcomes` 的批量传播**必须给出同一答案**。
+///
+/// 两者是同一条规则的两份代码：前者边跑边算（每跑完一步才知道状态），后者从结果集
+/// 一次算完（前端驱动的调试运行用它）。没有这条测试，改其中一处就会让
+/// 「界面里跑」和「批量跑」悄悄分道扬镳——正是执行内核下沉要消灭的那种漂移。
+#[tokio::test]
+async fn streaming_and_batch_propagation_agree() {
+    for switch in [false, true] {
+        let (steps, _, _) = run_chain_with_switch(switch, "/bad").await;
+        let from_run: Vec<&str> = steps
+            .iter()
+            .filter(|(_, st, _)| *st == StepStatus::Skipped)
+            .map(|(id, _, _)| id.as_str())
+            .collect();
+
+        // 拿同一批结果喂给批量传播。**只回报真正跑过的**——跳过的是它的产出，不是输入
+        let specs = steps_with_deps(&[("a", &[]), ("b", &["a"]), ("c", &["b"]), ("d", &[])]);
+        let outcomes: Vec<StepOutcome> = steps
+            .iter()
+            .filter(|(_, st, _)| *st != StepStatus::Skipped)
+            .map(|(id, st, _)| StepOutcome { id: id.clone(), status: *st })
+            .collect();
+        let from_batch: Vec<String> =
+            blocked_from_outcomes(&specs, &outcomes, switch).into_iter().map(|b| b.id).collect();
+
+        assert_eq!(from_run, from_batch, "开关={switch} 时两条路径应给出同一批跳过");
+    }
+}
+
+/// 默认行为：断言失败阻断下游，且**被跳过的节点仍进报告**
+#[tokio::test]
+async fn assertion_failure_blocks_downstream_by_default() {
+    let (steps, paths, status) = run_chain_with_switch(false, "/bad").await;
+    assert_eq!(
+        steps.iter().map(|(id, st, _)| (id.as_str(), *st)).collect::<Vec<_>>(),
+        vec![
+            ("a", StepStatus::Failed),
+            ("b", StepStatus::Skipped),
+            ("c", StepStatus::Skipped),
+            ("d", StepStatus::Passed),
+        ],
+        "b/c 被连累，d 是独立分支照跑"
+    );
+    // 根因指向 a，隔了一层的 c 也是
+    assert_eq!(steps[1].2.as_deref(), Some("上游 a 失败"));
+    assert_eq!(steps[2].2.as_deref(), Some("上游 a 失败"), "c 的根因是 a，不是 b");
+    assert_eq!(paths, vec!["/bad", "/d"], "b、c 的请求根本不该发出去");
+    // skipped 不稀释 case 状态——它该指向根因那一步
+    assert_eq!(status, CaseStatus::Failed);
+}
+
+/// 开关打开：断言失败不再阻断，整条链跑完
+#[tokio::test]
+async fn continue_on_assertion_failure_lets_the_chain_run() {
+    let (steps, paths, status) = run_chain_with_switch(true, "/bad").await;
+    assert!(
+        steps.iter().all(|(_, st, _)| *st != StepStatus::Skipped),
+        "开关打开后不该有跳过：{steps:?}"
+    );
+    assert_eq!(paths, vec!["/b", "/bad", "/c", "/d"], "四个请求都发出去了");
+    assert_eq!(status, CaseStatus::Failed, "断言仍然是没过的，只是不阻断");
+}
+
+/// **error 恒阻断**——开关只管断言失败，管不着"请求根本没发出去"
+#[tokio::test]
+async fn error_blocks_downstream_even_with_the_switch_on() {
+    let srv = MockServer::start(|_| Reply::json(r#"{"code":0}"#)).await;
+    // a 指向一个连不上的端口 → error
+    let text = format!(
+        "apicase: v0.1\nsteps:\n\
+         \x20 - id: a\n    request:\n      method: GET\n      url: http://127.0.0.1:1/a\n\
+         \x20 - id: b\n    dependsOn:\n      - a\n    request:\n      method: GET\n      url: {b}/b\n",
+        b = srv.base
+    );
+    let mut opts = direct(&[]);
+    opts.continue_on_assertion_failure = true;
+    let r = run_case(&text, "e.yml", &opts, &Cancel::new()).await;
+    assert_eq!(r.steps[0].status, StepStatus::Error);
+    assert_eq!(r.steps[1].status, StepStatus::Skipped, "error 不受开关影响");
+    assert_eq!(r.steps[1].skip_reason.as_deref(), Some("上游 a 失败"));
+    assert!(srv.requests().is_empty(), "下游请求不该打到被测服务上");
+    assert_eq!(r.status, CaseStatus::Error);
 }
 
 // ── 端到端：单个 case ───────────────────────────────
@@ -211,11 +397,14 @@ async fn case_vars_override_environment() {
     assert!(q.path.contains("w=%E7%94%A8%E4%BE%8B") || q.path.contains("w=用例"), "{}", q.path);
 }
 
-// ── 脱敏 ────────────────────────────────────────────
+// ── 凭据透传 ────────────────────────────────────────
 
-/// 报告里不能出现凭据原文，但下游 step 拿到的必须是原值
+/// 登录拿 token → 下游带着它发请求，**报告里记的是真实值**。
+///
+/// 脱敏已整体移除：报告是给自己和团队看的排查材料，掩码掉的恰恰是排查时要核对的东西。
+/// 代价是报告含明文凭据，**转发或提交前需自行判断**。
 #[tokio::test]
-async fn report_is_redacted_while_downstream_gets_the_real_value() {
+async fn credentials_flow_through_and_are_recorded_verbatim() {
     let srv = MockServer::start(|req| match req.path.as_str() {
         "/login" => Reply::json(r#"{"data":{"token":"S3CR3T-TOKEN-VALUE"}}"#),
         // 回显请求头：凭据被服务端原样吐回来，是最常见的泄漏路径
@@ -256,27 +445,27 @@ steps:
     let echo = srv.requests().into_iter().find(|q| q.path == "/echo").unwrap();
     assert_eq!(echo.header("authorization"), Some("Bearer S3CR3T-TOKEN-VALUE"));
 
-    // 而整份报告里搜不到原文
-    let dump = serde_json::to_string(&r).unwrap();
-    assert!(!dump.contains("S3CR3T-TOKEN-VALUE"), "报告里不该出现凭据原文：{dump}");
-    // 四条脱敏规则各自的落点
-    assert_eq!(r.steps[0].outputs.get("token"), Some(&json!("S3CR***")), "outputs 掩码");
+    // 报告的四个落点都是原值——凭据在哪一步变成什么，逐处可核对
+    assert_eq!(r.steps[0].outputs.get("token"), Some(&json!("S3CR3T-TOKEN-VALUE")), "outputs 存原值");
     let req_auth = r.steps[1].request.as_ref().unwrap().headers.iter().find(|h| h.key == "Authorization").unwrap();
-    assert_eq!(req_auth.value, "Bearer S3CR***", "请求头掩码");
+    assert_eq!(req_auth.value, "Bearer S3CR3T-TOKEN-VALUE", "请求头存原值");
     let body = r.steps[1].response.as_ref().unwrap().body.preview.as_ref().unwrap();
-    assert!(body.contains("***"), "响应体里的凭据字面值被替换：{body}");
+    assert!(body.contains("S3CR3T-TOKEN-VALUE"), "响应体原样：{body}");
 }
 
-/// 调试运行不脱敏也不截断——响应区要看的就是真实内容
+/// 调试运行**不截断**——响应区要看的就是完整内容。
+/// 截断只在写进报告时才有意义（单文件 HTML 会把报文体全内联）。
 #[tokio::test]
-async fn debug_mode_keeps_everything_raw() {
-    let srv = MockServer::start(|_| Reply::json(r#"{"access_token":"RAWTOKENVALUE"}"#)).await;
+async fn debug_mode_does_not_clip() {
+    let big = "x".repeat(200_000);
+    let srv = MockServer::start(move |_| Reply::json(format!(r#"{{"pad":"{big}"}}"#))).await;
     let mut opts = RunOpts::for_debug(EnvironmentInfo { name: "d".into(), vars: BTreeMap::new() });
     opts.client = direct(&[]).client;
     let text = format!("apicase: v0.1\nsteps:\n  - id: a\n    request:\n      method: GET\n      url: {}/x\n", srv.base);
     let r = run_case(&text, "d.yml", &opts, &Cancel::new()).await;
-    let body = r.steps[0].response.as_ref().unwrap().body.preview.as_ref().unwrap();
-    assert!(body.contains("RAWTOKENVALUE"), "调试运行不脱敏：{body}");
+    let b = &r.steps[0].response.as_ref().unwrap().body;
+    assert!(!b.truncated, "调试运行不截断");
+    assert!(b.bytes > 200_000);
 }
 
 /// 大响应体按字节截断，但 `bytes` 记原始大小
@@ -326,8 +515,8 @@ fn meta() -> BatchMeta {
             environment: "test".into(),
             concurrency: 1,
             stop_on_failure: false,
-            redact: true,
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            continue_on_assertion_failure: false,
         },
     }
 }
@@ -531,7 +720,7 @@ async fn connections_are_reused_across_cases() {
 
 // ── 认证（端到端）────────────────────────────────────
 
-/// OAuth 2.0：换一次 token，后续复用缓存；报告里 token 被掩码
+/// OAuth 2.0：换一次 token，后续复用缓存；报告里记的是真实 token
 ///
 /// 刻意**不调用 `clear_token_cache()`**：那清的是进程级缓存，会把并行跑的
 /// 别的测试正在用的条目一起清掉（表现为"莫名其妙多换了一次 token"）。
@@ -618,8 +807,9 @@ async fn digest_retries_with_the_challenge() {
     let r = run_case(&text, "d.yml", &direct(&[]), &Cancel::new()).await;
     assert_eq!(r.status, CaseStatus::Passed, "{r:#?}");
     assert_eq!(srv.request_count(), 2, "应当是「首发 401 + 带摘要重发」两次");
-    // 报告里记的是**实际发出去**的那一份（带摘要头），且已掩码
+    // 报告里记的是**实际发出去**的那一份（带摘要头）
     let auth = r.steps[0].request.as_ref().unwrap().headers.iter().find(|h| h.key == "Authorization");
-    assert!(auth.is_some(), "报告应记录实际发出的认证头");
-    assert!(auth.unwrap().value.contains("***"), "认证头要掩码：{:?}", auth);
+    let auth = auth.expect("报告应记录实际发出的认证头").value.as_str();
+    assert!(auth.starts_with("Digest "), "记的应是摘要头本身：{auth}");
+    assert!(auth.contains(r#"username="u""#), "摘要头内容原样可核对：{auth}");
 }

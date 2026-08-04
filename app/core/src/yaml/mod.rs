@@ -665,8 +665,20 @@ pub fn parse_settings(text: &str) -> WorkspaceSettings {
         use_custom_ca: st.get("useCustomCa") == Some(&Value::Bool(true)),
         ca_cert: s(st.get("caCert")).trim().to_string(),
         timeout_ms,
+        // 同 verifySsl：只有显式 false 才关闭。默认自动收发 cookie（对齐 Postman / Bruno）
+        cookies: st.get("cookies") != Some(&Value::Bool(false)),
+        // 同样只有显式 true 才启用：默认（阻断）是更安全的一侧——
+        // 上游挂了还往下发真实写请求，后果比多跳几个节点严重
+        continue_on_assertion_failure: st.get("continueOnAssertionFailure") == Some(&Value::Bool(true)),
     }
 }
+
+/// 可视化设置接管的键。**每加一个设置项都必须列进来**——写回时先清掉这些键再写
+/// `ser_settings` 的产出，而默认值不落盘，漏了的那个键就再也没人去覆盖它：
+/// 表现为「界面上关掉了，文件里仍是 true，重新打开又变回开」。
+/// （`continueOnAssertionFailure` 曾漏在这里，本期一并补上。）
+const MANAGED_SETTING_KEYS: [&str; 6] =
+    ["verifySsl", "useCustomCa", "caCert", "timeoutMs", "cookies", "continueOnAssertionFailure"];
 
 /// settings → YAML 映射；全为默认时返回 None，调用方据此整键不落盘。
 fn ser_settings(s: &WorkspaceSettings) -> Option<Map<String, Value>> {
@@ -682,6 +694,12 @@ fn ser_settings(s: &WorkspaceSettings) -> Option<Map<String, Value>> {
     }
     if s.timeout_ms > 0 {
         o.insert("timeoutMs".into(), json!(s.timeout_ms));
+    }
+    if !s.cookies {
+        o.insert("cookies".into(), json!(false));
+    }
+    if s.continue_on_assertion_failure {
+        o.insert("continueOnAssertionFailure".into(), json!(true));
     }
     (!o.is_empty()).then_some(o)
 }
@@ -701,10 +719,10 @@ pub fn dump_application_config(
         .unwrap_or_default();
     base.insert("environment".into(), Value::Object(environment.clone()));
     if let Some(st) = settings {
-        // 只接管自己认得的四个键：原文里其它手写键（未来字段 / 用户自定义）原样保留，
+        // 只接管自己认得的那几个键：原文里其它手写键（未来字段 / 用户自定义）原样保留，
         // 否则一次可视化保存就会把它们悄悄吃掉。
         let mut prev = base.get("settings").and_then(Value::as_object).cloned().unwrap_or_default();
-        for k in ["verifySsl", "useCustomCa", "caCert", "timeoutMs"] {
+        for k in MANAGED_SETTING_KEYS {
             prev.remove(k);
         }
         if let Some(next) = ser_settings(st) {

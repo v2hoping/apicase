@@ -1,7 +1,7 @@
 // 运行相关的类型 + IPC 封装。
 //
 // **执行引擎在 Rust**（`core/src/runner.rs`）：变量透传、请求组装、认证、发送、
-// 输出提取、断言、脱敏、报告渲染，一件不落。前端在这条链路上只做两件事——
+// 输出提取、断言、报告渲染，一件不落。前端在这条链路上只做两件事——
 // 把配置递下去，把结果画出来。
 //
 // 类型与 `core/src/report.rs` 的 serde 模型逐字段对齐（camelCase）。
@@ -39,8 +39,11 @@ export interface AssertRecord {
  * **failed 与 error 必须分辨**：前者是请求发出去了但断言没过（被测服务的问题），
  * 后者是请求本身失败（网络 / TLS / 超时 / 变量解析崩了，常是环境或用例自身的问题）。
  * 两者的排查方向完全不同，混成一个状态等于丢掉最有用的那点信息。
+ *
+ * skipped 是第三类：**这一步根本没跑**——上游挂了，它依赖的输入不存在。
+ * 既不是失败也不是通过，该是第三种颜色（对齐 TestNG 的 SKIP 语义）。
  */
-export type StepStatus = "passed" | "failed" | "error" | "running";
+export type StepStatus = "passed" | "failed" | "error" | "skipped" | "running";
 
 export interface StepResult {
   id: string;
@@ -62,6 +65,8 @@ export interface StepResult {
   outputs: Record<string, unknown>;
   assertions: AssertRecord[];
   error?: string;
+  /** skipped 时说明原因（形如「上游 login 失败」），指向**根因**而非直接上游 */
+  skipReason?: string;
 }
 
 export type CaseStatus = "passed" | "failed" | "error" | "skipped" | "running";
@@ -83,6 +88,11 @@ export interface RunSummary {
   error: number;
   skipped: number;
   assertions: { total: number; passed: number; failed: number };
+  /**
+   * 请求（step）维度的计数，与用例维度**分开**：用例级的 skipped 是「这个文件没跑」
+   * （读不到 / 不是有效用例），请求级的是「上游挂了没轮到它」。
+   */
+  steps: { total: number; passed: number; failed: number; error: number; skipped: number };
 }
 
 export interface RunOptions {
@@ -91,8 +101,9 @@ export interface RunOptions {
   environment: string;
   concurrency: number;
   stopOnFailure: boolean;
-  redact: boolean;
   maxBodyBytes: number;
+  /** 运行面板可临时覆盖工作空间配置，故必须记进报告——否则分不清是服务变了还是选项变了 */
+  continueOnAssertionFailure: boolean;
 }
 
 export interface RunReport {
@@ -103,7 +114,7 @@ export interface RunReport {
   durationMs: number;
   status: "running" | "done" | "cancelled";
   workspace: { name: string; root: string };
-  environment: { name: string; vars: Record<string, string> }; // 已脱敏
+  environment: { name: string; vars: Record<string, string> };
   options: RunOptions;
   summary: RunSummary;
   cases: CaseResult[];
@@ -124,6 +135,11 @@ export interface ClientConfig {
   /** url 仅 custom 模式带（见 proxy.ts 的 proxyPayload） */
   proxy?: { mode: ProxyConfig["mode"]; url?: string };
   options?: { verifySsl?: boolean; caCertPath?: string; timeoutMs?: number };
+  /**
+   * Cookie jar：开关 + 落盘位置（绝对路径）。**缺省 = 不启用**——
+   * 执行内核不猜工作空间在哪，「默认开」是工作空间设置那一层的默认，由这里显式下发。
+   */
+  cookies?: { enabled: boolean; jarPath?: string };
 }
 
 export interface RunOpts {
@@ -131,31 +147,49 @@ export interface RunOpts {
   /** case 之间的并发度；1 = 串行。case 内部的 step 恒按拓扑序串行。 */
   concurrency: number;
   stopOnFailure: boolean;
-  /** 报告会被转发 / 归档，故批量运行默认开；调试运行关掉——响应区要看真实内容 */
-  redact: boolean;
+  /**
+   * 断言失败是否**不**阻断下游 step。与 stopOnFailure 正交：
+   * 那个管「要不要继续跑后面的 case」，这个管「case 内部谁该跑」。
+   */
+  continueOnAssertionFailure: boolean;
   maxBodyBytes: number;
   client: ClientConfig;
 }
 
-/** 调试运行：**不脱敏、不截断**——响应区要看的就是真实内容。 */
-export function debugRunOpts(environment: EnvironmentInfo, client: ClientConfig): RunOpts {
+/**
+ * 调试运行：**不截断**——响应区要看的就是完整内容。
+ *
+ * 失败传播策略**跟工作空间配置走，不给运行前的选择**：调试是「改一行跑一次」的高频循环，
+ * 插在中间的对话框第三次就开始烦；而且用户往往是看到「上游挂在这儿」之后才知道
+ * 想不想看下游——运行前的选择框问的是一个此刻还答不上来的问题。
+ * 想单看某个被跳过的节点，点它自己的「发送」即可。
+ */
+export function debugRunOpts(
+  environment: EnvironmentInfo,
+  client: ClientConfig,
+  continueOnAssertionFailure = false,
+): RunOpts {
   return {
     environment,
     concurrency: 1,
     stopOnFailure: false,
-    redact: false,
+    continueOnAssertionFailure,
     maxBodyBytes: Number.MAX_SAFE_INTEGER,
     client,
   };
 }
 
-/** 批量运行：串行、失败继续、**脱敏开启**、报文体截断 64KB。 */
-export function batchRunOpts(environment: EnvironmentInfo, client: ClientConfig): RunOpts {
+/** 批量运行：串行、失败继续、报文体截断 64KB。 */
+export function batchRunOpts(
+  environment: EnvironmentInfo,
+  client: ClientConfig,
+  continueOnAssertionFailure = false,
+): RunOpts {
   return {
     environment,
     concurrency: 1,
     stopOnFailure: false,
-    redact: true,
+    continueOnAssertionFailure,
     maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
     client,
   };
@@ -183,7 +217,7 @@ export interface RunContext {
 
 export interface StepRun {
   step: StepResult;
-  /** **未脱敏**的输出，供同一个 case 内透传给下游 step */
+  /** 供同一个 case 内透传给下游 step */
   outputs: Record<string, unknown>;
 }
 
@@ -205,6 +239,35 @@ export function runStep(step: CaseStep, ctx: RunContext, opts: RunOpts): Promise
  */
 export function topoOrder(steps: CaseStep[]): Promise<number[]> {
   return invoke<number[]>("topo_order", { steps });
+}
+
+/** 一个被上游连累、不会执行的 step。`cause` 是**根因**（可能隔了好几层依赖）。 */
+export interface BlockedStep {
+  id: string;
+  cause: string;
+}
+
+/** 一个已跑完的 step 的结果。 */
+export interface StepOutcome {
+  id: string;
+  status: StepStatus;
+}
+
+/**
+ * 上游挂了之后，还有哪些 step 会被连累。
+ *
+ * 同 topoOrder：循环在前端，但**规则只有 Rust 一份**。这里只回报「每一步跑成了什么」，
+ * 「算不算阻断源」与「连累到谁」都在 Rust 判定——否则 blocks_downstream 那套规则
+ * 会有第二份表达，改开关语义时必然漏掉一处。
+ *
+ * `outcomes` 只放**真正执行过**的 step：被跳过的是本函数的产出，不必回报回来。
+ */
+export function blockedSteps(
+  steps: CaseStep[],
+  outcomes: StepOutcome[],
+  continueOnAssertionFailure: boolean,
+): Promise<BlockedStep[]> {
+  return invoke<BlockedStep[]>("blocked_steps", { steps, outcomes, continueOnAssertionFailure });
 }
 
 // ── 批量运行 ────────────────────────────────────────

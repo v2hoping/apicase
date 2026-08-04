@@ -1,0 +1,14 @@
+# cargo 别名：把开发期最常敲的两条命令缩短。
+#
+# 桌面端有 `npm run tauri dev`（vite + 窗口一起起，热重载）；命令行不需要那套——
+# 它只编 cli 与 core，不碰 Tauri，一次增量编译在秒级，直接重跑就行。
+
+[alias]
+# `cargo cli run -e dev` == `cargo run -q -p apicase-cli -- run -e dev`
+#
+# `-q` 去掉 cargo 自己的 "Compiling / Finished" 那两行：CLI 的输出里混进构建日志，
+# `cargo cli run --json | jq` 就直接崩了。构建**错误**仍会照常打到 stderr。
+cli = "run -q -p apicase-cli --"
+
+# 只编命令行（不碰 Tauri）。改完 core 想快速看编译过不过时用它。
+cli-check = "check -p apicase-cli -p apicase-core"

@@ -9,16 +9,27 @@
   <div class="progress" id="progress" hidden><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
   <div class="stats" id="stats"></div>
   <div class="toolbar">
-    <div class="seg">
-      <button data-filter="all" class="on">全部</button>
-      <button data-filter="failed">失败</button>
-      <button data-filter="passed">通过</button>
-      <button data-filter="skipped">跳过</button>
+    <!-- 整份报告的视图：可视化 / JSON / YAML。后两者是「把这份结果整个拿走」的出口 -->
+    <div class="seg view-seg">
+      <button data-view="visual" class="on">可视化</button>
+      <button data-view="json">JSON</button>
+      <button data-view="yaml">YAML</button>
     </div>
-    <input class="search" id="search" type="search" placeholder="搜索用例名 / 路径 / URL" autocomplete="off">
-    <span class="count-hint" id="count-hint"></span>
+    <!-- 筛选与搜索只对可视化有意义，切到源码视图时整条隐藏 -->
+    <div class="toolbar-visual" id="toolbar-visual">
+      <div class="seg">
+        <button data-filter="all" class="on">全部</button>
+        <button data-filter="failed">失败</button>
+        <button data-filter="passed">通过</button>
+        <button data-filter="skipped">跳过</button>
+      </div>
+      <input class="search" id="search" type="search" placeholder="搜索用例名 / 路径 / URL" autocomplete="off">
+      <span class="count-hint" id="count-hint"></span>
+    </div>
+    <button class="copy-btn" id="copy-all" hidden data-copy-all="1">复制全部</button>
   </div>
   <div class="cases" id="cases"></div>
   <div class="empty" id="empty">暂无结果</div>
+  <pre class="body raw-view" id="raw-view" hidden></pre>
   <div class="foot">由 apicase 生成</div>
 </div>

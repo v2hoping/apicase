@@ -29,6 +29,8 @@ import {
   type AssertRecord,
   type KVPair,
   type StepResult,
+  type StepStatus,
+  type StepOutcome,
   debugRunOpts as makeDebugOpts,
   batchRunOpts as makeBatchOpts,
   runStep,
@@ -38,10 +40,25 @@ import {
   reportShell,
   parseReport,
   topoOrder,
+  blockedSteps,
   reportPush,
   type SentMark,
 } from "./run";
-import { RequestEditor, KVTable, METHODS, methodClass, Select, OP_LABELS } from "./RequestEditor";
+import {
+  type CookieItem,
+  type CookieInput,
+  COOKIE_JAR_REL,
+  listCookies,
+  saveCookie,
+  deleteCookie,
+  clearCookies,
+  groupByDomain,
+  filterCookies,
+  domainForEdit,
+  expiryText,
+} from "./cookies";
+import { DateTimePicker } from "./DateTimePicker";
+import { RequestEditor, KVTable, METHODS, methodClass, Select, OP_LABELS, TrashIcon } from "./RequestEditor";
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
 import { TerminalPane } from "./TerminalPane";
 import { type ThemeMode, resolveTheme, applyTheme } from "./theme";
@@ -102,10 +119,13 @@ interface RespView {
 }
 
 interface RunState {
-  status: "idle" | "running" | "ok" | "err";
+  /** skipped = 上游挂了，这一步根本没跑（既非通过也非失败，第三种颜色） */
+  status: "idle" | "running" | "ok" | "err" | "skipped";
   resp?: RespView | null;
   error?: string | null;
   asserts?: AssertRecord[];
+  /** skipped 时的原因，形如「上游 login 失败」（指向**根因**而非直接上游） */
+  skipReason?: string;
 }
 
 /** `StepResult.response` → 响应区要的形状。 */
@@ -220,6 +240,11 @@ interface RunDialogState {
   recursive: boolean;
   env: string;
   files: string[] | null;
+  /**
+   * 断言失败是否不阻断下游。**初值取工作空间配置，改了只影响本次运行、不回写
+   * application.yml**——跑一次报告就悄悄改了随 git 走的团队配置，是很难查的坑。
+   */
+  continueOnAssertionFailure: boolean;
 }
 
 // 已知二进制/媒体扩展名：直接短路，不读取整个文件（避免大文件读入内存）
@@ -372,6 +397,25 @@ const SETTINGS_NAV_ICONS: Record<string, ReactNode> = {
     <>
       <path fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" d="M8 2 14 5.2 8 8.4 2 5.2Z" />
       <path fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" d="M2.4 8.4 8 11.4l5.6-3M2.4 11.2 8 14.2l5.6-3" />
+    </>
+  ),
+  // Cookies：饼干——右上角两个内凹圆弧＝被咬掉的一口，配三粒巧克力豆。
+  // 纯圆加几个点在 16px 下像骰子，缺口才是"饼干"一眼可辨的特征（Chrome、Firefox 的
+  // cookie 设置同样用带缺口的饼干）。轮廓比例取自 Lucide 的 cookie，缩到 16 视图。
+  // **豆子是三颗而不是五颗**：这个图标实际只在 16 / 18px 下出现，五颗小点会糊成一片灰斑，
+  // 三颗大豆在最小尺寸仍数得清（对比图见需求方案，渲染实测）。
+  Cookies: (
+    <>
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinejoin="round"
+        d="M8 2.1a5.9 5.9 0 1 0 5.9 5.9 2.36 2.36 0 0 1-2.95-2.95 2.36 2.36 0 0 1-2.95-2.95Z"
+      />
+      <circle cx="5.8" cy="6.4" r="0.9" fill="currentColor" />
+      <circle cx="9.2" cy="9.9" r="0.85" fill="currentColor" />
+      <circle cx="5.6" cy="10" r="0.85" fill="currentColor" />
     </>
   ),
   // 快捷键：键盘
@@ -775,6 +819,120 @@ function NewCaseDialog({
   );
 }
 
+// 新增 / 编辑一条 cookie。
+//
+// 校验**不在这里做**：域、路径、过期是否合法由 Rust 判（与真实响应走同一套解析），
+// 前端复刻一份判定必然与它漂移。故 onOk 返回错误串就地显示，对话框不关。
+function CookieDialog({
+  initial,
+  presetDomain,
+  onOk,
+  onCancel,
+}: {
+  initial: CookieItem | null;
+  /** 「往这个域里加」时的预填值 */
+  presetDomain?: string;
+  onOk: (v: CookieInput) => Promise<string | void>;
+  onCancel: () => void;
+}) {
+  const [domain, setDomain] = useState(initial ? domainForEdit(initial) : (presetDomain ?? ""));
+  const [name, setName] = useState(initial?.name ?? "");
+  const [value, setValue] = useState(initial?.value ?? "");
+  const [path, setPath] = useState(initial?.path ?? "/");
+  const [expiresMs, setExpiresMs] = useState<number | undefined>(initial?.expiresMs);
+  const [secure, setSecure] = useState(initial?.secure ?? false);
+  const [httpOnly, setHttpOnly] = useState(initial?.httpOnly ?? false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const first = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    first.current?.focus();
+    first.current?.select();
+  }, []);
+
+  async function submit() {
+    if (busy) return;
+    setBusy(true);
+    const err = await onOk({
+      domain,
+      name,
+      value,
+      path,
+      secure,
+      httpOnly,
+      expiresMs,
+    });
+    setBusy(false);
+    if (err) setError(err);
+  }
+
+  return (
+    <div className="modal-mask" onMouseDown={onCancel}>
+      <div
+        className="modal modal-cookie"
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onCancel();
+          if (e.key === "Enter" && !e.shiftKey) void submit();
+        }}
+      >
+        <div className="modal-title">{initial ? "编辑 Cookie" : "添加 Cookie"}</div>
+        {/* 两列网格（同 Bruno）：域|路径、名称|值、过期时间|属性，三行两列 */}
+        <div className="cookie-form">
+          <div className="cookie-field">
+            <label>域</label>
+            <input ref={first} value={domain} onChange={(e) => setDomain(e.target.value)} />
+          </div>
+          <div className="cookie-field">
+            <label>路径</label>
+            <input value={path} placeholder="/" onChange={(e) => setPath(e.target.value)} />
+          </div>
+          <div className="cookie-field">
+            <label>名称</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="cookie-field">
+            <label>值</label>
+            <input
+              className="cookie-value-input"
+              value={value}
+              title={value}
+              onChange={(e) => setValue(e.target.value)}
+            />
+          </div>
+          <div className="cookie-field">
+            <label>过期时间</label>
+            {/* 未设置 = 不写 Expires = 会话 Cookie；清除动作在控件面板里 */}
+            <DateTimePicker value={expiresMs} onChange={setExpiresMs} ariaLabel="过期时间" />
+          </div>
+          <div className="cookie-field">
+            <label>属性</label>
+            <div className="cookie-flags">
+              <label className="cookie-check">
+                <input type="checkbox" checked={secure} onChange={(e) => setSecure(e.target.checked)} />
+                Secure
+              </label>
+              <label className="cookie-check">
+                <input type="checkbox" checked={httpOnly} onChange={(e) => setHttpOnly(e.target.checked)} />
+                HttpOnly
+              </label>
+            </div>
+          </div>
+        </div>
+        {error && <div className="field-error cookie-error">{error}</div>}
+        <div className="modal-actions">
+          <button className="btn-ghost" onClick={onCancel}>
+            取消
+          </button>
+          <button className="btn-primary" onClick={() => void submit()} disabled={busy}>
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // application.yml 的可视化设置页：左导航 + 右配置面板（仿 GitHub 设置页）
 // 配置页「快捷键」分区：查看 + 录制重绑 + 冲突检测 + 恢复默认。
 function ShortcutsSettings({
@@ -970,6 +1128,37 @@ const PROXY_OPTIONS: { mode: ProxyMode; label: string; desc: string }[] = [
 ];
 
 // 「显示位置」图标：方框 + 右上外指箭头（通用的 reveal / open-external 语义）
+// 新增（＋）与编辑（铅笔）：图标按钮统一 16 视图、1.4 描边，与垃圾桶（RequestEditor 那份）成套
+function PlusIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" d="M8 3.4v9.2M3.4 8h9.2" />
+    </svg>
+  );
+}
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M11.1 2.6a1.4 1.4 0 0 1 2 2l-7.2 7.2-2.7.7.7-2.7 7.2-7.2ZM10.1 3.6l2 2"
+      />
+    </svg>
+  );
+}
+// 空态用的放大镜（搜不到结果时）：比正文里的 ⌕ 字符更工整，也能撑住 40px 的尺寸
+function SearchGlyph() {
+  return (
+    <svg className="cookie-empty-ico" viewBox="0 0 16 16" width="40" height="40" aria-hidden="true">
+      <circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <path fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" d="m10.3 10.3 3.2 3.2" />
+    </svg>
+  );
+}
 function RevealIcon() {
   return (
     <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -1026,11 +1215,20 @@ function PathRow({
   );
 }
 
+// 设置页导航分两组：上＝跟随**项目**（工作空间 / application.yml），下＝跟随**应用**（settings.json）。
+// 提到模块级是因为顶栏的快捷入口要能指名跳到某个分区。
+const NAV_PROJECT = ["通用", "环境", "Cookies"] as const;
+const NAV_APP = ["主题", "代理", "快捷键", "关于"] as const;
+const SETTINGS_NAV = [...NAV_PROJECT, ...NAV_APP] as const;
+export type SettingsSection = (typeof SETTINGS_NAV)[number];
+
 function SettingsPage({
   environments,
   onChange,
   workspacePath,
   configPath,
+  section,
+  onSectionChange,
   shortcutOverrides,
   onShortcutChange,
   shortcutsEnabled,
@@ -1046,6 +1244,12 @@ function SettingsPage({
   onChange: (next: Record<string, Record<string, string>>) => void;
   workspacePath: string;
   configPath: string;
+  /**
+   * 当前分区**由外部持有**：顶栏的 Cookie 图标要能直接指到「Cookies」，
+   * 而组件内部 state 会随标签切走卸载而丢失（每次回来都跳回「通用」）。
+   */
+  section: SettingsSection;
+  onSectionChange: (next: SettingsSection) => void;
   shortcutOverrides: Overrides;
   onShortcutChange: (next: Overrides) => void;
   shortcutsEnabled: boolean;
@@ -1057,11 +1261,8 @@ function SettingsPage({
   wsSettings: WorkspaceSettings;
   onWsSettingsChange: (next: WorkspaceSettings) => void;
 }) {
-  // 导航分两组：上＝跟随**项目**（工作空间 / application.yml），下＝跟随**应用**（settings.json）
-  const NAV_PROJECT = ["通用", "环境"] as const;
-  const NAV_APP = ["主题", "代理", "快捷键", "关于"] as const;
-  const NAV = [...NAV_PROJECT, ...NAV_APP] as const;
-  const [section, setSection] = useState<(typeof NAV)[number]>("通用");
+  const NAV = SETTINGS_NAV;
+  const setSection = onSectionChange;
   const envNames = Object.keys(environments);
   const [selEnv, setSelEnv] = useState(envNames[0] || "");
   const cur = envNames.includes(selEnv) ? selEnv : envNames[0] || "";
@@ -1104,6 +1305,58 @@ function SettingsPage({
   }, [section, workspacePath]);
 
   const [confirmNode, askConfirm] = useConfirm();
+
+  // ── Cookies ──
+  //
+  // jar 的路径由前端给（core 不猜工作空间在哪）；文件在首次收到 Set-Cookie 前并不存在，
+  // 故「位置」那行的可点状态与报告目录同样由一次 path_exists 决定。
+  const cookieJar = workspacePath ? joinPath(workspacePath, COOKIE_JAR_REL) : "";
+  const [cookieJarExists, setCookieJarExists] = useState<boolean | undefined>(undefined);
+  const [cookies, setCookies] = useState<CookieItem[]>([]);
+  const [cookiesLoaded, setCookiesLoaded] = useState(false);
+  const [cookieQuery, setCookieQuery] = useState("");
+  /** 编辑中的 cookie：`item` 为 null＝新增；`domain` 是"往这个域里加"时的预填值 */
+  const [cookieEdit, setCookieEdit] = useState<{ item: CookieItem | null; domain?: string } | null>(null);
+  /** 域的折叠状态；没记过的域按「第一组展开、其余收起」处理 */
+  const [openDomains, setOpenDomains] = useState<Record<string, boolean>>({});
+  const cookieGroups = useMemo(
+    () => groupByDomain(filterCookies(cookies, cookieQuery)),
+    [cookies, cookieQuery],
+  );
+
+  async function reloadCookies() {
+    if (!cookieJar) {
+      setCookies([]);
+      setCookiesLoaded(true);
+      return;
+    }
+    try {
+      setCookies(await listCookies(cookieJar));
+    } catch {
+      setCookies([]);
+    } finally {
+      setCookiesLoaded(true);
+    }
+  }
+
+  // 每次进入这两个分区都重读一次：cookie 在后台随请求不断变化，缓存住只会显示过期状态
+  useEffect(() => {
+    if (section !== "Cookies") return;
+    setCookiesLoaded(false);
+    void reloadCookies();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, cookieJar]);
+
+  useEffect(() => {
+    if (section !== "通用" || !cookieJar) return;
+    let alive = true;
+    invoke<boolean>("path_exists", { path: cookieJar })
+      .then((e) => alive && setCookieJarExists(e))
+      .catch(() => alive && setCookieJarExists(false));
+    return () => {
+      alive = false;
+    };
+  }, [section, cookieJar]);
 
   // 「自定义 CA」下拉的候选：工作空间内的证书文件（相对路径）。
   // 每次进入「通用」页重扫一次——用户常是刚把证书拷进工作空间就回来选。
@@ -1294,6 +1547,13 @@ function SettingsPage({
               exists={reportsDirExists}
               home={appPaths?.home}
             />
+            {/* Cookie jar 同样在 .apicase/ 下、文件树默认不显示，不列出来用户无从知道它在哪 */}
+            <PathRow
+              label="Cookie"
+              path={workspacePath ? joinPath(workspacePath, COOKIE_JAR_REL) : ""}
+              exists={cookieJarExists}
+              home={appPaths?.home}
+            />
             <PathRow
               label="应用设置"
               path={appPaths?.settingsFile || ""}
@@ -1390,6 +1650,257 @@ function SettingsPage({
                 <span className="set-row-unit">毫秒</span>
               </div>
             </div>
+
+            {/* ④ Cookie：默认开（对齐 Postman / Bruno 与浏览器直觉）。
+                关掉只是"这轮不自动带"，已存的 jar 不动——清理会话去「Cookies」分区。 */}
+            <div className="set-row">
+              <div className="set-row-main">
+                <div className="set-row-label">自动收发 Cookie</div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={wsSettings.cookies}
+                title={wsSettings.cookies ? "关闭自动收发 Cookie" : "开启自动收发 Cookie"}
+                className={`sc-switch ${wsSettings.cookies ? "on" : ""}`}
+                onClick={() => onWsSettingsChange({ ...wsSettings, cookies: !wsSettings.cookies })}
+              >
+                <span className="sc-switch-thumb" />
+              </button>
+            </div>
+
+            {/* ⑤ 失败传播：默认阻断。这条随 git 传播给团队，按 CI/回归的正确性定，
+                而不是跟着某个人的调试习惯走（同 verifySsl）。 */}
+            <div className="set-row">
+              <div className="set-row-main">
+                <div className="set-row-label">断言失败后继续跑下游</div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={wsSettings.continueOnAssertionFailure}
+                title={wsSettings.continueOnAssertionFailure ? "改为跳过下游" : "改为断言失败也继续"}
+                className={`sc-switch ${wsSettings.continueOnAssertionFailure ? "on" : ""}`}
+                onClick={() =>
+                  onWsSettingsChange({
+                    ...wsSettings,
+                    continueOnAssertionFailure: !wsSettings.continueOnAssertionFailure,
+                  })
+                }
+              >
+                <span className="sc-switch-thumb" />
+              </button>
+            </div>
+          </div>
+        )}
+        {section === "Cookies" && (
+          <div className="settings-section">
+            {/* 工具条：搜索 + 添加 + 清空全部。操作一律用图标按钮（同 Bruno），
+                文字按钮在这种密集列表里每一处都要占掉一截宽度。 */}
+            <div className="cookie-toolbar">
+              <div className="tree-search-wrap cookie-search">
+                <span className="tree-search-icon">⌕</span>
+                <input
+                  className="tree-search"
+                  placeholder="搜索域名 / 名称 / 值…"
+                  value={cookieQuery}
+                  onChange={(e) => setCookieQuery(e.target.value)}
+                />
+                <button
+                  className={`tree-search-clear ${cookieQuery ? "" : "is-hidden"}`}
+                  title="清空搜索"
+                  onClick={() => setCookieQuery("")}
+                >
+                  ×
+                </button>
+              </div>
+              <button
+                className="icon-btn"
+                title="添加 Cookie"
+                disabled={!cookieJar}
+                onClick={() => setCookieEdit({ item: null })}
+              >
+                <PlusIcon />
+              </button>
+              <button
+                className="icon-btn is-danger"
+                title="清空全部 Cookie"
+                disabled={!cookies.length}
+                onClick={() =>
+                  askConfirm({
+                    title: <>清空全部 Cookie？</>,
+                    message: `共 ${cookies.length} 条，清空后依赖会话的用例需要重新登录`,
+                    confirmLabel: "清空",
+                    danger: true,
+                    onConfirm: async () => {
+                      await clearCookies(cookieJar);
+                      await reloadCookies();
+                    },
+                  })
+                }
+              >
+                <TrashIcon />
+              </button>
+            </div>
+            {/* 值不掩码：这是排查材料，被掩掉的恰恰是要逐处核对的东西（同报告的既有决策）。
+                长值靠 CSS 截断显示，title 里给全文。 */}
+            {!wsSettings.cookies && (
+              <div className="settings-hint is-warn">
+                自动收发已关闭：下面这些不会被带出去，新的 Set-Cookie 也不会记进来。
+              </div>
+            )}
+            {/* 域可折叠（同 Bruno）：一个站点动辄七八条 cookie，全摊开就得一直滚。
+                默认只展开第一组——打开这个页面通常是为了看"刚跑的那个域"。 */}
+            {cookieGroups.map((g, i) => {
+              const open = openDomains[g.domain] ?? i === 0;
+              const toggle = () => setOpenDomains((m) => ({ ...m, [g.domain]: !open }));
+              return (
+                <div key={g.domain} className={`cookie-group ${open ? "is-open" : ""}`}>
+                  <div
+                    className="cookie-group-head"
+                    role="button"
+                    tabIndex={0}
+                    onClick={toggle}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        toggle();
+                      }
+                    }}
+                  >
+                    <Chevron open={open} />
+                    <span className="cookie-domain">{g.domain}</span>
+                    <span className="cookie-count">{g.items.length} 个</span>
+                    {/* 域头的操作不该连带折叠，故这里吞掉冒泡 */}
+                    <div className="cookie-group-actions" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        className="icon-btn"
+                        title={`向 ${g.domain} 添加 Cookie`}
+                        onClick={() => setCookieEdit({ item: null, domain: g.domain })}
+                      >
+                        <PlusIcon />
+                      </button>
+                      <button
+                        className="icon-btn is-danger"
+                        title={`清空 ${g.domain} 的 Cookie`}
+                        onClick={() =>
+                          askConfirm({
+                            title: <>清空 <Obj>{g.domain}</Obj> 的 Cookie？</>,
+                            message: `共 ${g.items.length} 条`,
+                            confirmLabel: "清空",
+                            danger: true,
+                            onConfirm: async () => {
+                              await clearCookies(cookieJar, g.domain);
+                              await reloadCookies();
+                            },
+                          })
+                        }
+                      >
+                        <TrashIcon />
+                      </button>
+                    </div>
+                  </div>
+                  {open && (
+                    <div className="cookie-table-wrap">
+                      <table className="cookie-table">
+                        <thead>
+                          <tr>
+                            <th>名称</th>
+                            <th>值</th>
+                            <th>路径</th>
+                            <th>过期</th>
+                            <th className="is-center">Secure</th>
+                            <th className="is-center">HttpOnly</th>
+                            <th className="is-center">子域</th>
+                            <th aria-label="操作" />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {g.items.map((c) => (
+                            <tr key={`${c.path} ${c.name}`} className={c.expired ? "is-expired" : ""}>
+                              {/* 值不掩码：这是排查材料，被掩掉的恰恰是要逐处核对的东西（同报告的既有决策）。
+                                  过长的靠 CSS 截断，title 给全文。 */}
+                              <td className="cookie-cell-name" title={c.name}>
+                                {c.name}
+                              </td>
+                              <td className="cookie-cell-value" title={c.value}>
+                                {c.value}
+                              </td>
+                              <td className="cookie-cell-path" title={c.path}>
+                                {c.path}
+                              </td>
+                              <td
+                                className="cookie-cell-exp"
+                                title={c.expired ? "已过期，不会再被发送" : c.expiresMs ? "过期时间" : "会话结束前有效"}
+                              >
+                                {expiryText(c)}
+                              </td>
+                              <td className="is-center">{c.secure ? "✓" : ""}</td>
+                              <td className="is-center">{c.httpOnly ? "✓" : ""}</td>
+                              <td className="is-center" title={c.hostOnly ? "仅这一个主机" : "子域一并生效"}>
+                                {c.hostOnly ? "" : "✓"}
+                              </td>
+                              <td>
+                                <div className="cookie-actions">
+                                  <button className="icon-btn" title="编辑" onClick={() => setCookieEdit({ item: c })}>
+                                    <PencilIcon />
+                                  </button>
+                                  <button
+                                    className="icon-btn is-danger"
+                                    title="删除这条 Cookie"
+                                    onClick={() =>
+                                      askConfirm({
+                                        title: <>删除 Cookie <Obj>{c.name}</Obj>？</>,
+                                        message: `来自 ${c.domain}${c.path}`,
+                                        confirmLabel: "删除",
+                                        danger: true,
+                                        onConfirm: async () => {
+                                          await deleteCookie(cookieJar, c);
+                                          await reloadCookies();
+                                        },
+                                      })
+                                    }
+                                  >
+                                    <TrashIcon />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* 两种空态分开写：一条都没有 vs 搜没搜着——该给的下一步动作不同 */}
+            {cookiesLoaded &&
+              !cookieGroups.length &&
+              (cookieQuery.trim() ? (
+                <div className="cookie-empty">
+                  <SearchGlyph />
+                  <div className="cookie-empty-title">未匹配到 Cookie</div>
+                  <div className="cookie-empty-text">可尝试其他域名、名称或值</div>
+                  <button className="btn-ghost" onClick={() => setCookieQuery("")}>
+                    清空搜索
+                  </button>
+                </div>
+              ) : (
+                <div className="cookie-empty">
+                  <SettingsNavIcon name="Cookies" className="cookie-empty-ico" size={44} />
+                  <div className="cookie-empty-title">暂无 Cookie</div>
+                  <div className="cookie-empty-text">
+                    {workspacePath ? "响应中的 Set-Cookie 将自动记录于此" : "打开工作空间后显示其中的 Cookie"}
+                  </div>
+                  {workspacePath && (
+                    <button className="btn-primary" onClick={() => setCookieEdit({ item: null })}>
+                      添加 Cookie
+                    </button>
+                  )}
+                </div>
+              ))}
           </div>
         )}
         {section === "主题" && (
@@ -1446,6 +1957,28 @@ function SettingsPage({
         )}
         {section === "关于" && <AboutSettings />}
       </div>
+      {cookieEdit && (
+        <CookieDialog
+          initial={cookieEdit.item}
+          presetDomain={cookieEdit.domain}
+          onCancel={() => setCookieEdit(null)}
+          onOk={async (input) => {
+            // 校验在 Rust：报错就留在对话框里显示，不关窗、不丢用户刚填的内容
+            try {
+              const prev = cookieEdit.item;
+              await saveCookie(
+                cookieJar,
+                input,
+                prev ? { domain: prev.domain, path: prev.path, name: prev.name } : undefined,
+              );
+            } catch (e) {
+              return typeof e === "string" ? e : String(e);
+            }
+            setCookieEdit(null);
+            await reloadCookies();
+          }}
+        />
+      )}
       {confirmNode}
     </div>
   );
@@ -1465,6 +1998,7 @@ function RunDialog({
   environments,
   onRecursive,
   onEnv,
+  onContinueOnAssertionFailure,
   onRun,
   onCancel,
 }: {
@@ -1473,6 +2007,7 @@ function RunDialog({
   environments: Record<string, Record<string, string>>;
   onRecursive: (v: boolean) => void;
   onEnv: (v: string) => void;
+  onContinueOnAssertionFailure: (v: boolean) => void;
   onRun: () => void;
   onCancel: () => void;
 }) {
@@ -1492,7 +2027,7 @@ function RunDialog({
           if (e.key === "Enter" && canRun) onRun();
         }}
       >
-        <div className="modal-title">运行并生成报告</div>
+        <div className="modal-title">生成测试报告</div>
         <div className="modal-message">
           {state.isDir ? "目录" : "用例"} <Obj>{rel || baseName(state.target) || "工作空间根"}</Obj>
         </div>
@@ -1522,6 +2057,25 @@ function RunDialog({
             ) : (
               <span className="run-opt-none">未配置环境</span>
             )}
+          </label>
+          <label className="run-opt">
+            <span className="run-opt-label">失败传播</span>
+            <span className="seg-radio">
+              <button
+                className={!state.continueOnAssertionFailure ? "on" : ""}
+                title="上游没通过就跳过下游（请求发不出去时恒跳过，不受此项影响）"
+                onClick={() => onContinueOnAssertionFailure(false)}
+              >
+                跳过下游
+              </button>
+              <button
+                className={state.continueOnAssertionFailure ? "on" : ""}
+                title="断言没过也继续跑下游；请求发不出去时仍然跳过"
+                onClick={() => onContinueOnAssertionFailure(true)}
+              >
+                断言失败继续
+              </button>
+            </span>
           </label>
         </div>
 
@@ -1985,6 +2539,19 @@ function App() {
     });
   }, []);
 
+  // 启动参数带了工作空间就直接打开它（`apicase gui <路径>`、把目录拖到应用图标上）。
+  //
+  // 与「最近工作空间」互不干扰：那是列表、要用户点；这是这次启动的明确意图，优先级更高。
+  // 只在首次挂载跑一次——之后用户切到别处，重新渲染不该把他拽回启动那个目录。
+  useEffect(() => {
+    invoke<string | null>("startup_workspace")
+      .then((path) => {
+        if (path) applyWorkspace(path);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 任一偏好变化即整份写回（settings.json 是整份覆盖，分散写会互相抹掉字段，故收敛到这一个出口）。
   // 加载完成前不写，避免用首帧缓存覆盖磁盘上更新的值。
   //
@@ -2062,6 +2629,7 @@ function App() {
   useEffect(() => {
     function onMove(e: MouseEvent) {
       if (!resizingRef.current) return;
+      if (e.buttons === 0) return onUp(); // 没收到 mouseup（拖出窗口松手）时自愈
       setSidebarWidth(Math.min(480, Math.max(160, e.clientX)));
     }
     function onUp() {
@@ -2081,6 +2649,7 @@ function App() {
   useEffect(() => {
     function onMove(e: MouseEvent) {
       if (!bottomResizingRef.current) return;
+      if (e.buttons === 0) return onUp(); // 没收到 mouseup（拖出窗口松手）时自愈
       const box = centerColRef.current?.getBoundingClientRect();
       if (!box) return;
       // 从中间列底边反推高度；上限留 120px 给主区，下限 80px
@@ -2104,6 +2673,7 @@ function App() {
   useEffect(() => {
     function onMove(e: MouseEvent) {
       if (!aiResizingRef.current) return;
+      if (e.buttons === 0) return onUp(); // 没收到 mouseup（拖出窗口松手）时自愈
       const w = window.innerWidth - e.clientX;
       setAiWidth(Math.max(240, Math.min(560, w)));
     }
@@ -2124,6 +2694,7 @@ function App() {
   useEffect(() => {
     function onMove(e: MouseEvent) {
       if (!flowResizingRef.current) return;
+      if (e.buttons === 0) return onUp(); // 没收到 mouseup（拖出窗口松手）时自愈
       const box = structuredRef.current?.getBoundingClientRect();
       if (!box) return;
       // 流程面板不小于 260，且尽量给请求面板留 360（260 下限优先）
@@ -2147,6 +2718,7 @@ function App() {
   useEffect(() => {
     function onMove(e: MouseEvent) {
       if (!respResizingRef.current) return;
+      if (e.buttons === 0) return onUp(); // 没收到 mouseup（拖出窗口松手）时自愈
       const box = requestPaneRef.current?.getBoundingClientRect();
       if (!box) return;
       const h = box.bottom - e.clientY; // 由请求面板底边反推响应区目标高度
@@ -2848,6 +3420,29 @@ function App() {
     if (dirty) setRawText(await dumpAppConfig(rawText, environments, wsSettings));
     setConfigVisual(false);
   }
+
+  // ── 设置页的快捷入口（顶栏图标）────────────────
+  //
+  // 设置页就是 application.yml 的可视视图，所以「打开某个分区」＝打开那个标签 + 指名分区。
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("通用");
+  /** 待进入可视模式：标签是异步激活的，切过来之后才轮得到这一步 */
+  const wantConfigVisualRef = useRef(false);
+
+  function openSettingsSection(section: SettingsSection) {
+    if (!workspace) return;
+    setSettingsSection(section);
+    openTab(joinPath(workspace, "application.yml"));
+    wantConfigVisualRef.current = true;
+  }
+
+  // 标志只消费一次：否则用户跳过来之后自己切回「文本」，会被立刻拽回可视，退都退不出去。
+  useEffect(() => {
+    if (!wantConfigVisualRef.current || !workspace) return;
+    if (currentCasePath !== joinPath(workspace, "application.yml")) return; // 还没切过来，等下一轮
+    wantConfigVisualRef.current = false;
+    if (!configVisual) void enterConfigVisual();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentCasePath, configVisual, workspace]);
   // 可视设置页编辑环境：更新全局 environments + 保持 activeEnv 有效 + 标脏
   function onEnvChange(next: Environments) {
     setEnvironments(next);
@@ -3143,7 +3738,7 @@ function App() {
   // ── 运行 ────────────────────────────────────────
   //
   // 前端在这条链路上只做两件事：把配置递给执行内核、把回来的结果画出来。
-  // 变量透传、请求组装、认证、断言、脱敏全在 Rust（core/src/runner.rs）。
+  // 变量透传、请求组装、认证、断言全在 Rust（core/src/runner.rs）。
 
   /**
    * 客户端级配置 = 代理（应用级偏好）+ 请求设置（工作空间 application.yml）。
@@ -3157,7 +3752,12 @@ function App() {
       options.caCertPath = joinPath(workspace, wsSettings.caCert.trim());
     }
     if (wsSettings.timeoutMs > 0) options.timeoutMs = wsSettings.timeoutMs;
-    return { proxy: proxyPayload(proxyConfig), options };
+    // cookie jar 跟工作空间走；没打开工作空间时不给路径，jar 只在内存里活着
+    const cookies = {
+      enabled: wsSettings.cookies,
+      jarPath: workspace ? joinPath(workspace, COOKIE_JAR_REL) : undefined,
+    };
+    return { proxy: proxyPayload(proxyConfig), options, cookies };
   }, [wsSettings, workspace, proxyConfig]);
 
   /** 当前活动环境（运行时注入的变量来源）。 */
@@ -3167,12 +3767,12 @@ function App() {
   );
 
   /**
-   * 调试运行的执行参数。**不脱敏、不截断**——响应区要看的就是真实内容；
-   * 脱敏与截断只在写进报告时才有意义（报告会被转发、归档）。
+   * 调试运行的执行参数。**不截断**——响应区要看的就是完整内容；
+   * 截断只在写进报告时才有意义（单文件 HTML 会把报文体全内联）。
    */
   const debugOpts = useMemo<RunOpts>(
-    () => makeDebugOpts(activeEnvInfo, clientConfig),
-    [activeEnvInfo, clientConfig],
+    () => makeDebugOpts(activeEnvInfo, clientConfig, wsSettings.continueOnAssertionFailure),
+    [activeEnvInfo, clientConfig, wsSettings.continueOnAssertionFailure],
   );
 
   /** 编辑态 → 可执行的 step。请求非法（如 JSON body 写坏了）时返回错误而不是发一个残缺请求。 */
@@ -3194,23 +3794,36 @@ function App() {
 
   /**
    * 单个请求执行 —— 交给执行内核，把结构化的 StepResult 折回响应区要的 RunState。
-   * **调试运行与批量运行是同一份执行语义**，只差脱敏与截断两个开关。
+   * **调试运行与批量运行是同一份执行语义**，只差报文体截断这一个开关。
    */
-  async function runOneStep(sd: RequestDraft, ctx: RunContext): Promise<{ state: RunState; outputs: Record<string, unknown> }> {
+  async function runOneStep(
+    sd: RequestDraft,
+    ctx: RunContext,
+  ): Promise<{ state: RunState; outputs: Record<string, unknown>; status: StepStatus }> {
+    // 响应区只分「成 / 败」两色，但失败传播要分 failed 与 error（后者恒阻断下游），
+    // 故把执行内核给的原始状态一并透出，不在这里压平
     const { step: spec, error: buildErr } = stepOf(sd);
-    if (!spec) return { state: { status: "err", error: buildErr }, outputs: {} };
+    if (!spec) return { state: { status: "err", error: buildErr }, outputs: {}, status: "error" };
+    // 开着 cookie 时，这一发就可能在 .apicase/ 下写出含明文会话的 jar——
+    // 先确保它已被 .gitignore 挡住（此前只有批量运行才走这一步，只调试的人会漏）
+    if (wsSettings.cookies && workspace) await ensureGitignoreOnce();
     try {
       const { step, outputs } = await runStep(spec, ctx, debugOpts);
       if (step.status === "error") {
-        return { state: { status: "err", error: step.error || "请求失败" }, outputs };
+        return { state: { status: "err", error: step.error || "请求失败" }, outputs, status: "error" };
       }
       return {
         state: { status: step.status === "passed" ? "ok" : "err", resp: respViewOf(step), asserts: step.assertions },
         outputs,
+        status: step.status,
       };
     } catch (e) {
       // IPC 本身失败（后端崩了 / 参数不合法）——与"请求失败"分开报，指向完全不同
-      return { state: { status: "err", error: typeof e === "string" ? e : String(e) }, outputs: {} };
+      return {
+        state: { status: "err", error: typeof e === "string" ? e : String(e) },
+        outputs: {},
+        status: "error",
+      };
     }
   }
 
@@ -3242,14 +3855,30 @@ function App() {
       const order = await topoOrder(specs);
       // 下标是按 specs 排的，而 specs 可能因组装失败少了几个 —— 用 id 回查才对得上
       const byId = new Map(requests.map((r) => [r.id, r]));
+      const outcomes: StepOutcome[] = [];
+      let blocked = new Map<string, string>(); // 被连累的 step id → 根因 id
       for (const i of order) {
         const sd = byId.get(specs[i].id);
         if (!sd) continue;
+        // 上游挂了：不发这个请求。跑下去拿到的只会是未解析的 ${{...}} 字面量，
+        // 既是噪音又会把脏请求打到被测服务上。想单看它，点它自己的「发送」。
+        const cause = blocked.get(sd.id);
+        if (cause !== undefined) {
+          setRunMap((m) => ({ ...m, [sd.id]: { status: "skipped", skipReason: `上游 ${cause} 失败` } }));
+          continue;
+        }
         setRunMap((m) => ({ ...m, [sd.id]: { status: "running" } }));
-        const { state, outputs } = await runOneStep(sd, local);
+        const { state, outputs, status } = await runOneStep(sd, local);
         local.steps[sd.id] = outputs;
         setOutputsCtx({ ...local.steps });
         setRunMap((m) => ({ ...m, [sd.id]: state }));
+        outcomes.push({ id: sd.id, status });
+        // 判定与传播都在执行内核：这里只回报结果、拿回要跳过的清单，
+        // 不在前端复刻一份「什么算阻断」的规则（改开关语义时必然漏掉一处）
+        if (status !== "passed") {
+          const list = await blockedSteps(specs, outcomes, debugOpts.continueOnAssertionFailure);
+          blocked = new Map(list.map((b) => [b.id, b.cause]));
+        }
       }
     } finally {
       // 中途抛错也要把「运行中」的旗子放下，否则按钮永远转下去
@@ -3287,10 +3916,18 @@ function App() {
     return out;
   }
 
-  /** 打开运行配置对话框（右键「运行并生成报告…」）。 */
+  /** 打开运行配置对话框（右键「生成测试报告」）。 */
   async function openRunDialog(target: string, isDir: boolean) {
     if (!workspace) return;
-    setRunDialog({ target, isDir, recursive: true, env: activeEnv, files: null });
+    // 失败传播的初值取工作空间配置：配置是唯一默认源，这里只是本次运行的临时覆盖
+    setRunDialog({
+      target,
+      isDir,
+      recursive: true,
+      env: activeEnv,
+      files: null,
+      continueOnAssertionFailure: wsSettings.continueOnAssertionFailure,
+    });
     const files = await discoverCases(target, isDir, true);
     setRunDialog((d) => (d && d.target === target ? { ...d, files } : d));
   }
@@ -3318,6 +3955,17 @@ function App() {
    * 把 `.apicase/` 写进工作空间 `.gitignore`（报告是产物，不该进版本库）。
    * 已有该行则不动；读不到 `.gitignore` 就新建。失败静默——写不进去不该挡住运行。
    */
+  /**
+   * 同上，但每个工作空间只做一次：调试发送是高频路径，不该每发一个请求就读一次 `.gitignore`。
+   * ref 记的是"已处理过的工作空间路径"，换工作空间自然重新生效。
+   */
+  const gitignoreDoneRef = useRef("");
+  async function ensureGitignoreOnce() {
+    if (gitignoreDoneRef.current === workspace) return;
+    gitignoreDoneRef.current = workspace;
+    await ensureGitignore();
+  }
+
   async function ensureGitignore() {
     const gi = joinPath(workspace, ".gitignore");
     try {
@@ -3357,9 +4005,13 @@ function App() {
     const file = reportFileFor(at, d.target);
 
     const targets = files.map((p) => ({ file: relPath(workspace, p), path: p }));
-    const opts = makeBatchOpts({ name: d.env, vars: environments[d.env] || {} }, clientConfig);
+    const opts = makeBatchOpts(
+      { name: d.env, vars: environments[d.env] || {} },
+      clientConfig,
+      d.continueOnAssertionFailure,
+    );
     // 报告头里的运行参数**从 opts 派生**，不并列写第二遍——
-    // 半年后回看一份失败报告，"当时脱没脱敏、截断阈值多少"直接决定结论能不能信，
+    // 半年后回看一份失败报告，"当时用的哪套环境、截断阈值多少"直接决定结论能不能信，
     // 两处各写一份迟早会对不上。
     const options = {
       targets: [d.isDir ? relPath(workspace, d.target) || "（工作空间根）" : relPath(workspace, d.target)],
@@ -3367,8 +4019,8 @@ function App() {
       environment: d.env,
       concurrency: opts.concurrency,
       stopOnFailure: opts.stopOnFailure,
-      redact: opts.redact,
       maxBodyBytes: opts.maxBodyBytes,
+      continueOnAssertionFailure: opts.continueOnAssertionFailure,
     };
 
     setRunSessions((m) => ({ ...m, [runId]: { runId, report: null, file, total: files.length } }));
@@ -3686,7 +4338,7 @@ function App() {
     if (!entry || entry.isDir) items.push(...newItems(dir));
 
     // ── 运行 ──
-    // 「打开并运行」= 调试（打开标签 + 自动发送）；「运行并生成报告…」= 回归（出一份可归档的报告）。
+    // 「打开并运行」= 调试（打开标签 + 自动发送）；「生成测试报告」= 回归（出一份可归档的报告）。
     // 两者分成两项而非共用一个「运行」：同一个词做两件事，用户点第二次就会困惑。
     const runTarget = entry ? entry.path : workspace;
     const runIsDir = entry ? entry.isDir : true;
@@ -3694,7 +4346,7 @@ function App() {
     if (canRun) {
       if (items.length) items.push({ sep: true });
       if (!runIsDir) items.push({ label: "打开并运行", onClick: () => openAndRun(runTarget) });
-      items.push({ label: "运行并生成报告…", onClick: () => openRunDialog(runTarget, runIsDir) });
+      items.push({ label: "生成测试报告", onClick: () => openRunDialog(runTarget, runIsDir) });
     }
 
     if (entry) {
@@ -3770,6 +4422,7 @@ function App() {
     method: s.req.method,
     dependsOn: s.dependsOn,
     status: runMap[s.id]?.status ?? "idle",
+    skipReason: runMap[s.id]?.skipReason,
   }));
 
   const activeRunSession = isRunTab(currentCasePath) ? runSessions[runIdOf(currentCasePath)] : undefined;
@@ -3963,6 +4616,14 @@ function App() {
               </div>
             )}
           </div>
+        )}
+
+        {/* Cookie 管理：直达设置页的「Cookies」分区（清一次登录态是调试里的高频动作，
+            埋在配置 → 左导航第三项之后就太深了） */}
+        {workspace && (
+          <button className="topbar-config" title="Cookie 管理" onClick={() => openSettingsSection("Cookies")}>
+            <SettingsNavIcon name="Cookies" className="topbar-config-ico" size={18} />
+          </button>
         )}
 
         {workspace && (
@@ -4289,6 +4950,8 @@ function App() {
                   onChange={onEnvChange}
                   workspacePath={workspace}
                   configPath={currentCasePath}
+                  section={settingsSection}
+                  onSectionChange={setSettingsSection}
                   shortcutOverrides={scOverrides}
                   onShortcutChange={onShortcutChange}
                   shortcutsEnabled={scEnabled}
@@ -4441,6 +5104,9 @@ function App() {
                           >
                             <Chevron open={!respCollapsed} />
                           </button>
+                          {/* 还没跑过时用「响应」占住标题位——否则这一行只有个箭头，
+                              折叠态更是一条看不出是什么的空白横线。有响应后让位给 tab。 */}
+                          {!resp && <span className="response-title">响应</span>}
                           {resp && (
                             <div className="resp-tabs">
                               <button
@@ -4678,6 +5344,9 @@ function App() {
           environments={environments}
           onRecursive={(v) => void setRunRecursive(v)}
           onEnv={(v) => setRunDialog((d) => (d ? { ...d, env: v } : d))}
+          onContinueOnAssertionFailure={(v) =>
+            setRunDialog((d) => (d ? { ...d, continueOnAssertionFailure: v } : d))
+          }
           onRun={() => void startRun(runDialog)}
           onCancel={() => setRunDialog(null)}
         />

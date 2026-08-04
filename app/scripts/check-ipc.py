@@ -112,7 +112,7 @@ for path, name, keys in sorted(calls, key=lambda c: (c[1], c[0])):
         opt_note = "".join(f" +可选{a}" for a, o in cmds[name] if o and a not in keys)
         print(f"  ✓ {name:20} {keys if keys else '（无参数）'}{opt_note}")
 
-registered = set(re.findall(r'\b(?:exec|app|fs|watch|terminal)::(\w+),', pathlib.Path('src-tauri/src/lib.rs').read_text()))
+registered = set(re.findall(r'\b(?:exec|app|cookies|fs|watch|terminal)::(\w+),', pathlib.Path('src-tauri/src/lib.rs').read_text()))
 called = {c[1] for c in calls}
 print(f"\n定义了 {len(cmds)} 个命令，注册 {len(registered)} 个，前端调用 {len(called)} 个")
 missing_reg = sorted(set(cmds) - registered)

@@ -1,0 +1,27 @@
+[package]
+name = "apicase-cli"
+description = "apicase 命令行与 MCP 服务器"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# 包名带 -cli 后缀（与 apicase-core 区分），但**二进制就叫 apicase**——
+# 用户敲的是 `apicase run`，不该是 `apicase-cli run`。
+[[bin]]
+name = "apicase"
+path = "src/main.rs"
+
+[dependencies]
+# 执行内核。与桌面壳平行依赖同一个 core，因此不存在
+# 「界面里跑过了、CLI 跑却挂了」这类两套实现必然产生的漂移。
+apicase-core = { path = "../core" }
+clap.workspace = true
+clap_complete.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# signal：Ctrl-C 要走「置取消位 → 等当前请求收尾 → 落一份部分报告」，
+# 而不是让默认处理直接杀掉进程（那样跑了一半的结果全丢）
+tokio = { workspace = true, features = ["signal"] }
+rmcp = { version = "3.1.0", features = ["server", "macros", "transport-io"] }
+schemars = "1.2.2"

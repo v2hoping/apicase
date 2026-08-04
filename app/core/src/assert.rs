@@ -91,6 +91,26 @@ fn actual_for(target: &str, resp: &RespView, body: Option<&Value>) -> Option<Val
     None
 }
 
+/// 这个目标写法**能不能被识别**——只看语法，不看响应。
+///
+/// `apicase check` 用它做静态校验：认不出的目标（`status`、`$.data.token` 这类旧写法，
+/// 或 `res.bodyfoo` 这种拼错的）运行时恒取不到值、断言必然失败，
+/// 而那时报出来的是「实际值 ∅」，看的人未必想得到是目标写错了。
+///
+/// 判定与 `actual_for` 共用同一组规则函数，不另写一份——两份判定必然在某次改写法时分叉。
+pub fn is_known_target(target: &str) -> bool {
+    let Some(rest) = target.trim().strip_prefix("res").and_then(|r| r.strip_prefix('.')) else {
+        return false;
+    };
+    if rest == "status" {
+        return true;
+    }
+    if let Some(after) = domain_rest(rest, "headers") {
+        return header_name(after).is_some();
+    }
+    domain_rest(rest, "body").is_some()
+}
+
 /// 取 `res.` 之后某个域（`headers` / `body`）的剩余部分。
 /// 域名后必须是路径边界（`.` / `[`）或直接结束——`res.bodyfoo` 不算 body 域，
 /// 否则拼错的目标会被当成"取整个响应体"而静默通过。

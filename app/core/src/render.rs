@@ -87,8 +87,67 @@ pub fn parse_report_html(text: &str) -> Option<RunReport> {
         return None;
     }
     let parsed: RunReport = serde_json::from_str(raw).ok()?;
-    // schemaVersion 在读回时兑现用处：将来格式演进要在这里分流 / 迁移
-    (parsed.schema_version == REPORT_SCHEMA_VERSION).then_some(parsed)
+    // **旧报告要读得回来**：v1 报告里只是没有 skipped 而已，当前渲染器完全能显示它。
+    // 反过来不行——未来版本的报告可能带本渲染器不认识的状态或字段，宁可降级为纯文本
+    // 也好过静默渲染错。所以是 `<=` 而不是 `==`。
+    (parsed.schema_version <= REPORT_SCHEMA_VERSION).then_some(parsed)
+}
+
+/// 运行期间把报告周期性地写到文件：用户中途用浏览器打开刷新就能看到部分结果，
+/// 进程被杀也留得下已跑完的部分。
+///
+/// 仍是**整份重渲染**（不做增量），但**间隔随报告增大而拉长**（见 `interval`）：
+/// 小报告几毫秒的字符串拼接不值得为它做增量，大报告则不该每秒把已完成的几十 MB 重渲一遍。
+/// 应用内 / 终端里的进度另有实时通道，落盘只是归档与崩溃兜底。
+///
+/// **写盘要串行**——两次写交错会让报告文件出现半截内容，故持锁写。
+/// 桌面壳与 CLI 共用这一份：两边各写一个必然在节流策略上分叉。
+#[derive(Clone)]
+pub struct ReportWriter {
+    path: String,
+    last: std::sync::Arc<std::sync::Mutex<std::time::Instant>>,
+}
+
+impl ReportWriter {
+    /// 建一个写入器。**不建目录**——建目录会失败、而失败该由调用方在开跑前就报出来，
+    /// 不是等到第一次落盘时静默吞掉。
+    pub fn new(path: impl Into<String>) -> Self {
+        // 初始时间往前推，保证第一次回调就会落盘
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(60);
+        Self { path: path.into(), last: std::sync::Arc::new(std::sync::Mutex::new(past)) }
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// 写盘间隔随报告增大而拉长：每次落盘都要把**整份**报告渲染成 HTML，
+    /// 500 个用例可达几十 MB——固定 1 秒一次会让后半程一直在重复渲染同一堆已完成的数据。
+    fn interval(cases: usize) -> std::time::Duration {
+        std::time::Duration::from_millis(1000.max(cases as u64 * 20))
+    }
+
+    /// 距上次落盘够久才写。挂在进度回调里用。
+    pub fn maybe_write(&self, r: &RunReport) {
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if last.elapsed() < Self::interval(r.cases.len()) {
+            return;
+        }
+        *last = std::time::Instant::now();
+        self.write_locked(r);
+    }
+
+    /// 无视节流立刻写。收尾时用——最后那份必须落下去。
+    pub fn write_now(&self, r: &RunReport) {
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        *last = std::time::Instant::now();
+        self.write_locked(r);
+    }
+
+    /// 写盘失败不中断运行——结果仍在应用内 / 终端里可见，报告只是少了一份归档。
+    fn write_locked(&self, r: &RunReport) {
+        let _ = std::fs::write(&self.path, render_html(r));
+    }
 }
 
 #[cfg(test)]
@@ -116,8 +175,8 @@ mod tests {
                 environment: "dev".into(),
                 concurrency: 1,
                 stop_on_failure: false,
-                redact: true,
                 max_body_bytes: 65536,
+                continue_on_assertion_failure: false,
             },
             summary: RunSummary { total: 1, passed: 1, ..Default::default() },
             cases: vec![CaseResult {
@@ -148,9 +207,42 @@ mod tests {
                         ok: true,
                     }],
                     error: None,
+                    skip_reason: None,
                 }],
             }],
         }
+    }
+
+    /// 写盘节流：小报告保持 1 秒一次（崩溃兜底），大报告拉长——
+    /// 每次落盘都要渲染整份 HTML，后半程重复渲染的全是已完成的数据。
+    #[test]
+    fn report_write_interval_grows_with_report_size() {
+        use std::time::Duration;
+        assert_eq!(ReportWriter::interval(0), Duration::from_millis(1000));
+        assert_eq!(ReportWriter::interval(10), Duration::from_millis(1000), "小报告不受影响");
+        assert_eq!(ReportWriter::interval(50), Duration::from_millis(1000), "临界点仍是 1 秒");
+        assert_eq!(ReportWriter::interval(100), Duration::from_millis(2000));
+        assert_eq!(ReportWriter::interval(500), Duration::from_millis(10_000));
+    }
+
+    /// 第一次回调就落盘（用户中途就能用浏览器打开看），随后 1s 内不重复写
+    #[test]
+    fn report_writer_throttles_after_the_first_write() {
+        let path = std::env::temp_dir().join("apicase-writer-test.html");
+        let _ = std::fs::remove_file(&path);
+        let w = ReportWriter::new(path.to_string_lossy().into_owned());
+        let r = sample("{}");
+
+        w.maybe_write(&r);
+        assert!(path.is_file(), "第一次回调就该落盘");
+        let first = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        w.maybe_write(&r); // 1s 内的第二次应被节流掉
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), first);
+
+        w.write_now(&r); // 收尾那次强制写
+        assert!(std::fs::read_to_string(&path).unwrap().contains("apicase-report"));
+        let _ = std::fs::remove_file(&path);
     }
 
     /// 往返等价是这条链路的护栏：改 `render_html` 时忘了同步 parse 侧，
@@ -214,11 +306,36 @@ mod tests {
         assert!(parse_report_html(&report_shell()).is_none(), "空壳没有数据");
         assert!(parse_report_html(&format!("{DATA_OPEN}不是 JSON{DATA_CLOSE}")).is_none());
 
-        // schemaVersion 不匹配 → 拒绝（将来格式演进的分流点）
+        // 比自己新的 schemaVersion → 拒绝（可能带本渲染器不认识的状态，宁可降级为纯文本）
         let mut r = sample("{}");
-        r.schema_version = 999;
+        r.schema_version = REPORT_SCHEMA_VERSION + 1;
         let json = serde_json::to_string(&r).unwrap();
         assert!(parse_report_html(&format!("{DATA_OPEN}{json}{DATA_CLOSE}")).is_none());
+    }
+
+    /// **历史报告必须仍打得开**：v1 里只是没有 skipped 而已，当前渲染器完全能显示。
+    /// 这条是 v1 → v2 那次 bump 留下的护栏——版本号涨了就把老报告全锁死，是回归。
+    #[test]
+    fn older_reports_still_parse() {
+        let mut r = sample("{}");
+        r.schema_version = 1;
+        let json = serde_json::to_string(&r).unwrap();
+        let back = parse_report_html(&format!("{DATA_OPEN}{json}{DATA_CLOSE}"));
+        assert_eq!(back.map(|p| p.schema_version), Some(1), "v1 报告要读得回来");
+    }
+
+    /// 跳过的 step 要显示原因，且不显示会误导人的 "0ms"
+    #[test]
+    fn skipped_step_shows_its_reason() {
+        let mut r = sample("{}");
+        r.cases[0].steps.push(StepResult::skipped("下游", "上游 s1 失败"));
+        let html = render_html(&r);
+        assert!(html.contains("上游 s1 失败"), "跳过原因要进报告");
+        // 数据是内联的，渲染在浏览器里做——这里守住数据契约即可
+        let back = parse_report_html(&html).expect("读得回来");
+        let last = back.cases[0].steps.last().unwrap();
+        assert_eq!(last.status, StepStatus::Skipped);
+        assert_eq!(last.skip_reason.as_deref(), Some("上游 s1 失败"));
     }
 
     /// 报告要能脱离 apicase 打开：不引用任何外部资源

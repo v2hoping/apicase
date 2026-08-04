@@ -10,7 +10,7 @@
 
 mod commands;
 
-use commands::{app, exec, fs, terminal, watch};
+use commands::{app, cookies, exec, fs, terminal, watch};
 
 pub fn run() {
     tauri::Builder::default()
@@ -27,12 +27,19 @@ pub fn run() {
             exec::dump_app_config,
             exec::run_step,
             exec::topo_order,
+            exec::blocked_steps,
             exec::run_batch,
             exec::cancel_run,
             exec::report_shell,
             exec::parse_report,
+            // Cookie jar（设置页「Cookies」）
+            cookies::list_cookies,
+            cookies::save_cookie,
+            cookies::delete_cookie,
+            cookies::clear_cookies,
             // 应用级
             app::init_workspace,
+            app::startup_workspace,
             app::read_app_settings,
             app::write_app_settings,
             app::app_paths,

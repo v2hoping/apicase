@@ -338,6 +338,10 @@ pub async fn send_with_auth(
         req.headers.push(KvPair::new("Authorization", format!("{} {}", t.kind, t.token)));
     }
 
+    // jar 里匹配的 cookie 在这里就写进请求头，而不是留给 reqwest 的 provider 去补：
+    // 报告记的是这一份请求，补在这里才看得见本次到底带了什么会话
+    let cookie_attached = crate::cookie::attach(&mut req, cfg);
+
     let resp = http::send(&req, cfg).await?;
 
     // Digest：首发必然吃 401，就着 challenge 算摘要重发一次（只重试一次，避免死循环）
@@ -363,6 +367,8 @@ pub async fn send_with_auth(
             );
             let mut retry = req;
             retry.headers.push(KvPair::new("Authorization", header));
+            // 401 响应常常同时下发新会话，重发要用刚收到的那一份（用户手写的头不碰）
+            crate::cookie::refresh(&mut retry, cfg, cookie_attached);
             let resp = http::send(&retry, cfg).await?;
             return Ok((retry, resp));
         }

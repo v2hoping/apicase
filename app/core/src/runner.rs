@@ -1,7 +1,7 @@
 //! 执行引擎：`run_step` / `run_case` / `run_batch` 三级。
 //!
 //! **调试运行与回归运行走同一份实现**——界面上点「发送」是 `run_step`，
-//! 目录批量运行是 `run_batch`，中间只差脱敏与截断这两个开关。一份执行语义，
+//! 目录批量运行是 `run_batch`，中间只差报文体截断这一个开关。一份执行语义，
 //! 因此不会出现"界面里跑过了、批量跑却挂了"这类两套实现必然产生的漂移。
 //!
 //! # 三条不变量
@@ -16,7 +16,6 @@ use crate::assert::{eval_assertions, extract_outputs, RespView};
 use crate::auth::send_with_auth;
 use crate::http::ClientConfig;
 use crate::model::Step;
-use crate::redact::*;
 use crate::report::*;
 use crate::request::RequestBody;
 use crate::util::{iso8601, now_ms};
@@ -57,9 +56,10 @@ pub struct RunOpts {
     pub concurrency: u32,
     #[serde(default)]
     pub stop_on_failure: bool,
-    /// 报告会被转发 / 归档，故批量运行默认开；调试运行关掉——响应区要看真实内容
+    /// 断言失败是否**不**阻断下游。默认 `false` = 阻断（`error` 不受此影响，恒阻断）。
+    /// 与 `stop_on_failure` 正交：那个管"要不要继续跑后面的 case"，这个管"case 内部谁该跑"。
     #[serde(default)]
-    pub redact: bool,
+    pub continue_on_assertion_failure: bool,
     #[serde(default = "default_max_body")]
     pub max_body_bytes: usize,
     #[serde(default)]
@@ -74,26 +74,26 @@ fn default_max_body() -> usize {
 }
 
 impl RunOpts {
-    /// 批量运行的默认参数：串行、失败继续、**脱敏开启**、报文体截断 64KB。
+    /// 批量运行的默认参数：串行、失败继续、报文体截断 64KB。
     pub fn for_batch(environment: EnvironmentInfo) -> Self {
         Self {
             environment,
             concurrency: 1,
             stop_on_failure: false,
-            redact: true,
+            continue_on_assertion_failure: false,
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             client: ClientConfig::default(),
         }
     }
 
-    /// 调试运行的默认参数：**不脱敏、不截断**——响应区要看的就是真实内容，
-    /// 脱敏与截断只在写进报告时才有意义。
+    /// 调试运行的默认参数：**不截断**——响应区要看的就是完整内容，
+    /// 截断只在写进报告时才有意义（单文件 HTML 会把报文体全内联）。
     pub fn for_debug(environment: EnvironmentInfo) -> Self {
         Self {
             environment,
             concurrency: 1,
             stop_on_failure: false,
-            redact: false,
+            continue_on_assertion_failure: false,
             max_body_bytes: usize::MAX,
             client: ClientConfig::default(),
         }
@@ -114,6 +114,96 @@ pub fn topo_order(steps: &[Step]) -> Vec<usize> {
         visit(i, steps, &by_id, &mut visited, &mut on_stack, &mut out);
     }
     out
+}
+
+/// 一个被上游连累、不会执行的 step。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BlockedStep {
+    pub id: String,
+    /// **根因** step id——顺着依赖链往上第一个真正失败的那个，可能隔了好几层。
+    /// 指向直接上游没用：一条长链上会得到一串"上游 B 失败"、"上游 C 失败"，
+    /// 而用户要找的始终是最上面那个 A。
+    pub cause: String,
+}
+
+/// 一个已跑完的 step 的结果（前端回报用）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StepOutcome {
+    pub id: String,
+    pub status: StepStatus,
+}
+
+/// 从「已跑完的结果」算出该跳过谁——**判定与传播都在这里，调用方不需要知道规则**。
+///
+/// 调试运行的循环在前端：它把跑完的 step 状态回报上来，拿走要跳过的清单。
+/// 若让前端自己判断"这一步算不算阻断源"，`blocks_downstream` 那套规则就有了第二份表达，
+/// 改开关语义时必然漏掉一处。
+///
+/// `outcomes` 只放**真正执行过**的 step——被跳过的是本函数的产出，不必回报回来
+/// （它们已在返回值里，再喂进来只会被当成已知阻断源而从结果中略去）。
+pub fn blocked_from_outcomes(
+    steps: &[Step],
+    outcomes: &[StepOutcome],
+    continue_on_assertion_failure: bool,
+) -> Vec<BlockedStep> {
+    let blocking: Vec<String> = outcomes
+        .iter()
+        .filter(|o| o.status.blocks_downstream(continue_on_assertion_failure))
+        .map(|o| o.id.clone())
+        .collect();
+    blocked_steps(steps, &blocking)
+}
+
+/// 依赖闭包传播：给定「已阻断」的 step id，算出还有哪些 step 会被连累。
+///
+/// **按依赖闭包算，不按线性顺序**——DAG 里两条独立分支，一条挂了不该连累另一条，
+/// 这正是 DAG 比线性列表值钱的地方。
+///
+/// 调试运行的循环在前端（每跑完一步要刷新界面），批量运行的在 `run_case`。
+/// 判定只在这里写一份，前端经 IPC 调用——同 `topo_order`，这类边界规则不该有两份实现。
+pub fn blocked_steps(steps: &[Step], blocking: &[String]) -> Vec<BlockedStep> {
+    // id → 根因。失败节点自己是自己的根因；被连累的继承上游的根因
+    let mut cause: HashMap<String, String> = blocking.iter().map(|id| (id.clone(), id.clone())).collect();
+    let mut out = Vec::new();
+    // 拓扑序保证上游先处理，传递性自然成立（A 挂 → B 跳 → C 也跳）
+    for i in topo_order(steps) {
+        let s = &steps[i];
+        if cause.contains_key(&s.id) {
+            continue; // 它本身就是阻断源
+        }
+        let Some(root) = s.depends_on.iter().find_map(|d| cause.get(d)).cloned() else {
+            continue;
+        };
+        cause.insert(s.id.clone(), root.clone());
+        out.push(BlockedStep { id: s.id.clone(), cause: root });
+    }
+    out
+}
+
+/// 从一组 step id 出发，**连同它们的上游依赖闭包**一起，按拓扑序返回下标。
+///
+/// `apicase run --step createOrder` 用这个：只写要跑的那一个，登录之类的上游由这里补齐。
+/// 否则用户得自己把整条链列出来——而链正是 DAG 里最容易列错的东西，
+/// 漏一个上游的表现是「下游拿着未解析的 `${{...}}` 字面量发出真实写请求」。
+///
+/// 认不出的 id 一律忽略（同 `topo_order` 对未知 `dependsOn` 的处理）；
+/// 「这个 id 存不存在」该由调用方在收参数时就报出来，那里才知道怎么提示。
+pub fn with_dependencies(steps: &[Step], ids: &[String]) -> Vec<usize> {
+    let by_id: HashMap<&str, usize> =
+        steps.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
+    let mut keep = vec![false; steps.len()];
+    let mut stack: Vec<usize> = ids.iter().filter_map(|id| by_id.get(id.as_str()).copied()).collect();
+    while let Some(i) = stack.pop() {
+        if std::mem::replace(&mut keep[i], true) {
+            continue; // 已收过，顺带把依赖成环挡在外面
+        }
+        for dep in &steps[i].depends_on {
+            if let Some(&j) = by_id.get(dep.as_str()) {
+                stack.push(j);
+            }
+        }
+    }
+    topo_order(steps).into_iter().filter(|&i| keep[i]).collect()
 }
 
 fn visit(
@@ -138,29 +228,12 @@ fn visit(
     out.push(i);
 }
 
-/// 收集本步可见的全部凭据字面值。
-///
-/// 三个来源缺一不可：**环境变量**、**case 级 vars**、以及**上游 step 提取出的 outputs**
-/// （登录拿到 token 再传给下游，是最常见的凭据流动路径）。
-fn secrets_in_scope(ctx: &RunContext, opts: &RunOpts) -> Vec<String> {
-    let mut out = secret_values_of_strings(&opts.environment.vars, opts.redact);
-    out.extend(secret_values(ctx.vars.iter(), opts.redact));
-    for outputs in ctx.steps.values() {
-        out.extend(secret_values_of_outputs(outputs, opts.redact));
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
 /// 执行单个 step：变量透传 → 发送 → 提取 outputs → 评估断言。
 ///
-/// 返回的第二项是**未脱敏的 outputs**——下游 step 要拿它发真实请求；
-/// 写进报告的那份（`StepResult.outputs`）已经掩码过了。
+/// 返回的第二项是 outputs，下游 step 拿它发真实请求。
 pub async fn run_step(step: &Step, ctx: &RunContext, opts: &RunOpts) -> (StepResult, BTreeMap<String, Value>) {
     let t0 = now_ms();
-    let secrets = secrets_in_scope(ctx, opts);
-    let clean = |b: Option<&str>| clean_body(b, &secrets, opts.redact, opts.max_body_bytes);
+    let clip = |b: Option<&str>| BodyRecord::clip(b, opts.max_body_bytes);
 
     let mut result = StepResult {
         id: step.id.clone(),
@@ -171,12 +244,13 @@ pub async fn run_step(step: &Step, ctx: &RunContext, opts: &RunOpts) -> (StepRes
         outputs: BTreeMap::new(),
         assertions: Vec::new(),
         error: None,
+        skip_reason: None,
     };
 
     let resolved = resolve_http(&step.http, ctx);
     match send_with_auth(&resolved, &opts.client).await {
         Ok((sent, resp)) => {
-            result.request = Some(record_request(&sent, &secrets, opts));
+            result.request = Some(record_request(&sent, opts));
             // 输出提取与断言看的是同一个响应切面（路径语法也是同一套）
             let view = RespView { status: resp.status, headers: &resp.headers, body: &resp.body };
             let outputs = extract_outputs(&step.outputs, &view);
@@ -185,35 +259,33 @@ pub async fn run_step(step: &Step, ctx: &RunContext, opts: &RunOpts) -> (StepRes
             result.response = Some(ResponseRecord {
                 status: resp.status,
                 status_text: resp.status_text,
-                headers: redact_headers(&resp.headers, opts.redact),
-                body: clean(Some(&resp.body)),
+                headers: resp.headers,
+                body: clip(Some(&resp.body)),
                 elapsed_ms: resp.elapsed_ms,
             });
-            result.outputs = redact_outputs(&outputs, opts.redact);
-            // 断言的 actual 直接来自响应体，凭据在这里同样会露出来
-            result.assertions = redact_assertions(assertions, &secrets, opts.redact);
+            result.outputs = outputs.clone();
+            result.assertions = assertions;
             result.duration_ms = now_ms().saturating_sub(t0);
             (result, outputs)
         }
         Err(e) => {
             // 请求没发出去（或认证前置步骤失败）也要把**将要发送**的报文记进报告——
             // 否则一条 "请求失败" 的错误连打到哪个 URL 都看不出来。
-            result.request = Some(record_request(&crate::request::build(&resolved), &secrets, opts));
-            result.error = Some(scrub_secrets(&e, &secrets));
+            result.request = Some(record_request(&crate::request::build(&resolved), opts));
+            result.error = Some(e);
             result.duration_ms = now_ms().saturating_sub(t0);
             (result, BTreeMap::new())
         }
     }
 }
 
-fn record_request(req: &crate::request::HttpRequest, secrets: &[String], opts: &RunOpts) -> RequestRecord {
+fn record_request(req: &crate::request::HttpRequest, opts: &RunOpts) -> RequestRecord {
     RequestRecord {
         method: req.method.clone(),
-        // URL 也要清洗：API Key 放 query 时凭据就在这里
-        url: scrub_secrets(&req.url, secrets),
-        headers: redact_headers(&req.headers, opts.redact),
+        url: req.url.clone(),
+        headers: req.headers.clone(),
         body: match &req.body {
-            Some(RequestBody::Text(t)) => clean_body(Some(t), secrets, opts.redact, opts.max_body_bytes),
+            Some(RequestBody::Text(t)) => BodyRecord::clip(Some(t), opts.max_body_bytes),
             // 文件与表单体没有可展示的文本，记个说明比记一片空白强
             Some(RequestBody::File(p)) => BodyRecord {
                 preview: Some(format!("<二进制文件：{p}>")),
@@ -233,6 +305,10 @@ fn record_request(req: &crate::request::HttpRequest, secrets: &[String], opts: &
 // ── 单个 case ───────────────────────────────────────
 
 /// 汇总一个 case 内各 step 的状态：任一 error 即 error，任一 failed 即 failed。
+///
+/// **skipped 不参与汇总**：case 的状态应该指向根因那一步，而不是被后面一串
+/// 被连累的节点稀释。跳过必然由同一个 case 内的 error / failed 引起，
+/// 那个根因节点自己会把状态顶上去。
 fn rollup(steps: &[StepResult]) -> CaseStatus {
     if steps.iter().any(|s| s.status == StepStatus::Error) {
         return CaseStatus::Error;
@@ -269,6 +345,16 @@ pub async fn run_case(text: &str, file: &str, opts: &RunOpts, cancel: &Cancel) -
     let Some(case) = analyzed.case.filter(|_| analyzed.valid) else {
         return skipped(file, analyzed.error.unwrap_or_else(|| "不是有效的用例".into()), t0);
     };
+    run_case_model(&case, file, opts, cancel).await
+}
+
+/// 执行一个**已解析**的 case。
+///
+/// `run_case` 解析完就调它。单独暴露是为了「只跑其中几个 step」这类需要先裁剪模型的场景
+/// （`apicase run --step`）——否则调用方得把裁剪后的模型再序列化回 YAML 绕一圈，
+/// 而那一圈会把执行结果绑在序列化的往返保真度上。
+pub async fn run_case_model(case: &crate::model::Case, file: &str, opts: &RunOpts, cancel: &Cancel) -> CaseResult {
+    let t0 = now_ms();
     if case.requests.is_empty() {
         return skipped(file, "用例没有任何请求", t0);
     }
@@ -276,13 +362,25 @@ pub async fn run_case(text: &str, file: &str, opts: &RunOpts, cancel: &Cancel) -
     // 变量隔离：每个 case 一份独立上下文（见模块文档）
     let mut ctx = RunContext::new(&opts.environment.vars, case.vars.as_ref());
     let mut steps = Vec::with_capacity(case.requests.len());
+    // step id → 根因 id。上游挂了的节点不再执行（见 `blocked_steps`）
+    let mut cause: HashMap<String, String> = HashMap::new();
     for i in topo_order(&case.requests) {
         if cancel.is_cancelled() {
             break;
         }
         let st = &case.requests[i];
+        // 上游被阻断 → 这一步不跑，但**仍要进报告**：少一个节点，
+        // 看的人无从判断它是"跑过且通过"还是"压根没跑"
+        if let Some(root) = st.depends_on.iter().find_map(|d| cause.get(d)).cloned() {
+            steps.push(StepResult::skipped(&st.id, format!("上游 {root} 失败")));
+            cause.insert(st.id.clone(), root); // 传递性：跳过的节点同样阻断它的下游
+            continue;
+        }
         let (result, outputs) = run_step(st, &ctx, opts).await;
         ctx.steps.insert(st.id.clone(), outputs);
+        if result.status.blocks_downstream(opts.continue_on_assertion_failure) {
+            cause.insert(st.id.clone(), st.id.clone()); // 失败节点自己是根因
+        }
         let stop = opts.stop_on_failure && result.status != StepStatus::Passed;
         steps.push(result);
         if stop {
@@ -292,7 +390,7 @@ pub async fn run_case(text: &str, file: &str, opts: &RunOpts, cancel: &Cancel) -
 
     CaseResult {
         file: file.to_string(),
-        name: case.name.filter(|n| !n.is_empty()).unwrap_or_else(|| file_name_of(file)),
+        name: case.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| file_name_of(file)),
         status: rollup(&steps),
         skip_reason: None,
         started_at: iso8601(t0),
@@ -354,10 +452,7 @@ pub async fn run_batch(
         duration_ms: 0,
         status: RunStatus::Running,
         workspace: meta.workspace,
-        environment: EnvironmentInfo {
-            name: opts.environment.name.clone(),
-            vars: redact_vars(&opts.environment.vars, opts.redact),
-        },
+        environment: opts.environment.clone(),
         options: meta.options,
         summary: RunSummary::default(),
         cases: Vec::new(),
@@ -389,6 +484,10 @@ pub async fn run_batch(
     } else {
         stopped = run_concurrent(&targets, &opts, &cancel, &mut report, t0, &emit).await;
     }
+
+    // 运行期间收到的 cookie 走的是节流落盘（最快 1s 一次），收尾这一下把尾巴写下去：
+    // 跑完就关掉应用是常态，丢掉最后那次登录会让下一轮莫名其妙地 401
+    crate::cookie::flush_all();
 
     let end = now_ms();
     report.status = if cancel.is_cancelled() && !stopped { RunStatus::Cancelled } else { RunStatus::Done };

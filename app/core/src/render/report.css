@@ -77,8 +77,17 @@ body {
   transition: width .25s ease; }
 
 /* ── 概览卡片 ── */
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+/* 两行一个 grid：上排用例、下排请求，**同名状态列列对齐**（"跳过"就在"跳过"正上方）。
+   断言不分层级，故跨两行占满右侧一列。固定 6 列而非 auto-fit——auto-fit 会让两行
+   各自算列数，正是它导致上下对不齐。 */
+.stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px; margin-bottom: 18px; }
+.stat-tall { grid-row: span 2; display: flex; flex-direction: column; justify-content: center; }
+/* 窄屏放弃对齐：6 列挤不下时回到流式，断言也不再跨行 */
+@media (max-width: 760px) {
+  .stats { grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); }
+  .stat-tall { grid-row: auto; }
+}
 .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
   padding: 12px 14px; box-shadow: 0 1px 2px var(--shadow); }
 .stat-num { font-size: 22px; font-weight: 650; color: var(--text-strong);
@@ -102,9 +111,16 @@ body {
 .search:focus { border-color: var(--accent); }
 .search::placeholder { color: var(--muted); }
 .count-hint { color: var(--muted); font-size: 12px; margin-left: auto; }
+/* 筛选 + 搜索是可视化视图专属的一组，整组随视图显隐 */
+.toolbar-visual { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.toolbar-visual[hidden] { display: none; }
+.view-seg { flex-shrink: 0; }
+#copy-all { margin-left: auto; }
 
 /* ── 用例列表 ── */
 .cases { display: flex; flex-direction: column; gap: 6px; }
+/* `display: flex` 的特异性高过 `[hidden]` 自带的 display:none，切到源码视图时列表会照样显示 */
+.cases[hidden] { display: none; }
 .case { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
   overflow: hidden; box-shadow: 0 1px 2px var(--shadow); }
 .case[hidden] { display: none; }
@@ -191,13 +207,31 @@ table.asserts .c-expected { width: 20%; }
   font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .kv dt { color: var(--muted); word-break: break-all; }
 .kv dd { margin: 0; word-break: break-all; }
+/* 报文体上方的工具条：格式切换靠左、复制靠右。
+   只有能解析成 JSON 的报文体才有格式按钮，纯文本只留复制 */
+.body-bar { display: flex; align-items: center; gap: 8px; margin: 8px 0 6px; }
+.body-bar:first-child { margin-top: 0; }
+.seg.mini { padding: 2px; }
+.seg.mini button { font-size: 11px; padding: 2px 8px; }
+.copy-btn { margin-left: auto; border: 1px solid var(--border); background: var(--panel);
+  color: var(--muted); cursor: pointer; font: inherit; font-size: 11px; padding: 3px 10px;
+  border-radius: 6px; transition: all .12s; }
+.copy-btn:hover { color: var(--text); border-color: var(--border-strong); }
+/* 复制成功后按钮自己变成回执，不弹 toast——报告页可能被嵌在 iframe 里，浮层会被裁掉 */
+.copy-btn.done { color: var(--green); border-color: var(--green); }
 pre.body { margin: 8px 0 0; padding: 10px 12px; background: var(--code-bg); color: var(--code-fg);
   border-radius: 6px; overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo,
   Consolas, monospace; font-size: 12px; line-height: 1.5; max-height: 380px; }
-pre.body:first-child { margin-top: 0; }
+pre.body:first-child, .body-bar + pre.body { margin-top: 0; }
+/* 整份报告的源码视图：占一屏、内部滚动。不设上限会让页面变成几千行长条，
+   「复制全部」按钮滚没了反而更难用 */
+pre.raw-view { margin: 0; max-height: calc(100vh - 240px); min-height: 320px; }
 .trunc { color: var(--amber); font-size: 12px; margin-top: 6px; }
 .err { background: var(--red-tint); color: var(--red); border-radius: 6px; padding: 8px 11px;
   font-size: 13px; margin-bottom: 8px; word-break: break-all; }
+/* 跳过不是失败（对齐 TestNG 的 SKIP 语义）——用中性色，不要红也不要绿 */
+.skip { background: var(--panel-2, rgba(127,127,127,0.10)); color: var(--muted);
+  border-radius: 6px; padding: 8px 11px; font-size: 13px; word-break: break-all; }
 .sec-label { font-size: 12px; color: var(--muted); margin: 10px 0 4px; font-weight: 550; }
 .na-note { color: var(--muted); font-size: 12px; }
 
