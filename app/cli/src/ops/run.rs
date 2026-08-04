@@ -135,8 +135,11 @@ pub async fn run(
         },
     };
 
-    // 报告与 cookie jar 都含明文凭据，开跑前先把 .apicase/ 挡在版本库外
-    ws.ensure_gitignore();
+    // 报告与 cookie jar 都含明文凭据，开跑前先把 .apicase/ 挡在版本库外。
+    // 未锚定的目录不碰——那可能是 /tmp 或别人的项目，往里塞 .gitignore 是侵入
+    if !ws.is_scratch() {
+        ws.ensure_gitignore();
+    }
     let writer = open_writer(ws, req, &meta.options.targets)?;
 
     if let Some(f) = on_event.as_ref() {
@@ -163,7 +166,17 @@ fn resolve_targets(ws: &Workspace, req: &RunRequest) -> Result<(Vec<BatchTarget>
         return Ok((Vec::new(), vec![STDIN_FILE.into()]));
     }
 
-    // 没给目标 = 整个工作空间
+    // 没给目标 = 整个工作空间。**但未锚定时不许这么干**：那时的「根」只是当前目录，
+    // 在 ~ 或 / 底下敲一句 `apicase run` 会递归扫掉整个主目录，
+    // 把碰巧同名的 .yml 全当用例跑一遍——那是能造成真实伤害的（我们发的是真 HTTP 写请求）。
+    if req.targets.is_empty() && ws.is_scratch() {
+        return Err(format!(
+            "{} 不是工作空间（没有 {}），不能省略目标——请指明要跑哪个文件或目录，\
+             或用 apicase init 把它声明为工作空间",
+            ws.root.display(),
+            workspace::CONFIG_FILE
+        ));
+    }
     let roots: Vec<PathBuf> =
         if req.targets.is_empty() { vec![ws.root.clone()] } else { req.targets.clone() };
     for t in &roots {
@@ -221,6 +234,9 @@ fn open_writer(ws: &Workspace, req: &RunRequest, rel_targets: &[String]) -> Resu
     let path = match &req.report {
         ReportSink::None => return Ok(None),
         ReportSink::Path(p) => p.clone(),
+        // 未锚定时不自动落盘：那个目录没被声明成工作空间，不该凭空长出 .apicase/。
+        // 显式 `--report <文件>` 仍然照办——那是用户点名要的。
+        ReportSink::Auto if ws.is_scratch() => return Ok(None),
         ReportSink::Auto => {
             // 跑整个工作空间时目标是根，相对路径为空——用工作空间名，
             // 否则一堆只有时间戳的报告文件放在一起，光看名字分不出跑的是什么
