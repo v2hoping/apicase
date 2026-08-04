@@ -28,7 +28,7 @@ export function methodClass(m: string): string {
 }
 
 // 行删除图标：线条描边垃圾桶（currentColor 跟随文字色，hover 变红由 .row-del 控制）
-function TrashIcon() {
+export function TrashIcon() {
   return (
     <svg className="trash-ico" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
       <path

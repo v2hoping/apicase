@@ -15,6 +15,7 @@
 //! CA 文件的 **mtime 与长度**参与缓存键：用户换了证书文件、客户端会自动重建，
 //! 不必重启应用——只用路径做键的话，改完证书还得重启才生效，很难想到原因。
 
+use crate::cookie::{self, CookieConfig};
 use crate::report::KvPair;
 use crate::request::{HttpRequest, RequestBody};
 use serde::{Deserialize, Serialize};
@@ -62,6 +63,9 @@ pub struct ClientConfig {
     pub proxy: Option<ProxyConfig>,
     #[serde(default)]
     pub options: Option<RequestOptions>,
+    /// Cookie jar（开关 + 落盘位置）。缺省 = 不启用，见 `cookie::CookieConfig`。
+    #[serde(default)]
+    pub cookies: Option<CookieConfig>,
 }
 
 /// 一次 HTTP 往返的结果。
@@ -87,6 +91,9 @@ struct ClientKey {
     /// CA 文件的 (mtime 毫秒, 字节数)——换了证书文件即自动重建客户端
     ca_stamp: (u64, u64),
     timeout_ms: u64,
+    /// cookie jar 标识（空 = 未启用）。provider 是 builder 级设置，不进缓存键
+    /// 就会出现「关了开关仍在带 cookie」这类跟着缓存走的幽灵行为。
+    cookie_jar: String,
 }
 
 /// 缓存条目上限。配置组合来自"代理 × 证书 × 超时"，正常用法下只有个位数；
@@ -164,6 +171,7 @@ fn key_of(cfg: &ClientConfig) -> ClientKey {
         ca_path,
         ca_stamp,
         timeout_ms: opts.timeout_ms.unwrap_or(0),
+        cookie_jar: cookie::client_key(cfg),
     }
 }
 
@@ -196,6 +204,13 @@ fn build_client(cfg: &ClientConfig) -> Result<reqwest::Client, String> {
         .user_agent(concat!("apicase/", env!("CARGO_PKG_VERSION")))
         // 空闲连接留久一点：批量运行里同一个服务会被连续打很多次
         .pool_idle_timeout(Duration::from_secs(90));
+
+    // Cookie jar 交给 reqwest 而不是自己在响应回来后收：**重定向链**上的
+    // Set-Cookie 与回带只有它看得见（`POST /login → 302 + Set-Cookie → GET /home`
+    // 中间那一跳我们根本拿不到）。发送前仍会自己算一次 Cookie 头写进报告，见 cookie::attach。
+    if let Some(jar) = cookie::jar_for(cfg) {
+        b = b.cookie_provider(jar);
+    }
 
     match cfg.proxy.as_ref().map(|p| p.mode.as_str()) {
         Some("none") => b = b.no_proxy(),
@@ -411,6 +426,7 @@ mod tests {
         let cfg = ClientConfig {
             proxy: Some(ProxyConfig { mode: "none".into(), url: None }),
             options: Some(RequestOptions { timeout_ms: Some(1000), ..Default::default() }),
+            ..Default::default()
         };
         for _ in 0..3 {
             p.get(&cfg).expect("应能构建");
@@ -424,7 +440,10 @@ mod tests {
         let p = ClientPool::new();
         let configs = [
             ClientConfig::default(),
-            ClientConfig { proxy: Some(ProxyConfig { mode: "none".into(), url: None }), options: None },
+            ClientConfig {
+                proxy: Some(ProxyConfig { mode: "none".into(), url: None }),
+                ..Default::default()
+            },
             ClientConfig {
                 options: Some(RequestOptions { verify_ssl: Some(false), ..Default::default() }),
                 ..Default::default()

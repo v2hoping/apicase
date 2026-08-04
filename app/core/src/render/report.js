@@ -1,7 +1,133 @@
 
+// 报文体的格式化：JSON 美化与 YAML 输出。
+//
+// 抽成独立的一段（而不是塞进下面的主 IIFE）是为了**能被单测**——
+// 报告页的 JS 跑在浏览器里、没有模块系统，测试按 #region 标记截取这一段来求值。
+// YAML 只用于**展示与复制**，不参与解析回读，故规则可以比 core 的 emitter 简单；
+// 但引号该加的必须加，否则复制出去的那份粘到别处就变了意思。
+// #region fmt
+var ApicaseFmt = (function () {
+  "use strict";
+
+  function pad(n) {
+    var s = "";
+    for (var i = 0; i < n; i++) s += " ";
+    return s;
+  }
+
+  /** 裸写会被读成别的类型、或根本读不回来的字符串，必须加引号 */
+  function needQuote(s) {
+    if (s === "") return true;
+    if (/^\s|\s$/.test(s)) return true; // 首尾空白会被吃掉
+    if (/^[-?:,\[\]{}#&*!|>'"%@`]/.test(s)) return true; // 以指示符开头
+    if (/:\s|\s#/.test(s)) return true; // 值里出现 ": " 或 " #"
+    if (/^(true|false|null|yes|no|on|off|~)$/i.test(s)) return true; // 布尔 / 空值形态
+    if (/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(s)) return true; // 数字形态
+    return false;
+  }
+
+  /** 单引号优先：唯一的转义是把 ' 写两遍，反斜杠原样——token 与正则里反斜杠很常见 */
+  function quote(s) {
+    return "'" + s.replace(/'/g, "''") + "'";
+  }
+
+  function text(s) {
+    return needQuote(s) ? quote(s) : s;
+  }
+
+  /**
+   * 键位置更宽松（同 core 的 emitter）：键恒按字符串取用、没有类型歧义，
+   * 故 `no` / `123` 这类只在**值**位置才需要引号的，作为键裸写即可——
+   * 一份响应里键名成百上千，多出来的引号全是噪声。
+   */
+  function keyText(k) {
+    var s = String(k);
+    if (s === "" || /^\s|\s$/.test(s)) return quote(s);
+    if (/^[-?:,\[\]{}#&*!|>'"%@`]/.test(s) || /:\s|\s#/.test(s)) return quote(s);
+    return s;
+  }
+
+  /** 多行文本走块标量：以换行结尾用 |，否则 |- */
+  function block(s, ind) {
+    var keep = /\n$/.test(s);
+    var body = s.replace(/\n$/, "").split("\n").map(function (l) {
+      return pad(ind + 2) + l;
+    }).join("\n");
+    return (keep ? "|" : "|-") + "\n" + body;
+  }
+
+  /** 紧跟在 `key:` 之后的部分（标量带前导空格，容器带换行 + 子行） */
+  function value(v, ind) {
+    if (v === null || v === undefined) return " null";
+    var t = typeof v;
+    if (t === "number" || t === "boolean") return " " + String(v);
+    if (t === "string") return v.indexOf("\n") >= 0 ? " " + block(v, ind) : " " + text(v);
+    if (Array.isArray(v)) {
+      if (!v.length) return " []";
+      return "\n" + v.map(function (item) { return seqItem(item, ind + 2); }).join("");
+    }
+    var keys = Object.keys(v);
+    if (!keys.length) return " {}";
+    return "\n" + keys.map(function (k) { return mapItem(k, v[k], ind + 2); }).join("");
+  }
+
+  /** 拼一行：容器的 value() 已经自带尾换行，不能再补一个 */
+  function line(prefix, v, ind) {
+    var out = value(v, ind);
+    return prefix + out + (/\n$/.test(out) ? "" : "\n");
+  }
+
+  function mapItem(k, v, ind) {
+    return line(pad(ind) + keyText(k) + ":", v, ind);
+  }
+
+  function seqItem(item, ind) {
+    var isMap = item !== null && typeof item === "object" && !Array.isArray(item);
+    var keys = isMap ? Object.keys(item) : [];
+    if (!keys.length) return line(pad(ind) + "-", item, ind);
+    // 对象的首个键跟在 "- " 后面，其余键与它左对齐（缩进 = ind + 2）
+    var first = line(pad(ind) + "- " + keyText(keys[0]) + ":", item[keys[0]], ind + 2);
+    var rest = keys.slice(1).map(function (k) { return mapItem(k, item[k], ind + 2); }).join("");
+    return first + rest;
+  }
+
+  /** JSON 值 → YAML 文本 */
+  function toYaml(v) {
+    if (v === null || typeof v !== "object") return value(v, 0).slice(1) + "\n";
+    if (Array.isArray(v)) {
+      return v.length ? v.map(function (i) { return seqItem(i, 0); }).join("") : "[]\n";
+    }
+    var keys = Object.keys(v);
+    return keys.length ? keys.map(function (k) { return mapItem(k, v[k], 0); }).join("") : "{}\n";
+  }
+
+  /** 文本能解析成 JSON 就返回解析结果，否则 undefined（据此决定要不要给格式切换） */
+  function asJson(t) {
+    if (!t) return undefined;
+    try {
+      var v = JSON.parse(t);
+      return typeof v === "object" && v !== null ? v : undefined;
+    } catch (e) {
+      return undefined;
+    }
+  }
+
+  /** 按格式渲染一段报文体：认不出 JSON 时一律回落原文，不糊弄 */
+  function format(raw, fmt) {
+    var v = asJson(raw);
+    if (!v) return raw;
+    if (fmt === "yaml") return toYaml(v);
+    if (fmt === "raw") return raw;
+    return JSON.stringify(v, null, 2); // 默认 json：缩进两格的美化形态
+  }
+
+  return { toYaml: toYaml, asJson: asJson, format: format };
+})();
+// #endregion fmt
+
 (function () {
   "use strict";
-  var state = { report: null, filter: "all", query: "", host: false };
+  var state = { report: null, filter: "all", query: "", host: false, view: "visual" };
   var rows = new Map(); // file -> { el: <details>, sig: string }
 
   function esc(s) {
@@ -38,12 +164,13 @@
   }
   function markChar(st) {
     return st === "passed" ? "✓" : st === "failed" ? "✕" : st === "error" ? "!" :
-      st === "running" ? "" : "–";
+      st === "running" ? "" : "–"; // skipped 也走这个短横——它既不是通过也不是失败
   }
-  function pretty(text) {
-    if (!text) return text;
-    try { return JSON.stringify(JSON.parse(text), null, 2); } catch (e) { return text; }
-  }
+  var FORMATS = [
+    { id: "json", label: "JSON" },
+    { id: "yaml", label: "YAML" },
+    { id: "raw", label: "原文" }
+  ];
 
   // ── 头部 / 概览 ──
   function renderHead() {
@@ -64,6 +191,11 @@
     parts.push("开始 <b>" + esc(fmtTime(r.startedAt)) + "</b>");
     parts.push("耗时 <b>" + esc(fmtMs(r.durationMs)) + "</b>");
     if (r.workspace && r.workspace.name) parts.push("工作空间 <b>" + esc(r.workspace.name) + "</b>");
+    // 失败传播策略：运行面板可临时覆盖工作空间配置，报告必须自证用的是哪一套——
+    // 否则两份结论不同的报告摆在一起，分不清是服务变了还是选项变了
+    if (r.options && r.options.continueOnAssertionFailure) {
+      parts.push("失败传播 <b>断言失败继续</b>");
+    }
     document.getElementById("sub").innerHTML = parts.join("<span>·</span>");
 
     var done = s.passed + s.failed + s.error + s.skipped;
@@ -76,6 +208,11 @@
       bar.hidden = true;
     }
 
+    // 两行一个 grid：上排用例、下排请求，同名状态**列列对齐**，
+    // 断言跨两行占满右侧一列（它是唯一不分层级的指标）。顺序即填充顺序，别打乱。
+    // 用例级的「跳过」是「这个文件没跑」，请求级的是「上游挂了没轮到它」——
+    // 两个维度分开计，但**样式一致**，同一列上下读得是同一件事。
+    var t = s.steps || { total: 0, passed: 0, failed: 0, error: 0, skipped: 0 };
     var cards = [
       { n: s.total, l: "用例总数", c: "" },
       { n: s.passed, l: "通过", c: s.passed ? "ok" : "mute" },
@@ -83,10 +220,16 @@
       { n: s.error, l: "错误", c: s.error ? "warn" : "mute" },
       { n: s.skipped, l: "跳过", c: s.skipped ? "warn" : "mute" },
       { n: s.assertions.passed + "/" + s.assertions.total, l: "断言通过",
-        c: s.assertions.failed ? "bad" : s.assertions.total ? "ok" : "mute" }
+        c: s.assertions.failed ? "bad" : s.assertions.total ? "ok" : "mute", span: true },
+      { n: t.total, l: "请求总数", c: "" },
+      { n: t.passed, l: "通过", c: t.passed ? "ok" : "mute" },
+      { n: t.failed, l: "失败", c: t.failed ? "bad" : "mute" },
+      { n: t.error, l: "错误", c: t.error ? "warn" : "mute" },
+      { n: t.skipped, l: "跳过", c: t.skipped ? "warn" : "mute" }
     ];
     document.getElementById("stats").innerHTML = cards.map(function (c) {
-      return '<div class="stat"><div class="stat-num ' + c.c + '">' + esc(c.n) +
+      return '<div class="stat' + (c.span ? " stat-tall" : "") + '">' +
+        '<div class="stat-num ' + c.c + '">' + esc(c.n) +
         '</div><div class="stat-label">' + esc(c.l) + "</div></div>";
     }).join("");
   }
@@ -108,10 +251,13 @@
         esc(st.response.status) + "</span>");
       h.push("<span>" + esc(fmtBytes(st.response.body.bytes)) + "</span>");
     }
-    h.push("<span>" + esc(fmtMs(st.durationMs)) + "</span>");
+    // 跳过的步骤没跑过，"0ms" 是个会误导人的数字
+    if (st.status !== "skipped") h.push("<span>" + esc(fmtMs(st.durationMs)) + "</span>");
     h.push("</span></div>");
 
     if (st.error) h.push('<div class="err">' + esc(st.error) + "</div>");
+    // 跳过必须说明原因——报告里一个灰格子不写为什么，看的人无从判断它是没跑还是跑过没事
+    if (st.skipReason) h.push('<div class="skip">' + esc(st.skipReason) + "，已跳过</div>");
 
     if (st.assertions && st.assertions.length) {
       h.push('<table class="asserts"><thead><tr><th class="c-mark"></th><th class="c-target">目标</th>' +
@@ -173,7 +319,21 @@
       h.push("</dl>");
     }
     if (hasBody) {
-      h.push('<pre class="body">' + esc(pretty(body.preview)) + "</pre>");
+      // 能解析成 JSON 才给格式切换；纯文本 / HTML 只给复制，免得点了「YAML」却什么也不变
+      var structured = !!ApicaseFmt.asJson(body.preview);
+      h.push('<div class="body-bar">');
+      if (structured) {
+        h.push('<span class="seg mini fmt">');
+        FORMATS.forEach(function (f) {
+          h.push('<button class="fmt-btn' + (f.id === "json" ? " on" : "") + '" data-fmt="' +
+            f.id + '">' + esc(f.label) + "</button>");
+        });
+        h.push("</span>");
+      }
+      h.push('<button class="copy-btn" data-copy="1">复制</button></div>');
+      // data-raw 存原文：切换格式时从它重新算，不受上一次显示的是哪一种影响
+      h.push('<pre class="body" data-raw="' + esc(body.preview) + '">' +
+        esc(ApicaseFmt.format(body.preview, "json")) + "</pre>");
       if (body.truncated) {
         h.push('<div class="trunc">已截断，原始大小 ' + esc(fmtBytes(body.bytes)) + "</div>");
       }
@@ -202,7 +362,12 @@
       h.push('<span class="ratio ' + (passed === asserts ? "ok" : "bad") + '">' +
         passed + "/" + asserts + " 断言</span>");
     }
-    if (c.steps && c.steps.length) h.push("<span>" + c.steps.length + " 步</span>");
+    // 折叠状态下也要看得出「有几步压根没跑」——否则 1/2 断言会被误读成只有两条断言的用例
+    if (c.steps && c.steps.length) {
+      var skipped = 0;
+      c.steps.forEach(function (st) { if (st.status === "skipped") skipped++; });
+      h.push("<span>" + c.steps.length + " 步" + (skipped ? " · " + skipped + " 跳过" : "") + "</span>");
+    }
     h.push("<span>" + esc(fmtMs(c.durationMs)) + "</span>");
     h.push("</span></summary>");
     h.push('<div class="case-body">');
@@ -272,10 +437,37 @@
     hint.textContent = shown === cases.length ? "" : "显示 " + shown + " / " + cases.length;
   }
 
+  /**
+   * 整份报告的源码视图（JSON / YAML）。
+   *
+   * 只在切到该视图时才生成：一份跑了几百个用例的报告序列化出来是几 MB 文本，
+   * 每次进度更新都算一遍会把页面拖死。
+   */
+  function renderRaw() {
+    var pre = document.getElementById("raw-view");
+    if (state.view === "visual" || !state.report) return;
+    pre.textContent = state.view === "yaml"
+      ? ApicaseFmt.toYaml(state.report)
+      : JSON.stringify(state.report, null, 2);
+  }
+
+  function applyView() {
+    var raw = state.view !== "visual";
+    document.getElementById("cases").hidden = raw;
+    document.getElementById("toolbar-visual").hidden = raw;
+    document.getElementById("raw-view").hidden = !raw;
+    document.getElementById("copy-all").hidden = !raw;
+    // 「暂无结果」是可视化列表的空态，源码视图下不该冒出来
+    if (raw) document.getElementById("empty").hidden = true;
+    renderRaw();
+    if (!raw) syncCases();
+  }
+
   function render() {
     if (!state.report) return;
     renderHead();
-    syncCases();
+    if (state.view === "visual") syncCases();
+    else renderRaw(); // 运行中切在源码视图上：数据每更新一次就重出一份文本
   }
 
   function setReport(r) {
@@ -297,11 +489,84 @@
   }
 
   // ── 事件 ──
+  /** 找到与这个按钮同属一块报文体的 <pre> */
+  function bodyOf(btn) {
+    var bar = btn.closest(".body-bar");
+    return bar ? bar.nextElementSibling : null;
+  }
+
+  /** 复制到剪贴板：`file://` 下 navigator.clipboard 常被拒，故留一条 textarea 的老路 */
+  function copyText(t) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(t).catch(function () { return legacyCopy(t); });
+    }
+    return Promise.resolve(legacyCopy(t));
+  }
+  function legacyCopy(t) {
+    var ta = document.createElement("textarea");
+    ta.value = t;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (err) { /* 两条路都不通就只能让用户手选 */ }
+    document.body.removeChild(ta);
+  }
+
   document.addEventListener("click", function (e) {
-    var seg = e.target.closest ? e.target.closest(".seg button") : null;
+    var viewBtn = e.target.closest && e.target.closest("[data-view]");
+    if (viewBtn) {
+      state.view = viewBtn.getAttribute("data-view");
+      Array.prototype.forEach.call(document.querySelectorAll("[data-view]"), function (b) {
+        b.classList.toggle("on", b === viewBtn);
+      });
+      applyView();
+      return;
+    }
+    var copyAll = e.target.closest && e.target.closest("[data-copy-all]");
+    if (copyAll) {
+      copyText(document.getElementById("raw-view").textContent);
+      copyAll.textContent = "已复制";
+      copyAll.classList.add("done");
+      setTimeout(function () {
+        copyAll.textContent = "复制全部";
+        copyAll.classList.remove("done");
+      }, 1400);
+      return;
+    }
+    var fmtBtn = e.target.closest && e.target.closest(".fmt-btn");
+    if (fmtBtn) {
+      var pre = bodyOf(fmtBtn);
+      if (pre) {
+        pre.textContent = ApicaseFmt.format(pre.getAttribute("data-raw") || "", fmtBtn.getAttribute("data-fmt"));
+        Array.prototype.forEach.call(fmtBtn.parentNode.querySelectorAll("button"), function (b) {
+          b.classList.toggle("on", b === fmtBtn);
+        });
+      }
+      return;
+    }
+    var copyBtn = e.target.closest && e.target.closest(".copy-btn");
+    if (copyBtn) {
+      var target = bodyOf(copyBtn);
+      if (target) {
+        // 复制**当前显示的那一份**：切到 YAML 就是为了把 YAML 贴出去
+        copyText(target.textContent);
+        copyBtn.textContent = "已复制";
+        copyBtn.classList.add("done");
+        setTimeout(function () {
+          copyBtn.textContent = "复制";
+          copyBtn.classList.remove("done");
+        }, 1400);
+      }
+      return;
+    }
+    // 按 data-filter 而不是 `.seg button` 选：报文体的格式切换也是一组 .seg 按钮，
+    // 用后者会让点一次筛选就把所有格式按钮的选中态清掉
+    var seg = e.target.closest ? e.target.closest("[data-filter]") : null;
     if (seg) {
       state.filter = seg.getAttribute("data-filter");
-      Array.prototype.forEach.call(document.querySelectorAll(".seg button"), function (b) {
+      Array.prototype.forEach.call(document.querySelectorAll("[data-filter]"), function (b) {
         b.classList.toggle("on", b === seg);
       });
       syncCases();

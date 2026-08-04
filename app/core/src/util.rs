@@ -81,6 +81,44 @@ pub fn iso8601(ms: u64) -> String {
     )
 }
 
+/// 毫秒 → `YYYYMMDDHHmmss`，用作报告文件名的前缀（排序即时序）。
+///
+/// **传进来的毫秒被当作「墙上时间」直接格式化**，本函数不做时区转换：报告文件名是给人看的，
+/// 显示成 UTC 会让「下午三点跑的那份」写着 07。调用方自行把本地偏移加进去
+/// （前端用 `Date` 的本地取值，CLI 用系统时区偏移），core 仍不引时区库。
+pub fn stamp14(ms: u64) -> String {
+    let secs = ms / 1000;
+    let (y, mo, d) = civil_from_days((secs / 86_400) as i64);
+    let tod = secs % 86_400;
+    format!("{y:04}{mo:02}{d:02}{:02}{:02}{:02}", tod / 3600, (tod % 3600) / 60, tod % 60)
+}
+
+/// Unix 毫秒 → HTTP 日期（RFC 1123，形如 `Wed, 21 Oct 2026 07:28:00 GMT`）。
+///
+/// 用于拼 `Set-Cookie` 的 `Expires=`——管理界面手工加一条 cookie 时，
+/// 交给 cookie 解析器去认这一串比自己去构造属性对象省事，也顺带走了它的合法性校验。
+/// 同 `iso8601`：自己算历法，不引时区库（HTTP 日期恒是 GMT）。
+pub fn http_date(ms: u64) -> String {
+    const WDAY: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MON: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let secs = ms / 1000;
+    let days = secs / 86_400;
+    let (y, mo, d) = civil_from_days(days as i64);
+    // 1970-01-01 是星期四，故 +4 对齐到「0 = 星期日」
+    let wd = ((days + 4) % 7) as usize;
+    let tod = secs % 86_400;
+    format!(
+        "{}, {d:02} {} {y:04} {:02}:{:02}:{:02} GMT",
+        WDAY[wd],
+        MON[(mo - 1) as usize],
+        tod / 3600,
+        (tod % 3600) / 60,
+        tod % 60
+    )
+}
+
 /// 天序号（自 1970-01-01）→ 公历年月日。
 /// Howard Hinnant 的 `civil_from_days`：把三月当年首，闰年规则因此退化成纯算术，
 /// 没有查表、没有分支，闰年与世纪年自然正确。
@@ -132,6 +170,32 @@ mod tests {
         for (ms, want) in cases {
             assert_eq!(iso8601(ms), want, "{ms}");
         }
+    }
+
+    /// 与 `new Date(ms).toUTCString()` 逐字一致（星期几算错的话，cookie 的过期时间会被服务端/解析器丢掉）
+    #[test]
+    fn http_date_matches_javascript_toutcstring() {
+        let cases = [
+            (0u64, "Thu, 01 Jan 1970 00:00:00 GMT"),
+            (1_785_369_600_000, "Thu, 30 Jul 2026 00:00:00 GMT"),
+            (1_785_456_896_789, "Fri, 31 Jul 2026 00:14:56 GMT"),
+            (1_709_164_800_000, "Thu, 29 Feb 2024 00:00:00 GMT"),
+            (951_782_400_000, "Tue, 29 Feb 2000 00:00:00 GMT"),
+            (1_767_225_599_000, "Wed, 31 Dec 2025 23:59:59 GMT"),
+        ];
+        for (ms, want) in cases {
+            assert_eq!(http_date(ms), want, "{ms}");
+        }
+    }
+
+    /// 报告文件名的时间戳前缀：与 `iso8601` 取的是同一套历法，只是换个排版
+    #[test]
+    fn stamp14_is_the_iso_timestamp_without_separators() {
+        for ms in [0u64, 1_785_369_600_000, 1_709_164_800_000, 1_767_225_599_999] {
+            let want: String = iso8601(ms).chars().filter(char::is_ascii_digit).take(14).collect();
+            assert_eq!(stamp14(ms), want, "{ms}");
+        }
+        assert_eq!(stamp14(1_785_369_600_000), "20260730000000");
     }
 
     #[test]

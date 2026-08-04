@@ -6,13 +6,16 @@ import { useEffect, useRef, useState } from "react";
 import { UiNodes } from "./case";
 import { methodClass } from "./RequestEditor";
 
-export type RunStatus = "idle" | "running" | "ok" | "err";
+/** skipped = 上游挂了，这一步根本没跑（既非通过也非失败，第三种颜色） */
+export type RunStatus = "idle" | "running" | "ok" | "err" | "skipped";
 
 export interface FlowNode {
   id: string;
   method: string;
   dependsOn: string[];
   status: RunStatus;
+  /** skipped 时的原因，形如「上游 login 失败」；挂在节点 title 上 */
+  skipReason?: string;
 }
 
 const NODE_W = 172;
@@ -258,6 +261,8 @@ export function FlowCanvas({
       return { x: base.x + (g.x - g0.x), y: base.y + (g.y - g0.y) };
     };
     const onMove = (ev: MouseEvent) => {
+      // 没收到 mouseup（拖出窗口松手）时自愈，否则节点会一直粘着鼠标
+      if (ev.buttons === 0) return onUp(ev);
       const g = toGraph(ev.clientX, ev.clientY);
       if (!moved && Math.hypot(g.x - g0.x, g.y - g0.y) * zoomRef.current > 3) moved = true;
       if (moved) {
@@ -291,6 +296,7 @@ export function FlowCanvas({
     const g = toGraph(e.clientX, e.clientY);
     setConnect({ from: id, x: g.x, y: g.y });
     const onMove = (ev: MouseEvent) => {
+      if (ev.buttons === 0) return onUp(); // 同上：漏掉 mouseup 时自愈
       const gg = toGraph(ev.clientX, ev.clientY);
       let over: string | undefined;
       for (const n of nodesRef.current) {
@@ -322,7 +328,10 @@ export function FlowCanvas({
     const sy = e.clientY;
     const base = panRef.current;
     setPanning(true);
-    const onMove = (ev: MouseEvent) => setPan({ x: base.x + (ev.clientX - sx), y: base.y + (ev.clientY - sy) });
+    const onMove = (ev: MouseEvent) => {
+      if (ev.buttons === 0) return onUp(); // 同上：漏掉 mouseup 时自愈
+      setPan({ x: base.x + (ev.clientX - sx), y: base.y + (ev.clientY - sy) });
+    };
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
@@ -369,7 +378,10 @@ export function FlowCanvas({
       setPan({ x: vp.clientWidth / 2 - cx * zoomRef.current, y: vp.clientHeight / 2 - cy * zoomRef.current });
     };
     nav(e.clientX, e.clientY);
-    const onMove = (ev: MouseEvent) => nav(ev.clientX, ev.clientY);
+    const onMove = (ev: MouseEvent) => {
+      if (ev.buttons === 0) return onUp(); // 同上：漏掉 mouseup 时自愈
+      nav(ev.clientX, ev.clientY);
+    };
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
@@ -471,7 +483,7 @@ export function FlowCanvas({
                 }`}
                 style={{ left: p.x, top: p.y, width: NODE_W, height: NODE_H }}
                 onMouseDown={(e) => startNodeDrag(e, n.id)}
-                title={n.id}
+                title={n.skipReason ? `${n.id}（${n.skipReason}，已跳过）` : n.id}
               >
                 <span className="fn-port in" title="上游依赖接入" />
                 <span className={`fn-method ${methodClass(n.method)}`}>{n.method}</span>

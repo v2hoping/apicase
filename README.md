@@ -26,14 +26,18 @@
 - **多环境** —— `application.yml` 的 `environment` 段多套环境切换，运行时注入变量；仿 GitHub 风格的可视化设置页。
 - **多标签页** —— 同时打开多个 case，标签切换 / dirty 标记 / 中键关闭 / 右键批量关闭，非活动标签完整保留编辑态。
 - **原生桌面体验** —— macOS 自定义标题栏；任意文本 / 二进制文件可打开（二进制由 Rust 端嗅探并友好提示）。
+- **命令行** —— `apicase run` 无界面跑用例并落 HTML 报告（与界面**同一个执行内核**，结果不会两样）；
+  退出码区分「断言失败」与「请求发不出去」，接 CI 直接可用。
+- **MCP 服务器** —— `apicase mcp` 让 AI Agent 直接查格式、写用例、自检、运行、读失败现场。
 
 ## 技术栈
 
 | 层 | 选型 |
 |---|---|
-| 桌面框架 | Tauri 2 |
-| 后端 | Rust（`reqwest` + rustls、`serde`；`tokio` 仅测试） |
-| 前端 | React 19 + TypeScript + Vite 7；`js-yaml`（case 解析） |
+| 桌面框架 | Tauri 2（Cargo workspace：`core/` + `src-tauri/` + `cli/`） |
+| 执行内核 | **`apicase-core`**（零 GUI 依赖）：`reqwest` + rustls、`cookie_store`、`tokio`、`serde_yaml` |
+| 命令行 / MCP | **`apicase-cli`**（零 GUI 依赖）：`clap`、`rmcp`（MCP 官方 Rust SDK） |
+| 前端 | React 19 + TypeScript + Vite 7（**只做配置与展示**，无 YAML / HTTP 依赖） |
 | 存储格式 | YAML（case / 配置；格式参考 Postman / HAR / Arazzo 等） |
 
 ## 快速使用
@@ -43,18 +47,74 @@
 ```bash
 cd app
 npm install               # 首次安装前端依赖
+
+# 图形界面
 npm run tauri dev         # 启动桌面应用（热重载）
 npm run tauri build       # 打包各平台安装包
+
+# 命令行（只编 cli 与 core，不碰 Tauri，增量编译约 2 秒）
+cargo cli run -e dev      # == cargo run -q -p apicase-cli -- run -e dev
+cargo build -p apicase-cli --release   # 出正式二进制
 ```
 
 自测：
 
 ```bash
 npm run build             # 前端类型检查 + 打包
-cargo test --manifest-path src-tauri/Cargo.toml   # 后端测试（real_get 需联网）
+npm test                  # 前端单测 + IPC 接线核对
+cargo test --workspace    # 执行内核 + 命令层 + CLI（默认全部离线）
 ```
 
 启动后：左上角「选择工作空间」打开一个目录 → 在文件树新建 / 打开 `.yml` → 编辑请求并「发送」，多节点用例点「▶ 运行」按拓扑序执行。
+
+### 命令行
+
+命令行与界面是**两个各自独立的可执行文件**，共享同一个执行内核，也共用工作空间配置、
+cookie 会话与报告目录：
+
+| 产物 | 包名 | 构建 |
+|---|---|---|
+| `apicase` | `apicase-cli` | `cargo build -p apicase-cli --release` |
+| `Apicase.app` / `.dmg` | `apicase-desktop` | `npm run tauri build` |
+
+三个包名对齐为 `apicase-core` / `apicase-cli` / `apicase-desktop`；产物名与包名不必相同——
+CLI 的产物叫 `apicase`，因为用户敲的是 `apicase run`。
+
+> 桌面端**要用 `npm run tauri build`**，不能用 `cargo build -p apicase-desktop --release` 代替：
+> 后者只编 Rust，既不会先构建前端（于是嵌进去的是 `dist/` 里的旧版本，且不给任何提示），
+> 也不产出 `.app` / `.dmg`。`cargo build -p apicase-desktop` 只适合「验证 Rust 侧能不能编过」。
+
+拆成两个而不是一个按参数分流，是因为带 GUI 的二进制在没装桌面环境的机器上
+连动态链接都过不去——那时 `apicase run` 一行代码都执行不到。
+两者互不引用，可以单独分发、单独安装、单独升级。
+
+```bash
+cargo build -p apicase-cli --release        # 产出 target/release/apicase
+
+apicase init                                # 把当前目录初始化为工作空间
+apicase new 登录 -X POST --url https://api.example.com/login
+apicase check                               # 只解析不发请求，查出依赖断裂 / 断言目标写错等
+apicase run                                 # 跑整个工作空间，落一份 HTML 报告
+apicase run api/login.yml -e prod           # 跑一个用例，用 prod 环境
+apicase run flow.yml --step createOrder     # 只跑这个请求（上游依赖自动带上）
+apicase run --json | jq .summary            # 管道里自动给 JSON
+apicase docs assertions                     # 查用例 YAML 的格式规范
+```
+
+工作空间**向上查找** `application.yml`（同 git 找 `.git`），在任何子目录里敲都能工作。
+
+**退出码**：`0` 全部通过 · `1` 断言失败（被测服务的问题）· `2` 用法 / 配置错误 · `3` 请求发不出去（环境或用例自身的问题）。
+`1` 与 `3` 分开，是因为这两者的排查方向完全不同。
+
+### MCP（给 AI Agent 用）
+
+```json
+{ "mcpServers": { "apicase": { "command": "apicase", "args": ["mcp", "-w", "/path/to/workspace"] } } }
+```
+
+七个工具：`apicase_run` / `check` / `list` / `show` / `env` / `report` / `docs`。
+用例是 YAML 文本，AI 用自带的文件工具直接编辑即可，故不提供写入工具。
+典型闭环：**`docs` 查格式 → 写 `.yml` → `check` 自检 → `run` 验证 → 读失败现场再改**。
 
 ## 配置与格式
 
@@ -138,7 +198,11 @@ requests:
 
 ```
 apicase/
-├── app/             # 应用代码（Tauri 项目：src/ 前端 + src-tauri/ Rust 后端）
+├── app/             # 应用代码（Cargo workspace + 前端）
+│   ├── core/        # apicase-core：执行内核（桌面壳与 CLI 共用）
+│   ├── src-tauri/   # 桌面壳：Tauri 命令层
+│   ├── cli/         # apicase-cli：命令行与 MCP 服务器
+│   └── src/         # 前端：只做配置与展示
 ├── docs/
 │   ├── 0.latest/    # 当前全局最新文档 —— 唯一事实来源
 │   └── 1.feature/   # 各需求的产品技术方案（YYYYMMDD-需求名）

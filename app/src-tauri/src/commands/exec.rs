@@ -7,9 +7,9 @@
 //! 之所以刻意保持得这么薄：将来的 `apicase run` CLI 会平行地调同一批 core 函数，
 //! 一旦有语义漏进这一层，CLI 就得把它重写一遍——那正是这次改造要消灭的东西。
 
-use apicase_core::render;
+use apicase_core::render::{self, ReportWriter};
 use apicase_core::report::{CaseResult, RunReport, RunStatus, RunSummary};
-use apicase_core::runner::{self, BatchMeta, BatchTarget, Cancel, RunOpts};
+use apicase_core::runner::{self, BatchMeta, BatchTarget, BlockedStep, Cancel, RunOpts, StepOutcome};
 use apicase_core::yaml::{self, AnalyzeResult, Environments};
 use apicase_core::{Case, Step, WorkspaceSettings};
 use serde::{Deserialize, Serialize};
@@ -77,7 +77,7 @@ pub fn parse_report(text: String) -> Option<RunReport> {
 #[serde(rename_all = "camelCase")]
 pub struct StepRun {
     pub step: apicase_core::report::StepResult,
-    /// **未脱敏**的输出，供前端在同一个 case 内透传给下游 step
+    /// 供前端在同一个 case 内透传给下游 step
     pub outputs: BTreeMap<String, serde_json::Value>,
 }
 
@@ -94,6 +94,9 @@ pub async fn run_step(
 ) -> Result<StepRun, String> {
     let ctx = apicase_core::vars::RunContext { vars, steps };
     let (step, outputs) = runner::run_step(&step, &ctx, &opts).await;
+    // 调试是「点一下看一眼」的节奏，随时可能直接关掉应用；jar 的节流落盘（最快 1s 一次）
+    // 会把刚拿到的会话留在内存里，故这里补一次强制写盘（小文件，一次 IO）
+    apicase_core::cookie::flush_all();
     Ok(StepRun { step, outputs })
 }
 
@@ -104,6 +107,20 @@ pub async fn run_step(
 #[tauri::command]
 pub fn topo_order(steps: Vec<Step>) -> Vec<usize> {
     runner::topo_order(&steps)
+}
+
+/// 上游挂了之后，还有哪些 step 会被连累。
+///
+/// 同 `topo_order`：调试运行的循环在前端，但**规则只有 core 一份**。
+/// 前端只回报"每一步跑成了什么状态"，"算不算阻断源"与"连累到谁"都在 core 判定——
+/// 否则 `blocks_downstream` 那套规则会有第二份表达，改开关语义时必然漏掉一处。
+#[tauri::command]
+pub fn blocked_steps(
+    steps: Vec<Step>,
+    outcomes: Vec<StepOutcome>,
+    continue_on_assertion_failure: bool,
+) -> Vec<BlockedStep> {
+    runner::blocked_from_outcomes(&steps, &outcomes, continue_on_assertion_failure)
 }
 
 // ── 批量运行 ────────────────────────────────────────
@@ -222,69 +239,10 @@ fn strip_cases(r: &RunReport) -> RunReport {
     RunReport { cases: Vec::new(), ..r.clone() }
 }
 
-/// 周期写盘：运行中整份覆写报告，用户中途用浏览器打开刷新就能看到部分结果。
-///
-/// 仍是整份重渲染（不做增量）——但**间隔随报告增大而拉长**，见 `interval`：
-/// 小报告几毫秒的字符串拼接不值得为它做增量，大报告则不该每秒把已完成的几十 MB 重渲一遍。
-/// 另外**写盘要串行**——两次写交错会让报告文件出现半截内容。
-#[derive(Clone)]
-struct ReportWriter {
-    path: String,
-    last: Arc<Mutex<std::time::Instant>>,
-}
-
-impl ReportWriter {
-    fn new(path: String) -> Self {
-        // 初始时间往前推，保证第一次回调就会落盘
-        let past = std::time::Instant::now() - std::time::Duration::from_secs(60);
-        Self { path, last: Arc::new(Mutex::new(past)) }
-    }
-
-    /// 写盘间隔随报告增大而拉长：每次落盘都要把**整份**报告渲染成 HTML，
-    /// 500 个用例可达几十 MB——固定 1 秒一次会让后半程一直在重复渲染同一堆已完成的数据。
-    /// 拉长它不影响体验：应用内的进度靠事件实时推送，落盘只是归档与崩溃兜底。
-    fn interval(cases: usize) -> std::time::Duration {
-        std::time::Duration::from_millis(1000.max(cases as u64 * 20))
-    }
-
-    fn maybe_write(&self, r: &RunReport) {
-        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        if last.elapsed() < Self::interval(r.cases.len()) {
-            return;
-        }
-        *last = std::time::Instant::now();
-        // 持锁写盘 = 天然串行，不会写出半截文件
-        self.write_locked(r);
-    }
-
-    fn write_now(&self, r: &RunReport) {
-        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        *last = std::time::Instant::now();
-        self.write_locked(r);
-    }
-
-    /// 写盘失败不中断运行——结果仍在应用内可见，报告只是少了一份归档。
-    fn write_locked(&self, r: &RunReport) {
-        let _ = std::fs::write(&self.path, render::render_html(r));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use apicase_core::report::StepStatus;
-
-    /// 写盘节流：小报告保持 1 秒一次（崩溃兜底），大报告拉长——
-    /// 每次落盘都要渲染整份 HTML，后半程重复渲染的全是已完成的数据。
-    #[test]
-    fn report_write_interval_grows_with_report_size() {
-        use std::time::Duration;
-        assert_eq!(ReportWriter::interval(0), Duration::from_millis(1000));
-        assert_eq!(ReportWriter::interval(10), Duration::from_millis(1000), "小报告不受影响");
-        assert_eq!(ReportWriter::interval(50), Duration::from_millis(1000), "临界点仍是 1 秒");
-        assert_eq!(ReportWriter::interval(100), Duration::from_millis(2000));
-        assert_eq!(ReportWriter::interval(500), Duration::from_millis(10_000));
-    }
 
     /// 命令层是**转发**，不是重新实现——这些测试盯的是"接线对不对"：
     /// 参数进得来、产物出得去、序列化形状与前端 TS 类型对得上。
@@ -354,12 +312,12 @@ mod tests {
             },
             concurrency: 1,
             stop_on_failure: false,
-            redact: false,
+            continue_on_assertion_failure: false,
             max_body_bytes: usize::MAX,
             // 开发机常设 HTTPS_PROXY，不绕开就到不了本地地址
             client: apicase_core::http::ClientConfig {
                 proxy: Some(apicase_core::http::ProxyConfig { mode: "none".into(), url: None }),
-                options: None,
+                ..Default::default()
             },
         };
         let out = run_step(step, Default::default(), Default::default(), opts).await.expect("命令本身不该失败");
@@ -409,42 +367,4 @@ mod tests {
         assert_eq!(event_name("1784073600000"), "run://progress/1784073600000");
     }
 
-    /// 周期写盘：第一次立刻落盘（用户中途就能用浏览器打开看），随后 1s 内不重复写
-    #[test]
-    fn report_writer_throttles_after_the_first_write() {
-        let path = std::env::temp_dir().join("apicase-writer-test.html");
-        let _ = std::fs::remove_file(&path);
-        let w = ReportWriter::new(path.to_string_lossy().into_owned());
-        let r = RunReport {
-            schema_version: apicase_core::report::REPORT_SCHEMA_VERSION,
-            tool: apicase_core::report::ToolInfo { name: "apicase".into(), version: "0".into() },
-            started_at: "2026-07-30T00:00:00.000Z".into(),
-            finished_at: None,
-            duration_ms: 0,
-            status: RunStatus::Running,
-            workspace: apicase_core::report::WorkspaceInfo { name: "w".into(), root: "/w".into() },
-            environment: apicase_core::report::EnvironmentInfo { name: "e".into(), vars: Default::default() },
-            options: apicase_core::report::RunOptions {
-                targets: vec![],
-                recursive: true,
-                environment: "e".into(),
-                concurrency: 1,
-                stop_on_failure: false,
-                redact: true,
-                max_body_bytes: 1024,
-            },
-            summary: RunSummary::default(),
-            cases: vec![],
-        };
-        w.maybe_write(&r);
-        assert!(path.is_file(), "第一次回调就该落盘");
-        let first = std::fs::metadata(&path).unwrap().modified().unwrap();
-
-        w.maybe_write(&r); // 1s 内的第二次应被节流掉
-        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), first);
-
-        w.write_now(&r); // 收尾那次强制写
-        assert!(std::fs::read_to_string(&path).unwrap().contains("apicase-report"));
-        let _ = std::fs::remove_file(&path);
-    }
 }

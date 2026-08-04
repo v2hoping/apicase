@@ -751,6 +751,15 @@ body.resizing-col {
   cursor: col-resize;
   user-select: none;
 }
+/* 拖动期间让 iframe 不吃鼠标事件。
+   分割线的 mousemove/mouseup 绑在父文档的 document 上，而鼠标一旦移到 iframe
+   （运行报告、HTML 预览）上方，事件就全被 iframe 内部文档收走了——父文档收不到
+   mouseup，拖动状态便永远解除不掉，松手后分割线仍跟着鼠标跑。
+   这不是「顺手加的保险」，是这两个视图存在时的必需项。 */
+body.resizing-col iframe,
+body.resizing-row iframe {
+  pointer-events: none;
+}
 
 /* 流程/请求分栏之间的拖动分割条（样式参照 sidebar-resizer） */
 .pane-resizer {
@@ -1294,6 +1303,14 @@ body.resizing-pane .pane-resizer::after {
 }
 .response.is-collapsed .response-head {
   cursor: pointer;
+}
+/* 未跑过时的占位标题：与 tab 同高同字号，让「响应 → 三个 tab」的切换不跳行 */
+.response-title {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--muted);
 }
 /* 标题栏内联 tab 组：靠左，撑满标题栏高度，激活下划线贴底 */
 .resp-tabs {
@@ -2310,6 +2327,492 @@ body.resizing-pane .pane-resizer::after {
   font-size: 14px;
   color: var(--muted);
 }
+/* ── Cookies 分区 ────────────────────────────────── */
+/* 通用图标按钮：常态低调、hover 才浮出底色（同 .path-reveal 的克制程度）。
+   密集列表里每一行都挂两三个操作，用文字按钮会把行撑宽一截、也更吵。 */
+.icon-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.icon-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.icon-btn.is-danger:hover:not(:disabled) {
+  color: var(--red);
+}
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+/* 工具条：搜索占满剩余宽度，操作贴右 */
+.cookie-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cookie-search {
+  flex: 1;
+  min-width: 0;
+}
+/* ── 域分组（可折叠，同 Bruno）────────────────── */
+.cookie-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.cookie-group + .cookie-group {
+  margin-top: 8px;
+}
+.cookie-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 8px 0 6px;
+  background: var(--panel-2);
+  cursor: pointer;
+  user-select: none;
+}
+.cookie-group-head:hover {
+  background: var(--hover);
+}
+/* 展开时头与表格之间画线；收起时整块就是一个圆角条，不留悬空的线 */
+.cookie-group.is-open .cookie-group-head {
+  border-bottom: 1px solid var(--border);
+}
+.cookie-group-head .chevron {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+/* 域下的条数：靠在域名右边，把两个操作推到最右 */
+.cookie-count {
+  flex: 1;
+  font-size: 11px;
+  color: var(--muted);
+}
+/* 域头的操作：同行内操作，hover 该组才浮出 */
+.cookie-group-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.cookie-group-head:hover .cookie-group-actions,
+.cookie-group-actions:focus-within {
+  opacity: 1;
+}
+
+/* ── 明细表 ────────────────────────────────────── */
+/* 窄窗口下横向滚动，不把整页撑宽 */
+.cookie-table-wrap {
+  overflow-x: auto;
+}
+.cookie-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+.cookie-table th {
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  text-align: left;
+  color: var(--muted);
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+  white-space: nowrap;
+}
+.cookie-table td {
+  padding: 7px 10px;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cookie-table tr:last-child td {
+  border-bottom: none;
+}
+.cookie-table tbody tr:hover {
+  background: var(--hover);
+}
+.cookie-table .is-center {
+  text-align: center;
+}
+/* 列宽：能算出来的列给固定 px（时间恒 16 字符、勾选列只放一个 ✓），
+   名称与值吃掉剩余空间——用百分比会在窄容器下把过期挤成「2026-09-0…」。 */
+.cookie-table th:nth-child(3) { width: 72px; }
+.cookie-table th:nth-child(4) { width: 132px; }
+.cookie-table th:nth-child(5),
+.cookie-table th:nth-child(6),
+.cookie-table th:nth-child(7) { width: 56px; }
+.cookie-table th:nth-child(8) { width: 58px; }
+/* 名称与值等宽字体：cookie 的值多是 token / 十六进制串，等宽更好逐字核对 */
+.cookie-cell-name,
+.cookie-cell-value,
+.cookie-cell-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  user-select: text; /* 值要能选中复制——排查时经常要把它贴到别处 */
+}
+.cookie-cell-name {
+  font-weight: 600;
+}
+.cookie-cell-exp {
+  white-space: nowrap;
+}
+.cookie-domain {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-all;
+}
+/* 已过期：仍列出来（否则用户看到「没有 cookie」却又删不掉它），但明显减淡 */
+.cookie-table tr.is-expired td {
+  opacity: 0.55;
+}
+/* 已过期的那条：过期时间本身转告警色即可（挂一个「已过期」标签会把这一列撑宽一截，
+   而这是最不重要的一列）。行整体淡化已经说明了它不参与发送。 */
+.cookie-table tr.is-expired .cookie-cell-exp {
+  color: var(--warn-text);
+}
+/* 行操作：常态隐形，hover 行才浮出（同环境列表，避免两列图标抢过内容本身）。
+   始终占位，免得出现/消失时把右侧内容挤动。 */
+.cookie-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.cookie-table tr:hover .cookie-actions,
+.cookie-actions:focus-within {
+  opacity: 1;
+}
+
+/* ── 空态：大图标 + 一句解释 + 一个下一步动作（同 Bruno）────── */
+.cookie-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 56px 0 40px;
+  text-align: center;
+}
+.cookie-empty-ico {
+  color: var(--border-strong);
+}
+.cookie-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.cookie-empty-text {
+  max-width: 380px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.cookie-empty button {
+  margin-top: 6px;
+}
+
+/* ── 编辑对话框 ──────────────────────────────────
+   比 .modal-wide（440）再宽一档：值那一行放的是 token / JWT，440 下连一半都显示不出来。 */
+/* 双类选择器：本段写在 `.modal` 之前，同特异性下会被它的 width: 320px 盖掉 */
+.modal.modal-cookie {
+  width: 600px;
+  padding: 18px 20px 16px;
+}
+.modal-cookie .modal-title {
+  margin-bottom: 14px;
+}
+/* 两列网格（同 Bruno）：短字段两两成行，值与过期各占整行 */
+.cookie-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 18px;
+  align-items: start; /* 带 hint 的字段更高，不要把同行另一格也拉高 */
+}
+.cookie-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.cookie-field.is-wide {
+  grid-column: 1 / -1;
+}
+.cookie-field > label {
+  font-size: 12px;
+  color: var(--muted);
+}
+/* 控件规格与 .modal-input 对齐（32 高 / 6 圆角 / 10 内边距），全对话框一套 */
+.cookie-field input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+.cookie-field input:hover {
+  border-color: var(--border-strong);
+}
+.cookie-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.cookie-field input::placeholder {
+  color: var(--muted);
+}
+/* 值多是 token / 十六进制串，等宽字体便于逐字核对（同列表里的值列） */
+.cookie-value-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px !important;
+}
+/* ── 日期时间选择器（DateTimePicker）───────────────
+   原生 datetime-local 的外观各平台各不相同，也放不下「清除 / 今天」这两个最常用的动作。 */
+.dtp {
+  position: relative;
+  min-width: 0;
+}
+.dtp-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  outline: none;
+}
+.dtp-trigger:hover,
+.dtp.is-open .dtp-trigger {
+  border-color: var(--border-strong);
+}
+.dtp.is-open .dtp-trigger {
+  border-color: var(--accent);
+}
+.dtp-ico {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.dtp-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dtp-value.is-empty {
+  color: var(--muted);
+}
+/* 面板：贴着触发器下沿。定位在字段内部（非 portal），故 z-index 只需压过同层内容 */
+.dtp-panel {
+  position: absolute;
+  z-index: 1200;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 372px; /* 日历 + 右侧时/分两列 */
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px var(--shadow-strong);
+}
+.dtp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.dtp-month {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dtp-week,
+.dtp-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.dtp-week span {
+  padding: 4px 0;
+  font-size: 11px;
+  text-align: center;
+  color: var(--muted);
+}
+.dtp-day {
+  height: 28px;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.dtp-day:hover {
+  background: var(--hover);
+}
+/* 相邻月份的补位日：淡一档但仍可点（跨月选日期是常事） */
+.dtp-day.is-out {
+  color: var(--muted);
+  opacity: 0.6;
+}
+/* 今天用描边标记，选中用实底——两者可能同时出现在一格上 */
+.dtp-day.is-today {
+  border-color: var(--border-strong);
+}
+.dtp-day.is-sel,
+.dtp-day.is-sel:hover {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+  opacity: 1;
+}
+/* 日历 + 时分两列并排 */
+.dtp-body {
+  display: flex;
+  gap: 8px;
+}
+.dtp-cal {
+  flex: 1;
+  min-width: 0;
+}
+.dtp-clock {
+  display: flex;
+  gap: 6px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.dtp-col {
+  display: flex;
+  flex-direction: column;
+  width: 44px;
+}
+.dtp-col-head {
+  padding: 4px 0;
+  font-size: 11px;
+  text-align: center;
+  color: var(--muted);
+}
+/* 列高与日历网格齐平（6 行 × 28 + 5 × 2 间隙 = 178）。
+   上下渐隐：滚动列表的首尾项恒被切掉一半，硬边看着像渲染坏了 */
+.dtp-col-list {
+  height: 178px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+}
+.dtp-tick {
+  display: block;
+  width: 100%;
+  height: 26px;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.dtp-tick:hover {
+  background: var(--hover);
+}
+.dtp-tick.is-sel {
+  color: var(--on-accent);
+  background: var(--accent);
+  font-weight: 600;
+}
+/* 底部动作：清除 / 今天靠左，完成靠右 */
+.dtp-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.dtp-link {
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.dtp-link:hover {
+  color: var(--text);
+}
+.dtp-link.is-primary {
+  margin-left: auto;
+  color: var(--accent);
+  font-weight: 500;
+}
+/* 属性：两个复选框，整体高度与同行的输入框一致，基线才对得齐 */
+.cookie-flags {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: 32px;
+}
+.cookie-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.cookie-check input {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  border-radius: 3px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+/* 保存失败的原因（域不合法、过期时间在过去…）就地显示，不关窗、不丢已填内容 */
+.cookie-error {
+  margin-top: 12px;
+}
 .settings-section input[readonly] {
   background: var(--panel-2);
   color: var(--muted);
@@ -2718,12 +3221,10 @@ body.resizing-pane .pane-resizer::after {
   min-height: 0;
   min-width: 0;
   gap: 0;
-  /* 抵消 workspace 右侧 12px 内边距：请求/响应段右缘（含响应区分割线）铺到工作区边缘，与顶部标签栏对齐 */
-  margin-right: -12px;
-}
-/* 仅请求模式：左侧也抵消，响应区分割线左右满铺；分栏时左侧留给流程面板，故不动 */
-.structured.only-request {
-  margin-left: -12px;
+  /* 抵消 workspace 的 12px 内边距（同配置页的 .settings）：流程画布与响应区
+     左右下三边都铺到工作区边缘，与顶部标签栏对齐。留白改由内层各自负责
+     （编辑器用 .req-scroll 的 padding），这样画布与响应区能真正满铺。 */
+  margin: 0 -12px -12px;
 }
 .flow-pane {
   flex: 0 0 44%;
@@ -2815,12 +3316,9 @@ body.resizing-pane .pane-resizer::after {
   gap: 6px;
   padding: 0 2px 10px;
 }
-/* 分隔条：靠左自动外边距，把视图控制推到工具栏右侧 */
+/* 弹性占位：靠左自动外边距，把视图控制推到工具栏右侧（不显示分隔线） */
 .flow-tool-sep {
-  width: 1px;
-  height: 18px;
-  margin: 0 2px 0 auto;
-  background: var(--border);
+  margin-left: auto;
 }
 .flow-tool-btn.icon {
   width: 30px;
@@ -3042,6 +3540,10 @@ body.resizing-pane .pane-resizer::after {
 .fn-status.dot-running {
   background: var(--amber);
   animation: fn-pulse 0.9s ease-in-out infinite;
+}
+/* 跳过不是失败（对齐 TestNG 的 SKIP 语义）：灰色点，与通过的绿、失败的红并列 */
+.fn-status.dot-skipped {
+  background: var(--muted);
 }
 @keyframes fn-pulse {
   0%,

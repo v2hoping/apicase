@@ -119,14 +119,25 @@ export interface Case {
 }
 
 /**
- * 工作空间级请求设置（application.yml 的 `settings:` 键）。跟随项目走 git，团队共享。
- * 三项都作用于**单请求与 flow 执行**——两者共用同一条执行内核通道。
+ * 工作空间级设置（application.yml 的 `settings:` 键）。跟随项目走 git，团队共享。
+ * 前四项都作用于**单请求与 flow 执行**——两者共用同一条执行内核通道。
  */
 export interface WorkspaceSettings {
   verifySsl: boolean; // SSL/TLS 证书验证；关闭后接受任何服务端证书（降安全，UI 警示）
   useCustomCa: boolean; // 是否启用自定义 CA
   caCert: string; // CA 证书文件，**相对工作空间根**的路径（绝对路径换机器就失效）
   timeoutMs: number; // 整个请求的超时上限（毫秒），0 = 不限制
+  /**
+   * 自动收发 Cookie（jar 存 `<workspace>/.apicase/cookies.json`）。默认 true——
+   * 对齐 Postman / Bruno 与浏览器直觉：登录一次，后面的请求自然带着会话。
+   */
+  cookies: boolean;
+  /**
+   * 断言失败是否**不**阻断下游 step。默认 false = 阻断。
+   * error（请求没发出去）不受此影响，恒阻断——那种情况下游拿到的只会是未解析的
+   * `${{...}}` 字面量，跑下去既是噪音又会把脏请求打到被测服务上。
+   */
+  continueOnAssertionFailure: boolean;
 }
 
 export const DEFAULT_WS_SETTINGS: WorkspaceSettings = {
@@ -134,6 +145,8 @@ export const DEFAULT_WS_SETTINGS: WorkspaceSettings = {
   useCustomCa: false,
   caCert: "",
   timeoutMs: 0,
+  cookies: true,
+  continueOnAssertionFailure: false,
 };
 
 /** 环境表：`{ 环境名: { 变量: 值 } }`（顺序即 application.yml 里的书写顺序） */
