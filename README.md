@@ -75,7 +75,11 @@ cookie 会话与报告目录：
 | 产物 | 包名 | 构建 |
 |---|---|---|
 | `apicase` | `apicase-cli` | `cargo build -p apicase-cli --release` |
-| `Apicase.app` / `.dmg` | `apicase-desktop` | `npm run tauri build` |
+| `Apicase.app` / `.dmg`（**内含一份 CLI**） | `apicase-desktop` | `npm run tauri build` |
+
+装了桌面版就白得一个 CLI（在 `Apicase.app/Contents/Resources/bin/apicase`），
+且**版本与界面天然一致**——同一个安装包、同一次编译、同一个执行内核。
+CI 与容器里则单独用上面那个二进制，不必为一个命令行工具下几十 MB 的桌面包。
 
 三个包名对齐为 `apicase-core` / `apicase-cli` / `apicase-desktop`；产物名与包名不必相同——
 CLI 的产物叫 `apicase`，因为用户敲的是 `apicase run`。
