@@ -341,6 +341,16 @@ fn cmd_env(g: &GlobalOpts, args: cli::EnvArgs) -> Result<u8, String> {
 
 fn cmd_cookie(g: &GlobalOpts, args: cli::CookieArgs) -> Result<u8, String> {
     let ws = resolve_workspace(g, None)?;
+    // cookie 会话是「这个项目的登录态」，未锚定的目录里没有这回事——
+    // 直接说清楚，好过显示一个空 jar 让人以为「登录态丢了」
+    if ws.is_scratch() {
+        return Err(format!(
+            "{} 不是工作空间（没有 {}），没有 cookie 会话——\
+             用 apicase init 把它声明为工作空间，或用 -w 指定",
+            ws.root.display(),
+            apicase_core::workspace::CONFIG_FILE
+        ));
+    }
     let jar = apicase_core::cookie::jar_at(Some(&ws.jar_path().to_string_lossy()));
     let style = Style::for_stdout(g.color);
     let json = output_format(g) == Format::Json;

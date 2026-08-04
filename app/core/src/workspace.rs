@@ -36,6 +36,12 @@ pub struct Workspace {
     pub config_text: String,
     pub environments: Environments,
     pub settings: WorkspaceSettings,
+    /// 根上有没有 `application.yml`。
+    ///
+    /// **未锚定（`false`）不是错误状态**，只是「这个目录没被声明成工作空间」——
+    /// `apicase run /tmp/试一下.yml` 该直接跑起来，而不是先卡在「配置文件呢」。
+    /// 但它会收窄两件事，见 `is_scratch`。
+    pub anchored: bool,
 }
 
 impl Workspace {
@@ -64,24 +70,42 @@ impl Workspace {
         if !root.is_dir() {
             return Err(format!("不是目录：{}", root.display()));
         }
-        let config_text = std::fs::read_to_string(root.join(CONFIG_FILE)).unwrap_or_default();
+        let cfg = root.join(CONFIG_FILE);
+        let anchored = cfg.is_file();
+        let config_text = std::fs::read_to_string(&cfg).unwrap_or_default();
         Ok(Self {
             environments: yaml::parse_environments(&config_text),
             settings: yaml::parse_settings(&config_text),
             config_text,
             root,
+            anchored,
         })
     }
 
-    /// `find` + `open`。找不到时的错误里带上起点，否则用户不知道是从哪儿开始找的。
+    /// 定位并打开工作空间。**找不到 `application.yml` 也照样返回一个可用的工作空间**，
+    /// 以 `start`（是文件则取其所在目录）为根，`anchored = false`。
+    ///
+    /// 放宽的理由：`apicase run /tmp/试一下.yml` 本就该直接跑起来。
+    /// 用例是自包含的一份 YAML，跑它不需要任何前置仪式——
+    /// `application.yml` 的价值在于「声明边界」（子目录里也能找到根、环境变量放哪、
+    /// 报告和会话落哪），而临时跑一个具体文件时这些都不需要。
+    ///
+    /// 代价由 `is_scratch()` 那两条收窄兜住，见那里。
     pub fn discover(start: &Path) -> Result<Self, String> {
-        match Self::find(start) {
-            Some(root) => Self::open(root),
-            None => Err(format!(
-                "在 {} 及其上级目录中找不到 {CONFIG_FILE}（可用 apicase init 初始化，或用 -w 指定工作空间）",
-                start.display()
-            )),
+        if let Some(root) = Self::find(start) {
+            return Self::open(root);
         }
+        let dir = if start.is_file() { start.parent().unwrap_or(start) } else { start };
+        Self::open(dir)
+    }
+
+    /// 「临时跑一下」的场景：没有 `application.yml` 声明过边界。
+    ///
+    /// 此时**不往这个目录里写任何东西**——不落 HTML 报告、不建 cookie jar。
+    /// 因为它很可能是 `/tmp`、是别人的项目、甚至是用户的主目录，
+    /// 在那些地方凭空长出一个 `.apicase/` 是侵入。要留痕就显式 `--report`。
+    pub fn is_scratch(&self) -> bool {
+        !self.anchored
     }
 
     /// 把一个目录初始化为工作空间：没有 `application.yml` 就写一份模板。**幂等**。
@@ -139,8 +163,10 @@ impl Workspace {
                 timeout_ms: (s.timeout_ms > 0).then_some(s.timeout_ms),
             }),
             cookies: Some(CookieConfig {
-                enabled: s.cookies,
-                jar_path: Some(self.jar_path().to_string_lossy().into_owned()),
+                // 未锚定时不建 jar：cookie 会话是「这个项目的登录态」，
+                // 而临时跑一个文件时没有项目，不该在那个目录里凭空长出 .apicase/
+                enabled: s.cookies && !self.is_scratch(),
+                jar_path: (!self.is_scratch()).then(|| self.jar_path().to_string_lossy().into_owned()),
             }),
         }
     }
@@ -288,6 +314,48 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&lonely);
+    }
+
+    /// 没有 `application.yml` 的目录照样是个可用的工作空间，只是「未锚定」。
+    /// `apicase run /tmp/试一下.yml` 本就该直接跑起来，不必先走一道初始化仪式。
+    #[test]
+    fn discover_falls_back_to_the_target_directory() {
+        let root = temp("scratch");
+        std::fs::create_dir_all(root.join("sub")).expect("建目录");
+        std::fs::write(root.join("sub/t.yml"), "apicase: v0.1\nsteps: []\n").expect("写用例");
+
+        // 目标是文件 → 用它所在目录当根
+        let ws = Workspace::discover(&root.join("sub/t.yml")).expect("未锚定也该能打开");
+        assert!(ws.is_scratch(), "没有 application.yml 就是未锚定");
+        assert_eq!(ws.root, root.join("sub"));
+
+        // 目标是目录 → 就用它
+        let ws = Workspace::discover(&root).expect("未锚定也该能打开");
+        assert!(ws.is_scratch());
+        assert_eq!(ws.root, root);
+
+        // 未锚定时不建 jar：那个目录没被声明成工作空间，不该凭空长出 .apicase/
+        let jar = ws.client_config(None).cookies.expect("应有 cookie 配置");
+        assert!(!jar.enabled && jar.jar_path.is_none(), "未锚定不带 cookie jar");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 一旦有了 application.yml，向上查找与 jar 都照常
+    #[test]
+    fn anchoring_restores_the_full_behaviour() {
+        let root = temp("anchored");
+        std::fs::create_dir_all(root.join("api/v1")).expect("建目录");
+        std::fs::write(root.join(CONFIG_FILE), CONFIG_TEMPLATE).expect("写配置");
+
+        let ws = Workspace::discover(&root.join("api/v1")).expect("应能打开");
+        assert!(!ws.is_scratch(), "有配置就是锚定的");
+        assert_eq!(ws.root, root, "从子目录向上找到了根");
+
+        let jar = ws.client_config(None).cookies.expect("应有 cookie 配置");
+        assert!(jar.enabled && jar.jar_path.is_some(), "锚定后 jar 照常");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 没有 application.yml 的目录照样能打开（配置全默认）——刚 mkdir 的目录也该能跑用例
