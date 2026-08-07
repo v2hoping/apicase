@@ -76,7 +76,6 @@ async fn dispatch(cli: Cli) -> Result<u8, String> {
         Command::Check(args) => cmd_check(&global, args),
         Command::Show(args) => cmd_show(&global, args),
         Command::Env(args) => cmd_env(&global, args),
-        Command::Cookie(args) => cmd_cookie(&global, args),
         Command::Report(args) => cmd_report(&global, args),
         Command::New(args) => cmd_new(&global, args),
         Command::Init(args) => cmd_init(&global, args),
@@ -333,65 +332,6 @@ fn cmd_env(g: &GlobalOpts, args: cli::EnvArgs) -> Result<u8, String> {
                     println!("  {} {}", style::pad(k, 20), v);
                 }
             }
-        }
-    }
-    Ok(exit::OK)
-}
-
-// ── cookie ──────────────────────────────────────────
-
-fn cmd_cookie(g: &GlobalOpts, args: cli::CookieArgs) -> Result<u8, String> {
-    let ws = resolve_workspace(g, None)?;
-    // cookie 会话是「这个项目的登录态」，未锚定的目录里没有这回事——
-    // 直接说清楚，好过显示一个空 jar 让人以为「登录态丢了」
-    if ws.is_scratch() {
-        return Err(format!(
-            "{} 不是工作空间（没有 {}），没有 cookie 会话——\
-             用 apicase init 把它声明为工作空间，或用 -w 指定",
-            ws.root.display(),
-            apicase_core::workspace::CONFIG_FILE
-        ));
-    }
-    let jar = apicase_core::cookie::jar_at(Some(&ws.jar_path().to_string_lossy()));
-    let style = Style::for_stdout(g.color);
-    let json = output_format(g) == Format::Json;
-
-    match args.command.unwrap_or(cli::CookieCommand::Ls { domain: None }) {
-        cli::CookieCommand::Ls { domain } => {
-            let all = jar.list();
-            let items: Vec<_> = all
-                .into_iter()
-                .filter(|c| domain.as_deref().is_none_or(|d| c.domain.contains(d)))
-                .collect();
-            if json {
-                println!("{}", json_pretty(&items)?);
-            } else if items.is_empty() {
-                println!("{}", style.dim("jar 里没有 cookie"));
-            } else {
-                for c in &items {
-                    println!(
-                        "{} {} {} {}",
-                        style::pad(&c.domain, 28),
-                        style::pad(&c.path, 10),
-                        style::pad(&c.name, 20),
-                        c.value
-                    );
-                }
-                println!("{}", style.dim(&format!("\n{} 条", items.len())));
-            }
-        }
-        cli::CookieCommand::Rm { domain, path, name } => {
-            // 主键是 domain + path + name：只按 name 删会误伤同名不同域的那条
-            if !jar.remove(&domain, &path, &name) {
-                return Err(format!("jar 里没有 {domain} {path} {name}"));
-            }
-            apicase_core::cookie::flush_all();
-            println!("已删除 {domain} {path} {name}");
-        }
-        cli::CookieCommand::Clear { domain } => {
-            let n = jar.clear(domain.as_deref());
-            apicase_core::cookie::flush_all();
-            println!("已清空 {n} 条{}", domain.map(|d| format!("（{d}）")).unwrap_or_default());
         }
     }
     Ok(exit::OK)

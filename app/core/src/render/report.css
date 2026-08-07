@@ -60,6 +60,20 @@ body {
   letter-spacing: -0.3px; margin: 0 0 3px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .head-sub { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .head-sub b { color: var(--text); font-weight: 550; }
+/* 目标多于三个时收成「等 N 项」：按钮与正文同色同号，只有 caret 提示可展开 */
+.tgt-toggle { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+.tgt-toggle .tgt-caret { display: inline-block; margin-left: 2px; transition: transform .12s; }
+.tgt-toggle.is-open .tgt-caret { transform: rotate(180deg); }
+/* 展开后的完整目标：一行行标签排下去，多了自然换行——这块本来就该按需出现。
+   `[hidden]` 那条不能省：作者样式里的 display 会盖掉 hidden 属性的 UA 样式，
+   于是"收起"根本收不起来 */
+.head-targets { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.head-targets[hidden] { display: none; }
+.head-targets .tgt {
+  padding: 2px 8px; border-radius: 4px; background: var(--panel-2);
+  color: var(--text); font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
 .badge { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 9px;
   border-radius: 999px; font-size: 12px; font-weight: 600; letter-spacing: 0; }
 .badge.ok { background: var(--green-tint); color: var(--green); }

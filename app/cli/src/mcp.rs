@@ -73,6 +73,9 @@ pub struct RunParams {
     /// 落一份 HTML 报告到 .apicase/reports/（默认不落）
     #[serde(default)]
     pub report: bool,
+    /// 工作空间根目录（绝对路径）。省略 = 用你自己的工作目录
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -83,6 +86,9 @@ pub struct CheckParams {
     /// 直接校验一段 case YAML（写完先自检，比跑一轮快得多）
     #[serde(default)]
     pub content: Option<String>,
+    /// 工作空间根目录（绝对路径）。省略 = 用你自己的工作目录
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -93,12 +99,18 @@ pub struct ListParams {
     /// 按文件路径 / 用例名 / 请求 URL 过滤（子串，大小写不敏感）
     #[serde(default)]
     pub query: Option<String>,
+    /// 工作空间根目录（绝对路径）。省略 = 用你自己的工作目录
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ShowParams {
     /// 用例文件
     pub target: String,
+    /// 工作空间根目录（绝对路径）。省略 = 用你自己的工作目录
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -106,6 +118,9 @@ pub struct EnvParams {
     /// 环境名。省略 = 列出所有环境
     #[serde(default)]
     pub name: Option<String>,
+    /// 工作空间根目录（绝对路径）。省略 = 用你自己的工作目录
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -119,6 +134,9 @@ pub struct ReportParams {
     /// 详略：summary（默认）| full
     #[serde(default)]
     pub detail: Option<String>,
+    /// 工作空间根目录（绝对路径）。省略 = 用你自己的工作目录
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -146,7 +164,7 @@ impl ApicaseMcp {
     #[tool(name = "apicase_run")]
     pub async fn run(&self, Parameters(p): Parameters<RunParams>) -> Result<CallToolResult, McpError> {
         let hint = p.target.as_deref().map(PathBuf::from);
-        let ws = self.workspace(hint.as_deref())?;
+        let ws = self.workspace(p.workspace.as_deref(), hint.as_deref())?;
 
         let req = ops::RunRequest {
             targets: p.target.iter().map(|t| resolve(&ws, t)).collect(),
@@ -184,7 +202,7 @@ impl ApicaseMcp {
             return Ok(CallToolResult::structured(serde_json::to_value(r).map_err(internal)?));
         }
         let hint = p.target.as_deref().map(PathBuf::from);
-        let ws = self.workspace(hint.as_deref())?;
+        let ws = self.workspace(p.workspace.as_deref(), hint.as_deref())?;
         let targets: Vec<PathBuf> = p.target.iter().map(|t| resolve(&ws, t)).collect();
         let r = ops::check(&ws, &targets, true);
         Ok(CallToolResult::structured(serde_json::to_value(r).map_err(internal)?))
@@ -196,7 +214,7 @@ impl ApicaseMcp {
     #[tool(name = "apicase_list")]
     pub async fn list(&self, Parameters(p): Parameters<ListParams>) -> Result<CallToolResult, McpError> {
         let hint = p.path.as_deref().map(PathBuf::from);
-        let ws = self.workspace(hint.as_deref())?;
+        let ws = self.workspace(p.workspace.as_deref(), hint.as_deref())?;
         let targets: Vec<PathBuf> = p.path.iter().map(|t| resolve(&ws, t)).collect();
         let items = ops::list(&ws, &targets, true, p.query.as_deref());
         Ok(CallToolResult::structured(json!({ "cases": items, "total": items.len() })))
@@ -205,7 +223,7 @@ impl ApicaseMcp {
     /// 读一个用例：结构化模型 + 规范化后的 YAML 原文。
     #[tool(name = "apicase_show")]
     pub async fn show(&self, Parameters(p): Parameters<ShowParams>) -> Result<CallToolResult, McpError> {
-        let ws = self.workspace(Some(&PathBuf::from(&p.target)))?;
+        let ws = self.workspace(p.workspace.as_deref(), Some(&PathBuf::from(&p.target)))?;
         let path = resolve(&ws, &p.target);
         let text = std::fs::read_to_string(&path)
             .map_err(|e| bad_request(format!("读取 {} 失败：{e}", path.display())))?;
@@ -229,7 +247,7 @@ impl ApicaseMcp {
     /// 列出环境，或看某一套环境的变量。
     #[tool(name = "apicase_env")]
     pub async fn env(&self, Parameters(p): Parameters<EnvParams>) -> Result<CallToolResult, McpError> {
-        let ws = self.workspace(None)?;
+        let ws = self.workspace(p.workspace.as_deref(), None)?;
         let v = match p.name {
             Some(n) => serde_json::to_value(ws.env_info(Some(&n))).map_err(internal)?,
             None => json!({ "environments": ws.env_names(), "default": ws.default_env() }),
@@ -240,7 +258,7 @@ impl ApicaseMcp {
     /// 读一份运行报告（默认最近一份）。看的是历史结果，不重新跑。
     #[tool(name = "apicase_report")]
     pub async fn report(&self, Parameters(p): Parameters<ReportParams>) -> Result<CallToolResult, McpError> {
-        let ws = self.workspace(None)?;
+        let ws = self.workspace(p.workspace.as_deref(), None)?;
         let path = crate::pick_report(&ws, p.file.map(PathBuf::from)).map_err(bad_request)?;
         let text = std::fs::read_to_string(&path)
             .map_err(|e| bad_request(format!("读取 {} 失败：{e}", path.display())))?;
@@ -277,9 +295,22 @@ impl ApicaseMcp {
         })))
     }
 
-    /// 每次调用重新打开工作空间：会话期间 AI 会改 `application.yml` 与用例，
+    /// 定位工作空间。优先级：**调用时显式给的** > 启动时的 `-w` > 目标所在目录 > 调用方的工作目录。
+    ///
+    /// 显式给的与 `-w` 都按「就是这个目录」处理（`open`，不再向上找）；靠目标或工作目录推导时
+    /// 才向上找 `application.yml`（`discover`）——**找不到也不算错**，那时就以该目录为根，
+    /// 只是不落报告、不建 cookie jar（见 `Workspace::is_scratch`）。
+    ///
+    /// 每个工具都收 `workspace` 参数，是因为 **AI 手里往往同时开着几个项目**：
+    /// 没有这个入口，它就只能靠传绝对路径的 target 间接换地方，而 `apicase_env` /
+    /// `apicase_report` 这类没有 target 的工具则彻底换不了。
+    ///
+    /// 每次调用重新打开：会话期间 AI 会改 `application.yml` 与用例，
     /// 缓存住只会让工具用着过时的配置。开销是读一个几 KB 的文件。
-    fn workspace(&self, hint: Option<&std::path::Path>) -> Result<Workspace, McpError> {
+    fn workspace(&self, explicit: Option<&str>, hint: Option<&std::path::Path>) -> Result<Workspace, McpError> {
+        if let Some(w) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
+            return Workspace::open(w).map_err(bad_request);
+        }
         if let Some(root) = &self.root {
             return Workspace::open(root).map_err(bad_request);
         }
@@ -311,6 +342,8 @@ impl ServerHandler for ApicaseMcp {
         info.instructions = Some(
                 "apicase 把 API 用例写成 YAML 文件（一个 .yml = 一个用例，内部是请求的 DAG），\
                  用它们做接口调试与回归。\n\n\
+                 **默认把你当前的工作目录当作 apicase 工作空间**（有没有 application.yml 都能用）；\
+                 要操作别的项目，调用时传 workspace（绝对路径）即可，不必重启本服务。\n\n\
                  用例文件用你自己的文件读写工具直接编辑即可，本服务不提供写入工具。\
                  典型闭环：\n\
                  1. apicase_docs 查格式（写用例之前先读，schema 靠猜必然写错）\n\
@@ -415,7 +448,67 @@ mod tests {
         for must in ["apicase_docs", "apicase_check", "apicase_run", "failed", "error", "skipped"] {
             assert!(i.contains(must), "开场白里应提到 `{must}`");
         }
+        // AI 得知道「默认就是你的工作目录」与「换项目怎么换」，否则它只会守着一个目录
+        assert!(i.contains("workspace"), "开场白要告诉 AI 怎么换工作空间：{i}");
         assert_eq!(info.server_info.name, "apicase");
+    }
+
+    /// 除 docs 外每个工具都要能换工作空间——AI 手里往往同时开着几个项目，
+    /// 而 apicase_env / apicase_report 这类没有 target 的工具，没这个参数就彻底换不了地方
+    #[test]
+    fn every_workspace_tool_accepts_an_explicit_workspace() {
+        for t in ApicaseMcp::tool_router().list_all() {
+            if t.name == "apicase_docs" {
+                continue; // 只读格式规范，与工作空间无关
+            }
+            let props = t.input_schema.get("properties").and_then(|v| v.as_object());
+            assert!(
+                props.is_some_and(|m| m.contains_key("workspace")),
+                "工具 {} 应收 workspace 参数：{:?}",
+                t.name,
+                t.input_schema
+            );
+        }
+    }
+
+    /// 优先级：显式参数 > 启动时的 -w。后者只是默认值，AI 明确指了别处就该听它的
+    #[test]
+    fn an_explicit_workspace_wins_over_the_startup_one() {
+        let base = std::env::temp_dir().join("apicase-mcp-ws");
+        let other = std::env::temp_dir().join("apicase-mcp-ws-other");
+        std::fs::create_dir_all(&base).expect("建目录");
+        std::fs::create_dir_all(&other).expect("建目录");
+
+        let srv = ApicaseMcp::new(Some(base.clone()));
+        let pinned = srv.workspace(None, None).expect("应能定位");
+        assert_eq!(pinned.root.canonicalize().ok(), base.canonicalize().ok(), "没给就用 -w 那个");
+
+        let switched = srv
+            .workspace(Some(&other.to_string_lossy()), None)
+            .expect("应能定位");
+        assert_eq!(switched.root.canonicalize().ok(), other.canonicalize().ok(), "给了就换过去");
+
+        // 空串按「没给」处理：AI 传个空字符串不该把工作空间切到进程的 cwd 去
+        let blank = srv.workspace(Some("   "), None).expect("应能定位");
+        assert_eq!(blank.root.canonicalize().ok(), base.canonicalize().ok());
+
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&other);
+    }
+
+    /// 没有 application.yml 的目录照样能当工作空间用——AI 的工作目录多半就是这样，
+    /// 卡在「先去建个配置文件」上等于让它做不成事
+    #[test]
+    fn a_plain_directory_works_as_a_workspace() {
+        let dir = std::env::temp_dir().join("apicase-mcp-plain");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建目录");
+
+        let ws = ApicaseMcp::new(None)
+            .workspace(Some(&dir.to_string_lossy()), None)
+            .expect("没有 application.yml 也该能用");
+        assert!(ws.is_scratch(), "未锚定：不落报告、不建 cookie jar");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 相对路径按工作空间根解析：MCP 客户端的 cwd 与工作空间没有关系

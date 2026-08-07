@@ -279,6 +279,37 @@ mod tests {
     }
 
     /// list_dir：默认跳过隐藏项；show_hidden 打开后列出并标记，但 .git 等噪声目录恒不列
+    /// 拖拽移动走的就是这个命令：能跨目录挪、目标同名时**拒绝而不是覆盖**
+    /// （覆盖会静默吃掉用户的另一个用例）
+    #[test]
+    fn rename_path_moves_across_dirs_and_refuses_to_overwrite() {
+        let base = std::env::temp_dir().join("apicase-move-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        std::fs::create_dir_all(base.join("api/v1")).expect("建测试目录");
+        std::fs::write(base.join("login.yml"), "a: 1").expect("写文件");
+        std::fs::write(base.join("api/login.yml"), "b: 2").expect("写文件");
+
+        // 文件挪进子目录
+        rename_path(s(&base.join("login.yml")), s(&base.join("api/v1/login.yml"))).expect("应能移动");
+        assert!(!base.join("login.yml").exists());
+        assert_eq!(std::fs::read_to_string(base.join("api/v1/login.yml")).expect("读"), "a: 1");
+
+        // 目标已有同名：拒绝，且两边都原样留着
+        let err = rename_path(s(&base.join("api/login.yml")), s(&base.join("api/v1/login.yml")))
+            .expect_err("同名应拒绝");
+        assert!(err.contains("已存在"), "实际 {err}");
+        assert_eq!(std::fs::read_to_string(base.join("api/login.yml")).expect("读"), "b: 2");
+        assert_eq!(std::fs::read_to_string(base.join("api/v1/login.yml")).expect("读"), "a: 1");
+
+        // 目录整体挪走，内容跟着走
+        rename_path(s(&base.join("api/v1")), s(&base.join("v1"))).expect("目录应能移动");
+        assert!(base.join("v1/login.yml").is_file());
+        assert!(!base.join("api/v1").exists());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn list_dir_hidden_toggle() {
         let base = std::env::temp_dir().join("apicase-listdir-hidden-test");

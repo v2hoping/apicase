@@ -1,8 +1,21 @@
 // 路径工具单测：文件树的克隆 / 复制 / 剪切 / 粘贴全靠这几个纯函数算目标路径与新名字。
 import { loadModule, eq, ok, report } from "./harness.mjs";
 
-const { baseName, dirName, joinPath, relPath, isUnder, retargetPath, splitExt, uniqueName, reportFileName, resolveInWorkspace } =
-  await loadModule("src/pathutil.ts");
+const {
+  baseName,
+  dirName,
+  joinPath,
+  relPath,
+  isUnder,
+  retargetPath,
+  splitExt,
+  uniqueName,
+  reportFileName,
+  resolveInWorkspace,
+  dropTargetDir,
+  checkMove,
+  reportFileNameMulti,
+} = await loadModule("src/pathutil.ts");
 
 // ── baseName / dirName / joinPath ──
 eq(baseName("/a/b/c.yml"), "c.yml", "POSIX 路径取最后一段");
@@ -111,5 +124,43 @@ eq(reportFileName(at, "/ws/--怪 名字--"), "20260728215758-怪 名字.html", "
 // 净化后什么都不剩时只留时间戳——宁可少个后缀，也不能拼出建不出来的文件名
 eq(reportFileName(at, "/ws/..."), "20260728215758.html", "全是点");
 eq(reportFileName(at, "/ws/:::"), "20260728215758.html", "全是非法字符");
+
+// ── 拖拽移动：落点与合法性 ──
+//
+// 这几条判定错一次的代价都不小：把目录搬进它自己会连数据一起丢，
+// 而"拖回原处"报个错则纯属打扰。
+
+// 落点：文件夹是它自己，文件是它所在的目录（拖到哪一行就落到哪一行所属的目录）
+eq(dropTargetDir({ path: "/ws/api", isDir: true }), "/ws/api", "拖到文件夹上");
+eq(dropTargetDir({ path: "/ws/api/login.yml", isDir: false }), "/ws/api", "拖到文件上＝它所在的目录");
+
+eq(checkMove("/ws/a.yml", false, "/ws/api"), "ok", "文件挪进别的目录");
+eq(checkMove("/ws/api", true, "/ws/old"), "ok", "目录挪进别的目录");
+
+// 拖回原处不是错误，静默即可
+eq(checkMove("/ws/api/login.yml", false, "/ws/api"), "noop", "已经在目标目录里");
+eq(checkMove("/ws/api", true, "/ws"), "noop", "目录已经在目标目录里");
+eq(checkMove("/ws/api", true, "/ws/api"), "self", "放到自己身上");
+
+// 目录搬进它自己：文件系统层面就是把它连同内容挪进自己的子目录，必须拦
+eq(checkMove("/ws/api", true, "/ws/api/v1"), "into-self", "目录放进自己的子目录");
+eq(checkMove("/ws/api", true, "/ws/api/v1/deep"), "into-self", "更深一层同理");
+// 同名前缀不算子目录（/ws/api2 不在 /ws/api 之下）
+eq(checkMove("/ws/api", true, "/ws/api2"), "ok", "同名前缀的兄弟目录不受影响");
+// 文件没有"子目录"一说：同路径前缀的目录照样能放
+eq(checkMove("/ws/api.yml", false, "/ws/api.yml.bak"), "ok", "文件不做 into-self 判定");
+
+// ── 多目标的报告名 ──
+//
+// 与 core 的 `report_file_name_multi` 逐字对齐（两处不同，报告目录里就会出现两套命名）。
+// 只写首个目标会让人以为只跑了它，而文件名是回头找某次运行的唯一线索。
+eq(reportFileNameMulti(at, ["api"]), "20260728215758-api.html", "单个＝原来的规则");
+eq(
+  reportFileNameMulti(at, ["04-认证", "07-多步flow", "hello.yml"]),
+  "20260728215758-04-认证等3项.html",
+  "多个＝首个 + 项数",
+);
+eq(reportFileNameMulti(at, ["", "api", "."]), "20260728215758-api.html", "空目标不参与计数");
+eq(reportFileNameMulti(at, []), "20260728215758.html", "一个都没有就只留时间戳");
 
 report();

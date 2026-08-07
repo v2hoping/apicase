@@ -39,6 +39,34 @@ export function retargetPath(p: string, from: string, to: string): string {
   return p;
 }
 
+/**
+ * 拖放的落点目录：放在文件夹上就是它自己，放在文件上是**它所在的目录**。
+ *
+ * 后者是刻意的宽容（同 VSCode）：拖到哪一行就落到那一行所属的目录，
+ * 用户不必去精确瞄准那个文件夹标题。
+ */
+export function dropTargetDir(target: { path: string; isDir: boolean }): string {
+  return target.isDir ? target.path : dirName(target.path);
+}
+
+/** 一次拖放移动的判定结果。 */
+export type MoveCheck =
+  | "ok"
+  | "noop" // 已经在目标目录里 / 拖回了原处——不是错误，静默即可
+  | "self" // 放到自己身上
+  | "into-self"; // 文件夹放进它自己的子目录：那是把目录搬进它自己
+
+/**
+ * 移动能不能做。**不查同名**——那要读目标目录，由调用方在真正动手前问一次后端。
+ */
+export function checkMove(from: string, isDir: boolean, targetDir: string): MoveCheck {
+  if (from === targetDir) return "self";
+  if (dirName(from) === targetDir) return "noop";
+  // 目录判定要放在 noop 之后：拖进自己的直接子目录既是 into-self 也不是 noop
+  if (isDir && isUnder(from, targetDir)) return "into-self";
+  return "ok";
+}
+
 /** 拆文件名的主干与扩展名；开头的点不算扩展名（`.gitignore` 整体是主干）。 */
 export function splitExt(name: string): { stem: string; ext: string } {
   const i = name.lastIndexOf(".");
@@ -84,11 +112,36 @@ export function resolveInWorkspace(workspace: string, reportRoot: string, file: 
  * 净化后为空就只留时间戳——宁可少个后缀，也不能拼出一个建不出来的文件名。
  */
 export function reportFileName(at: Date, target: string): string {
+  const name = sanitizeTarget(target);
+  return `${stampOf(at)}${name ? `-${name}` : ""}.html`;
+}
+
+/**
+ * 多目标时的报告名：`<时间戳>-<首个目标>等N项.html`。
+ *
+ * 只写首个目标会让人以为只跑了它——报告目录里，文件名是找回某次运行的唯一线索。
+ * 与 core 的 `report_file_name_multi` 逐字对齐（两处生成的名字不同就会出现两套命名）。
+ */
+export function reportFileNameMulti(at: Date, targets: string[]): string {
+  // 空目标（跑整个工作空间）不参与计数：调用方那时给的是工作空间名
+  const usable = targets.filter((t) => t.trim() !== "" && t !== ".");
+  if (usable.length <= 1) return reportFileName(at, usable[0] ?? "");
+  const name = sanitizeTarget(usable[0]);
+  return `${stampOf(at)}-${name}等${usable.length}项.html`;
+}
+
+/** 本地时间的 14 位时间戳（见 `reportFileName` 的说明）。 */
+function stampOf(at: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
-  const stamp =
+  return (
     `${at.getFullYear()}${p(at.getMonth() + 1)}${p(at.getDate())}` +
-    `${p(at.getHours())}${p(at.getMinutes())}${p(at.getSeconds())}`;
-  const name = clipBytes(
+    `${p(at.getHours())}${p(at.getMinutes())}${p(at.getSeconds())}`
+  );
+}
+
+/** 目标名 → 可做文件名的一段（去 yaml 后缀、非法字符换 `-`、截到 60 字节）。 */
+function sanitizeTarget(target: string): string {
+  return clipBytes(
     baseName(target)
       .replace(/\.ya?ml$/i, "")
       // eslint-disable-next-line no-control-regex
@@ -97,7 +150,6 @@ export function reportFileName(at: Date, target: string): string {
       .replace(/^[-.\s]+|[-.\s]+$/g, ""),
     60,
   );
-  return `${stamp}${name ? `-${name}` : ""}.html`;
 }
 
 /** 按 UTF-8 字节截断，切点落在字符边界上（别把一个汉字切成半个）。 */

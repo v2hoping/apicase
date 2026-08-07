@@ -41,6 +41,11 @@ pub const TOPICS: &[Topic] = &[
         about: "application.yml：多套环境与工作空间设置",
         headings: &["application.yml（工作空间配置）"],
     },
+    Topic {
+        name: "cookies",
+        about: ".apicase/cookies.yml：cookie 会话文件的格式（直接编辑它，没有对应的命令）",
+        headings: &["cookies.yml（cookie 会话）"],
+    },
     Topic { name: "all", about: "规范全文", headings: &[] },
 ];
 

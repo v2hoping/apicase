@@ -5,7 +5,7 @@ import { loadModule, eq, ok, report } from "./harness.mjs";
 const { COOKIE_JAR_REL, groupByDomain, filterCookies, domainForEdit, expiryText } =
   await loadModule("src/cookies.ts");
 
-eq(COOKIE_JAR_REL, ".apicase/cookies.json", "jar 与报告同在 .apicase/ 下（已随它进 .gitignore）");
+eq(COOKIE_JAR_REL, ".apicase/cookies.yml", "jar 与报告同在 .apicase/ 下（已随它进 .gitignore）");
 
 const item = (domain, name, extra = {}) => ({
   domain,
@@ -13,7 +13,6 @@ const item = (domain, name, extra = {}) => ({
   name,
   value: "v",
   secure: false,
-  httpOnly: false,
   expired: false,
   hostOnly: true,
   ...extra,

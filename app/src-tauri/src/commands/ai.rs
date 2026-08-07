@@ -37,8 +37,10 @@ pub struct AiStatus {
     pub link: Option<String>,
     /// 落点不在 PATH 里，装完还要用户自己加进去
     pub needs_path_setup: bool,
-    /// 当前工作空间有没有 apicase 的 AGENTS.md 段落
-    pub agents: bool,
+    /// 当前工作空间里 apicase 段落的状态：`ready` / `stale` / `absent`。
+    /// **三态而非有/无**——段落在但内容是旧版本时报 `stale`，否则用户看着「已配置」，
+    /// AI 手上却是上个版本的说明。
+    pub agents_state: String,
 }
 
 #[tauri::command]
@@ -53,12 +55,23 @@ pub fn ai_status(app: AppHandle, workspace: Option<String>) -> AiStatus {
         // 构建里没带 CLI：状态就是「装不了」，前端据此把按钮灰掉
         None => ("unavailable", None, false),
     };
+    // 段落正文里有没有那段兜底路径，取决于此刻 CLI 在不在 PATH——判定与生成必须同一个前提，
+    // 否则装完 CLI 会凭空多出一次「不一致」
+    let on_path = link_state == "installed";
+    let agents_state = match workspace.as_deref().map(std::path::Path::new) {
+        Some(ws) => match agents::state(ws, on_path) {
+            agents::State::Ready => "ready",
+            agents::State::Stale => "stale",
+            agents::State::Absent => "absent",
+        },
+        None => "absent",
+    };
     AiStatus {
         source: source.map(|p| p.to_string_lossy().into_owned()),
         link_state: link_state.into(),
         link: link.map(|p| p.to_string_lossy().into_owned()),
         needs_path_setup,
-        agents: workspace.as_deref().map(std::path::Path::new).is_some_and(agents::present),
+        agents_state: agents_state.into(),
     }
 }
 
@@ -71,12 +84,9 @@ pub fn ai_install_cli(app: AppHandle) -> Result<AiStatus, String> {
     Ok(ai_status(app, None))
 }
 
-#[tauri::command]
-pub fn ai_uninstall_cli(app: AppHandle) -> Result<AiStatus, String> {
-    let source = bundled_cli(&app).ok_or("这个构建里没有自带命令行工具")?;
-    cli_link::uninstall(&source)?;
-    Ok(ai_status(app, None))
-}
+// 没有对应的「移除」命令：设置页只提供「初始化」这一个动作（用户要的是「能用」），
+// 而卸载是一次性的收尾操作，`apicase self uninstall` 已经完整覆盖——
+// 在两处各留一份实现，迟早会有一处忘了跟。
 
 /// 往工作空间写 `AGENTS.md`。**幂等**，且绝不覆盖用户自己写的内容。
 ///
@@ -113,11 +123,19 @@ mod tests {
             link_state: "missing".into(),
             link: Some("/y/apicase".into()),
             needs_path_setup: true,
-            agents: false,
+            agents_state: "stale".into(),
         };
         let v = serde_json::to_value(&st).expect("序列化");
         assert_eq!(v["linkState"], "missing");
         assert_eq!(v["needsPathSetup"], true);
-        assert!(v.get("agents").is_some());
+        assert_eq!(v["agentsState"], "stale");
+    }
+
+    /// AGENTS.md 的三态同样是前端的判断依据
+    #[test]
+    fn agents_states_are_stable_strings() {
+        for s in ["ready", "stale", "absent"] {
+            assert!(!s.is_empty());
+        }
     }
 }

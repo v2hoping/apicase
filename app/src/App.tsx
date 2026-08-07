@@ -63,12 +63,24 @@ import { RequestEditor, KVTable, METHODS, methodClass, Select, OP_LABELS, TrashI
 import { FlowCanvas, FlowNode } from "./FlowCanvas";
 import { TerminalPane } from "./TerminalPane";
 import { type ThemeMode, resolveTheme, applyTheme } from "./theme";
-import { type AppSettings, DEFAULT_APP_SETTINGS, loadCachedSettings, loadAppSettings, saveAppSettings, filterExistingPaths, pathExists } from "./settings";
+import { type AppSettings, loadCachedSettings, loadAppSettings, saveAppSettings, filterExistingPaths, pathExists } from "./settings";
 import { type ProxyConfig, type ProxyMode, proxyPayload } from "./proxy";
 import { AiChat } from "./AiChat";
 import { MarkdownEditor } from "./markdown";
 import { HtmlPreview } from "./HtmlPreview";
-import { baseName, dirName, joinPath, relPath, isUnder, retargetPath, uniqueName, reportFileName, resolveInWorkspace } from "./pathutil";
+import { baseName, dirName, joinPath, relPath, isUnder, retargetPath, reportFileNameMulti, resolveInWorkspace, dropTargetDir } from "./pathutil";
+import {
+  type Sel,
+  flattenVisible,
+  rangeBetween,
+  toggleSel,
+  pruneDescendants,
+  countKinds,
+  planCopy,
+  planClone,
+  planMove,
+  canDropInto,
+} from "./treesel";
 import {
   ACTIONS,
   ACTION_MAP,
@@ -236,8 +248,8 @@ interface RunSession {
 
 /** 运行配置对话框状态。files=null 表示正在扫描用例。 */
 interface RunDialogState {
-  target: string;
-  isDir: boolean;
+  /** 要跑的目标（多选时不止一个；目录与用例可混选）。合成**一次**运行、**一份**报告 */
+  targets: Sel[];
   recursive: boolean;
   env: string;
   files: string[] | null;
@@ -511,49 +523,66 @@ function MoreIcon() {
   );
 }
 
-// 文件树节点（递归渲染，支持展开/折叠 + 右键菜单 + 行尾「⋯」菜单）
+// 文件树节点（递归渲染，支持展开/折叠 + 多选 + 右键菜单 + 行尾「⋯」菜单 + 拖拽移动）
 function TreeNode({
   entry,
   depth,
   expanded,
   childrenMap,
-  selectedPath,
+  selectedPaths,
+  leadPath,
   menuPath,
-  onToggle,
-  onSelect,
+  dragPaths,
+  dropPath,
+  onRowClick,
   onContext,
   onMore,
+  drag,
 }: {
   entry: DirEntry;
   depth: number;
   expanded: Set<string>;
   childrenMap: Record<string, DirEntry[]>;
-  selectedPath: string;
+  selectedPaths: Set<string>; // 整个选区（多选时不止一项）
+  leadPath: string; // 最近点击的那一行：只有它触发滚动，否则多选一次要滚 N 回
   menuPath: string; // 菜单正打开的那一行：「⋯」保持显形，否则鼠标移到菜单上按钮会闪掉
-  onToggle: (entry: DirEntry) => void;
-  onSelect: (path: string) => void;
+  dragPaths: Set<string>; // 正被拖动的那些行（降透明度，让人看清自己拎着的是哪些）
+  dropPath: string; // 鼠标正悬在其上的那一行（松手就落到它所属的目录）
+  onRowClick: (e: React.MouseEvent, entry: DirEntry) => void;
   onContext: (e: React.MouseEvent, entry: DirEntry) => void;
   onMore: (e: React.MouseEvent, entry: DirEntry) => void;
+  drag: {
+    start: (e: React.DragEvent, entry: DirEntry) => void;
+    over: (e: React.DragEvent, entry: DirEntry | null) => void;
+    drop: (e: React.DragEvent, entry: DirEntry | null) => void;
+    end: () => void;
+  };
 }) {
   const isOpen = expanded.has(entry.path);
   const children = childrenMap[entry.path];
-  const isSelected = selectedPath === entry.path;
+  const isSelected = selectedPaths.has(entry.path);
+  const isLead = leadPath === entry.path;
   const rowRef = useRef<HTMLDivElement>(null);
-  // 成为选中项时（含展开后异步挂载）滚动到可见范围，最小滚动、不影响横向
+  // 成为最近点击项时（含展开后异步挂载）滚动到可见范围，最小滚动、不影响横向
   useEffect(() => {
-    if (isSelected) rowRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [isSelected]);
+    if (isLead) rowRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [isLead]);
   return (
     <div className="tree-node">
       <div
         ref={rowRef}
         className={`tree-row ${isSelected ? "selected" : ""} ${menuPath === entry.path ? "menu-open" : ""} ${
           entry.hidden ? "is-hidden-entry" : ""
-        }`}
+        } ${dragPaths.has(entry.path) ? "is-dragging" : ""} ${dropPath === entry.path ? "is-drop" : ""}`}
         style={{ paddingLeft: 16 + depth * 14 }}
         title={entry.name}
-        onClick={() => (entry.isDir ? onToggle(entry) : onSelect(entry.path))}
+        draggable
+        onClick={(e) => onRowClick(e, entry)}
         onContextMenu={(e) => onContext(e, entry)}
+        onDragStart={(e) => drag.start(e, entry)}
+        onDragOver={(e) => drag.over(e, entry)}
+        onDrop={(e) => drag.drop(e, entry)}
+        onDragEnd={drag.end}
       >
         <span className={`tree-caret ${entry.isDir ? "" : "tree-caret-empty"}`}>{entry.isDir && <Chevron open={isOpen} />}</span>
         {entry.isDir ? <FolderIcon /> : <FileTypeIcon path={entry.path} />}
@@ -588,12 +617,15 @@ function TreeNode({
               depth={depth + 1}
               expanded={expanded}
               childrenMap={childrenMap}
-              selectedPath={selectedPath}
+              selectedPaths={selectedPaths}
+              leadPath={leadPath}
               menuPath={menuPath}
-              onToggle={onToggle}
-              onSelect={onSelect}
+              dragPaths={dragPaths}
+              dropPath={dropPath}
+              onRowClick={onRowClick}
               onContext={onContext}
               onMore={onMore}
+              drag={drag}
             />
           ))}
         </div>
@@ -859,7 +891,6 @@ function CookieDialog({
   const [path, setPath] = useState(initial?.path ?? "/");
   const [expiresMs, setExpiresMs] = useState<number | undefined>(initial?.expiresMs);
   const [secure, setSecure] = useState(initial?.secure ?? false);
-  const [httpOnly, setHttpOnly] = useState(initial?.httpOnly ?? false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const first = useRef<HTMLInputElement>(null);
@@ -877,7 +908,6 @@ function CookieDialog({
       value,
       path,
       secure,
-      httpOnly,
       expiresMs,
     });
     setBusy(false);
@@ -923,16 +953,14 @@ function CookieDialog({
             {/* 未设置 = 不写 Expires = 会话 Cookie；清除动作在控件面板里 */}
             <DateTimePicker value={expiresMs} onChange={setExpiresMs} ariaLabel="过期时间" />
           </div>
+          {/* 属性只剩 Secure：HttpOnly 管的是浏览器里 JS 能不能读，apicase 收发不看它，
+              放在这儿只会让人以为勾一下能改变什么 */}
           <div className="cookie-field">
             <label>属性</label>
             <div className="cookie-flags">
-              <label className="cookie-check">
+              <label className="cookie-check" title="只在 https 请求里发送">
                 <input type="checkbox" checked={secure} onChange={(e) => setSecure(e.target.checked)} />
                 Secure
-              </label>
-              <label className="cookie-check">
-                <input type="checkbox" checked={httpOnly} onChange={(e) => setHttpOnly(e.target.checked)} />
-                HttpOnly
               </label>
             </div>
           </div>
@@ -1140,8 +1168,8 @@ const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
 ];
 
 const PROXY_OPTIONS: { mode: ProxyMode; label: string; desc: string }[] = [
-  { mode: "system", label: "跟随系统", desc: "使用系统 / 环境变量配置的代理（默认）" },
-  { mode: "none", label: "不使用代理", desc: "直连，忽略系统代理（调试本地服务推荐）" },
+  { mode: "system", label: "跟随系统", desc: "使用系统环境变量配置代理" },
+  { mode: "none", label: "不使用代理", desc: "忽略系统代理" },
   { mode: "custom", label: "自定义", desc: "指定 http / https 代理地址" },
 ];
 
@@ -1257,8 +1285,6 @@ function SettingsPage({
   onProxyChange,
   wsSettings,
   onWsSettingsChange,
-  aiAutoSetup,
-  onAiAutoSetupChange,
 }: {
   environments: Record<string, Record<string, string>>;
   onChange: (next: Record<string, Record<string, string>>) => void;
@@ -1280,8 +1306,6 @@ function SettingsPage({
   onProxyChange: (next: ProxyConfig) => void;
   wsSettings: WorkspaceSettings;
   onWsSettingsChange: (next: WorkspaceSettings) => void;
-  aiAutoSetup: boolean;
-  onAiAutoSetupChange: (next: boolean) => void;
 }) {
   const NAV = SETTINGS_NAV;
   const setSection = onSectionChange;
@@ -1534,7 +1558,7 @@ function SettingsPage({
                       rows={Object.entries(environments[cur] || {}).map(([name, value]) => ({ name, value, enabled: true }))}
                       onChange={(rows) => setVars(cur, rows)}
                       namePlaceholder="变量名"
-                      valuePlaceholder="值（如 https://api.demo.com）"
+                      valuePlaceholder="值"
                       hideEnabled
                     />
                   </div>
@@ -1832,7 +1856,6 @@ function SettingsPage({
                             <th>路径</th>
                             <th>过期</th>
                             <th className="is-center">Secure</th>
-                            <th className="is-center">HttpOnly</th>
                             <th className="is-center">子域</th>
                             <th aria-label="操作" />
                           </tr>
@@ -1858,7 +1881,6 @@ function SettingsPage({
                                 {expiryText(c)}
                               </td>
                               <td className="is-center">{c.secure ? "✓" : ""}</td>
-                              <td className="is-center">{c.httpOnly ? "✓" : ""}</td>
                               <td className="is-center" title={c.hostOnly ? "仅这一个主机" : "子域一并生效"}>
                                 {c.hostOnly ? "" : "✓"}
                               </td>
@@ -1977,13 +1999,7 @@ function SettingsPage({
             onToggleEnabled={onShortcutsEnabledChange}
           />
         )}
-        {section === "AI" && (
-            <AiSettings
-              workspace={workspacePath}
-              autoSetup={aiAutoSetup}
-              onAutoSetupChange={onAiAutoSetupChange}
-            />
-          )}
+        {section === "AI" && <AiSettings workspace={workspacePath} />}
         {section === "关于" && <AboutSettings />}
       </div>
       {cookieEdit && (
@@ -2041,7 +2057,11 @@ function RunDialog({
   onCancel: () => void;
 }) {
   const envNames = Object.keys(environments);
-  const rel = relPath(workspaceRoot, state.target);
+  const targets = state.targets;
+  const one = targets.length === 1 ? targets[0] : null;
+  const rel = one ? relPath(workspaceRoot, one.path) : "";
+  // 「范围」只在选中项里有目录时才有意义（纯用例没有子目录可言）
+  const hasDir = targets.some((t) => t.isDir);
   const files = state.files;
   const scanning = files === null;
   const canRun = !scanning && files.length > 0;
@@ -2058,11 +2078,17 @@ function RunDialog({
       >
         <div className="modal-title">生成测试报告</div>
         <div className="modal-message">
-          {state.isDir ? "目录" : "用例"} <Obj>{rel || baseName(state.target) || "工作空间根"}</Obj>
+          {one ? (
+            <>
+              {one.isDir ? "目录" : "用例"} <Obj>{rel || baseName(one.path) || "工作空间根"}</Obj>
+            </>
+          ) : (
+            <>选中的 <Obj>{targets.length} 项</Obj></>
+          )}
         </div>
 
         <div className="run-opts">
-          {state.isDir && (
+          {hasDir && (
             <label className="run-opt">
               <span className="run-opt-label">范围</span>
               <span className="seg-radio">
@@ -2464,13 +2490,36 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<DirEntry[]>([]);
   const [newCaseDir, setNewCaseDir] = useState<string | null>(null);
-  // 文件树选中项：与「当前打开文件」分开——目录也要能被选中（粘贴要落到它里面）
-  const [treeSel, setTreeSel] = useState<{ path: string; isDir: boolean } | null>(null);
+  // 文件树选区：与「当前打开文件」分开——目录也要能被选中（粘贴要落到它里面）。
+  //
+  // **`sel` 是唯一真相，`treeSel` 是它的末项**（最近点击的那一行，供粘贴目标 / 根行高亮等
+  // 既有单选逻辑照旧使用）。两者分开存会漏同步——散落在七八处的 `setTreeSel` 各自
+  // 再补一句 setSel，漏一处就是「选区与高亮对不上」，故这里只留 selectOne / clearSel 两个入口。
+  const [sel, setSel] = useState<Sel[]>([]);
+  const treeSel = sel.length ? sel[sel.length - 1] : null;
+  // Shift 的锚点 = 最后一次「非 Shift 点击」的行。Shift 区间恒基于它重算，不累加
+  const anchorRef = useRef("");
+  // 当前可见的行（按渲染顺序拉平）：Shift 的区间只能在它上面取——展开的子项算在内、折叠的不算
+  const visibleRows = useMemo(() => flattenVisible(workspace, childrenMap, expanded), [workspace, childrenMap, expanded]);
+  const selectedPaths = useMemo(() => new Set(sel.map((s) => s.path)), [sel]);
   // 文件树剪贴板（应用内语义，不走系统剪贴板）：复制后可连续粘贴，粘贴不清空
-  const [clip, setClip] = useState<{ path: string; isDir: boolean } | null>(null);
+  const [clip, setClip] = useState<Sel[]>([]);
+  // 拖拽移动：源与「鼠标正悬在哪一行」。源同时进 state（要重渲染出半透明）与 ref
+  // （`dragover` 阶段读不到 dataTransfer 里的数据，那是浏览器的安全限制，只能自己记着）
+  const [dragEntries, setDragEntries] = useState<Sel[]>([]);
+  const dragRef = useRef<Sel[]>([]);
+  const dragPaths = useMemo(() => new Set(dragEntries.map((s) => s.path)), [dragEntries]);
+  const [dropRow, setDropRow] = useState("");
   // 右键菜单 / 输入对话框
   // newOnly：工具栏「+」弹的菜单，只有新建两项（与根行的「⋯」菜单区分开）
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: DirEntry | null; newOnly?: boolean } | null>(null);
+  // multi：右键点在选区内且选区不止一项时，菜单针对整个选区（entry 仍是被点的那一行，供高亮用）
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number;
+    y: number;
+    entry: DirEntry | null;
+    newOnly?: boolean;
+    multi?: Sel[];
+  } | null>(null);
   const [promptState, setPromptState] = useState<{ title: string; initial: string; onOk: (v: string) => void } | null>(null);
 
   // 多标签页：打开顺序 + 非活动标签的状态快照（活动标签用下方 live state）
@@ -2534,10 +2583,6 @@ function App() {
   const onShortcutsEnabledChange = setScEnabled;
   // 文件树显示隐藏项（. 开头）。报告目录 .apicase/ 靠它可见，但这是通用能力——
   // 用户的 .env / .gitignore / .gitlab-ci.yml 本来也该能看到。
-  const [aiAutoSetup, setAiAutoSetup] = useState<boolean>(DEFAULT_APP_SETTINGS.aiAutoSetup);
-  // applyWorkspace 是普通函数，直接读 state 会拿到闭包捕获的旧值（同 saveRef 的既有模式）
-  const aiAutoSetupRef = useRef(aiAutoSetup);
-  aiAutoSetupRef.current = aiAutoSetup;
   const [showHidden, setShowHidden] = useState<boolean>(cachedSettings.showHiddenFiles);
   // 代理设置：控制发请求是否走系统代理
   const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(cachedSettings.proxy);
@@ -2565,7 +2610,6 @@ function App() {
       setScOverrides(s.shortcuts);
       setScEnabled(s.shortcutsEnabled);
       setShowHidden(s.showHiddenFiles);
-      setAiAutoSetup(s.aiAutoSetup);
       const alive = await filterExistingPaths(s.recentWorkspaces);
       setRecentWorkspaces((prev) => Array.from(new Set([...prev, ...alive])).slice(0, 10));
       lastSavedRef.current = JSON.stringify({ ...s, recentWorkspaces: alive });
@@ -2601,13 +2645,12 @@ function App() {
       shortcuts: scOverrides,
       shortcutsEnabled: scEnabled,
       showHiddenFiles: showHidden,
-      aiAutoSetup,
     };
     const serialized = JSON.stringify(next);
     if (serialized === lastSavedRef.current) return;
     lastSavedRef.current = serialized;
     saveAppSettings(next);
-  }, [recentWorkspaces, themeMode, proxyConfig, scOverrides, scEnabled, showHidden, aiAutoSetup]);
+  }, [recentWorkspaces, themeMode, proxyConfig, scOverrides, scEnabled, showHidden]);
 
   const mark = () => setDirty(true);
 
@@ -2905,13 +2948,55 @@ function App() {
     paths.forEach((p) => selfWritesRef.current.set(p, now));
   }
 
+  // ── 文件树选区 ───────────────────────────────────
+  //
+  // 入口只有这两个，别处一律不直接 setSel：选区与「最近点击项」必须同进同出
+  // （`treeSel` 就是 `sel` 的末项），分头维护漏一处就是高亮与实际操作对象不一致。
+
+  /** 选中单独一项（普通点击、打开文件、右键未选中的行……都走它）。 */
+  function selectOne(item: Sel) {
+    anchorRef.current = item.path;
+    setSel([item]);
+  }
+
+  function clearSel() {
+    anchorRef.current = "";
+    setSel([]);
+  }
+
+  /**
+   * 行点击。修饰键决定选择行为，**并且带修饰键时不打开文件、不展开目录**——
+   * 挑三个用例的过程中每点一下就开一个标签、展一层目录，选完满屏狼藉。
+   */
+  function onRowClick(e: React.MouseEvent, entry: DirEntry) {
+    const item: Sel = { path: entry.path, isDir: entry.isDir };
+    if (e.shiftKey) {
+      const rows = visibleRows;
+      const picked = rangeBetween(rows, anchorRef.current, entry.path);
+      // 锚点不动：连点两次 Shift 要基于同一锚点重算，累加会变成「点回去反而选得更多」
+      if (picked.length) setSel(picked);
+      else selectOne(item);
+      return;
+    }
+    if (e.metaKey || e.ctrlKey) {
+      anchorRef.current = entry.path;
+      // 函数式更新：两次点击若落进 React 的同一批处理，闭包里的 `sel` 还是上一帧的，
+      // 直接基于它算就会把前一次的加选丢掉（连点时真的会发生）
+      setSel((prev) => toggleSel(prev, item, visibleRows));
+      return;
+    }
+    // 普通点击：照旧——目录展开/折叠，文件打开（两者内部都会 selectOne）
+    if (entry.isDir) toggleDir(entry);
+    else onSelectFile(entry.path);
+  }
+
   // 切标签 / 从搜索结果打开时，树选中项跟随当前文件（视觉上与「选中即当前打开文件」一致）
   useEffect(() => {
-    if (currentCasePath) setTreeSel({ path: currentCasePath, isDir: false });
+    if (currentCasePath) selectOne({ path: currentCasePath, isDir: false });
   }, [currentCasePath]);
 
   function toggleDir(entry: DirEntry) {
-    setTreeSel({ path: entry.path, isDir: true }); // 点目录既展开/折叠，也成为选中项（粘贴要落到它里面）
+    selectOne({ path: entry.path, isDir: true }); // 点目录既展开/折叠，也成为选中项（粘贴要落到它里面）
     const isOpen = expanded.has(entry.path);
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -2968,18 +3053,17 @@ function App() {
     setLayout((l) => ({ ...l, left: true }));
     // 启动/切换文件系统监听：外部对该工作空间的增删改将实时回传
     invoke("watch_workspace", { path }).catch(() => {});
-    // 「设置 → AI → 自动补齐」开着时，缺什么补什么（命令行工具进 PATH + AGENTS.md）。
-    // 默认关，因为 AGENTS.md 会随 git 走——往别人的仓库里自动塞文件是冒犯。
-    // 全程静默：这是后台便利，不是需要用户确认的动作；失败也不打扰（设置页里看得到状态）。
-    if (aiAutoSetupRef.current) {
-      invoke("ai_status", { workspace: path })
-        .then(async (st) => {
-          const s = st as { linkState: string; agents: boolean };
-          if (s.linkState === "missing") await invoke("ai_install_cli").catch(() => {});
-          if (!s.agents) await invoke("ai_write_agents", { workspace: path }).catch(() => {});
-        })
-        .catch(() => {});
-    }
+    // 打开工作空间即补齐 AI 那两件事（命令行工具进 PATH + AGENTS.md），缺什么补什么。
+    // **恒做，没有开关**：用例本就是给 AI 接管着写的，留个选项只会制造「AI 说找不到 apicase 命令」。
+    // 全程静默：这是后台便利，不是需要用户确认的动作；失败也不打扰（设置页「AI」里看得到状态）。
+    invoke("ai_status", { workspace: path })
+      .then(async (st) => {
+        const s = st as { linkState: string; agentsState: string };
+        if (s.linkState === "missing") await invoke("ai_install_cli").catch(() => {});
+        // 「不一致」也要重写：段落还在但内容是旧版本，AI 照着旧说明走一样出错
+        if (s.agentsState !== "ready") await invoke("ai_write_agents", { workspace: path }).catch(() => {});
+      })
+      .catch(() => {});
   }
 
   // 读取工作空间 application.yml：environment（挑选活动环境）+ settings（请求设置）
@@ -3259,7 +3343,7 @@ function App() {
   }
 
   function onSelectFile(path: string) {
-    setTreeSel({ path, isDir: false });
+    selectOne({ path, isDir: false });
     openTab(path); // 任意文件都打开：case 渲染结构、其余落文本、二进制读取失败给提示
   }
 
@@ -3963,20 +4047,40 @@ function App() {
     return out;
   }
 
-  /** 打开运行配置对话框（右键「生成测试报告」）。 */
-  async function openRunDialog(target: string, isDir: boolean) {
-    if (!workspace) return;
+  /**
+   * 多个目标一起发现用例：合并、**去重**、排序。
+   *
+   * 去重是必须的——选中的两个目录互为父子（或用例本身就在选中的目录里）时会扫出重复项，
+   * 重复跑一遍既费时，报告里也会出现两条同名结果，看的人无从判断哪条是哪条。
+   */
+  async function discoverAll(targets: Sel[], recursive: boolean): Promise<string[]> {
+    const out = new Set<string>();
+    for (const t of targets) {
+      for (const f of await discoverCases(t.path, t.isDir, recursive)) out.add(f);
+    }
+    return Array.from(out).sort();
+  }
+
+  /** 目标是否还是同一批（异步扫描回来时对账用，避免慢的那次盖掉新的那次）。 */
+  function sameTargets(a: Sel[], b: Sel[]): boolean {
+    return a.length === b.length && a.every((x, i) => x.path === b[i].path);
+  }
+
+  /** 打开运行配置对话框（右键「生成测试报告」；多选时 targets 不止一项）。 */
+  async function openRunDialog(targets: Sel[]) {
+    if (!workspace || !targets.length) return;
+    // 父子同选时只留最上层：子项本就会被父目录扫进来，留着只是让「N 项」虚高
+    const list = pruneDescendants(targets);
     // 失败传播的初值取工作空间配置：配置是唯一默认源，这里只是本次运行的临时覆盖
     setRunDialog({
-      target,
-      isDir,
+      targets: list,
       recursive: true,
       env: activeEnv,
       files: null,
       continueOnAssertionFailure: wsSettings.continueOnAssertionFailure,
     });
-    const files = await discoverCases(target, isDir, true);
-    setRunDialog((d) => (d && d.target === target ? { ...d, files } : d));
+    const files = await discoverAll(list, true);
+    setRunDialog((d) => (d && sameTargets(d.targets, list) ? { ...d, files } : d));
   }
 
   /** 对话框里改「递归 / 仅当前目录」后重扫——预览列表必须与实际要跑的一致。 */
@@ -3984,8 +4088,8 @@ function App() {
     setRunDialog((d) => (d ? { ...d, recursive, files: null } : d));
     const d = runDialogRef.current;
     if (!d) return;
-    const files = await discoverCases(d.target, d.isDir, recursive);
-    setRunDialog((cur) => (cur && cur.target === d.target ? { ...cur, recursive, files } : cur));
+    const files = await discoverAll(d.targets, recursive);
+    setRunDialog((cur) => (cur && sameTargets(cur.targets, d.targets) ? { ...cur, recursive, files } : cur));
   }
 
   /**
@@ -3994,8 +4098,10 @@ function App() {
    * 报告是**自包含单文件**（样式脚本数据全内联，就为了能整份转发），所以不给它套目录——
    * 一个只装一个文件的目录，只是让每次查看都多进一层。命名规则见 `reportFileName`。
    */
-  function reportFileFor(at: Date, target: string): string {
-    return joinPath(joinPath(workspace, REPORTS_REL), reportFileName(at, target));
+  function reportFileFor(at: Date, targets: string[]): string {
+    // 多目标写成「首个等N项」，与 CLI（core 的 report_file_name_multi）逐字一致：
+    // 报告目录里，文件名是找回某次运行的唯一线索，两处命名不同就成了两套规则
+    return joinPath(joinPath(workspace, REPORTS_REL), reportFileNameMulti(at, targets));
   }
 
   /**
@@ -4039,7 +4145,7 @@ function App() {
    * 一份跑了 200 个用例的报告可达数 MB，每完成一个就整份过一次 IPC 会把界面拖卡。
    */
   async function startRun(d: RunDialogState) {
-    const files = d.files || (await discoverCases(d.target, d.isDir, d.recursive));
+    const files = d.files || (await discoverAll(d.targets, d.recursive));
     setRunDialog(null);
     if (!files.length) {
       setError("没有找到可运行的用例");
@@ -4049,7 +4155,8 @@ function App() {
     const runId = String(at.getTime());
     const tabPath = RUN_TAB_PREFIX + runId;
     // 目标是工作空间根时 baseName 就是工作空间目录名，不必特判
-    const file = reportFileFor(at, d.target);
+    const rels = d.targets.map((t) => relPath(workspace, t.path) || "（工作空间根）");
+    const file = reportFileFor(at, rels);
 
     const targets = files.map((p) => ({ file: relPath(workspace, p), path: p }));
     const opts = makeBatchOpts(
@@ -4061,7 +4168,8 @@ function App() {
     // 半年后回看一份失败报告，"当时用的哪套环境、截断阈值多少"直接决定结论能不能信，
     // 两处各写一份迟早会对不上。
     const options = {
-      targets: [d.isDir ? relPath(workspace, d.target) || "（工作空间根）" : relPath(workspace, d.target)],
+      // 全部目标都写进去：多选时只记第一个，半年后回看会以为那次就只跑了它
+      targets: rels,
       recursive: d.recursive,
       environment: d.env,
       concurrency: opts.concurrency,
@@ -4234,7 +4342,8 @@ function App() {
     }
     setTabOrder((prev) => prev.map((p) => retargetPath(p, from, to)));
     setCurrentCasePath((prev) => retargetPath(prev, from, to));
-    setTreeSel((prev) => (prev ? { ...prev, path: retargetPath(prev.path, from, to) } : prev));
+    setSel((prev) => prev.map((s) => ({ ...s, path: retargetPath(s.path, from, to) })));
+    anchorRef.current = retargetPath(anchorRef.current, from, to);
     setExpanded((prev) => new Set(Array.from(prev, (p) => retargetPath(p, from, to))));
     setChildrenMap((prev) => {
       const next: Record<string, DirEntry[]> = {};
@@ -4267,46 +4376,156 @@ function App() {
     });
   }
 
-  function deleteEntry(entry: DirEntry) {
+  /**
+   * 删除一批（单选就是长度 1）。父子同选时只删最上层的那个——
+   * 删完父再去删子必然报「路径不存在」，而那不是用户做错了什么。
+   */
+  function deleteEntries(items: Sel[]) {
+    const targets = pruneDescendants(items);
+    if (!targets.length) return;
+    const { dirs } = countKinds(targets);
+    const one = targets.length === 1;
     askConfirm({
-      title: <>删除 <Obj>{entry.name}</Obj>？</>,
-      message: entry.isDir ? "连同其中的全部内容，不可撤销" : "不可撤销",
+      title: one ? (
+        <>删除 <Obj>{baseName(targets[0].path)}</Obj>？</>
+      ) : (
+        <>删除选中的 {targets.length} 项？</>
+      ),
+      message: one
+        ? targets[0].isDir
+          ? "连同其中的全部内容，不可撤销"
+          : "不可撤销"
+        : dirs
+          ? `其中 ${dirs} 个文件夹将连同内容一并删除，不可撤销`
+          : "不可撤销",
       confirmLabel: "删除",
       danger: true,
-      onConfirm: () => void doDeleteEntry(entry),
+      onConfirm: () => void doDeleteEntries(targets),
     });
   }
 
-  async function doDeleteEntry(entry: DirEntry) {
-    const dir = dirName(entry.path);
+  async function doDeleteEntries(items: Sel[]) {
+    const dirs = new Set(items.map((it) => dirName(it.path)));
+    const done: string[] = [];
     try {
-      noteSelfWrite(entry.path);
-      await invoke("delete_path", { path: entry.path });
-      await loadDir(dir);
-      // 选中项 / 剪贴板若指向已删除的路径，一并作废
-      if (treeSel && isUnder(entry.path, treeSel.path)) setTreeSel(null);
-      if (clip && isUnder(entry.path, clip.path)) setClip(null);
-      // 关闭被删文件/目录下的所有标签
-      const under = (p: string) => isUnder(entry.path, p);
-      const affected = tabOrder.filter(under);
-      if (affected.length) {
-        affected.forEach((p) => delete tabCacheRef.current[p]);
-        const rest = tabOrder.filter((p) => !under(p));
-        setTabOrder(rest);
-        if (under(currentCasePath)) {
-          if (rest.length) {
-            const s = tabCacheRef.current[rest[0]];
-            if (s) restoreSnapshot(s);
-            else openCase(rest[0]);
-          } else {
-            resetCaseState();
-          }
-        }
+      for (const it of items) {
+        noteSelfWrite(it.path);
+        await invoke("delete_path", { path: it.path });
+        done.push(it.path);
       }
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     }
+    // 删到一半失败也要收尾：已经删掉的那些，标签与选区必须跟着作废
+    if (!done.length) return;
+    for (const d of dirs) await loadDir(d);
+    const under = (p: string) => done.some((x) => isUnder(x, p));
+    // 选中项 / 剪贴板若指向已删除的路径，一并作废
+    setSel((prev) => prev.filter((s) => !under(s.path)));
+    if (under(anchorRef.current)) anchorRef.current = "";
+    setClip((prev) => prev.filter((c) => !under(c.path)));
+    // 关闭被删文件/目录下的所有标签
+    const affected = tabOrder.filter(under);
+    if (affected.length) {
+      affected.forEach((p) => delete tabCacheRef.current[p]);
+      const rest = tabOrder.filter((p) => !under(p));
+      setTabOrder(rest);
+      if (under(currentCasePath)) {
+        if (rest.length) {
+          const s = tabCacheRef.current[rest[0]];
+          if (s) restoreSnapshot(s);
+          else openCase(rest[0]);
+        } else {
+          resetCaseState();
+        }
+      }
+    }
   }
+
+  // ── 文件树：拖拽移动 ─────────────────────────────
+  //
+  // 后端不用改：`rename_path` 本来就是 `std::fs::rename`（移动），且已拒绝「目标已存在」。
+
+  /**
+   * 把一批项移进 `targetDir`（单选就是长度 1，与多选走同一条路径、同一套文案）。
+   *
+   * **同名时拒绝，不自动排号**——这一点与「粘贴」刻意不同：粘贴自动排号是因为那本就是"再来一份"，
+   * 而移动时悄悄改名会让人在新位置找不到自己刚拖过去的东西。
+   *
+   * **全或无**：判定（含同名）全部做完才动手。移了一半再报错，用户得自己逐个核对
+   * 哪些已经过去了——而这正是他一次拖过来想省掉的事。
+   */
+  async function moveInto(items: Sel[], targetDir: string) {
+    if (!targetDir || !items.length) return;
+    try {
+      const plan = planMove(items, targetDir, await takenNamesIn(targetDir));
+      if (!plan.ok) {
+        setError(plan.error);
+        return;
+      }
+      if (!plan.moves.length) return; // 全是「拖回原处」，用户什么也没要求
+      const dirs = new Set<string>([targetDir]);
+      for (const m of plan.moves) {
+        noteSelfWrite(m.from, m.to);
+        await invoke("rename_path", { from: m.from, to: m.to });
+        dirs.add(dirName(m.from));
+        // 目录移走后，其下已打开标签的路径、当前文件、选中项、展开态都要跟着改，
+        // 否则保存会写到一个不存在的位置（同 renameEntry）
+        retargetPaths(m.from, m.to);
+      }
+      for (const d of dirs) await loadDir(d);
+      setExpanded((prev) => new Set(prev).add(targetDir));
+      // 选中落地后的那些：拖完能一眼看到它们去了哪儿
+      setSel(plan.moves.map((m) => ({ path: m.to, isDir: m.isDir })));
+      anchorRef.current = plan.moves[plan.moves.length - 1].to;
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  /** 树的拖拽事件。`entry` 为 null = 工作空间根那一行。 */
+  const treeDrag = {
+    start: (e: React.DragEvent, entry: DirEntry) => {
+      // 拖的是选区里的一项 → 整个选区一起走；拖的是选区外的行 → 它自己（并把选区收回到它）
+      const inSel = sel.some((s) => s.path === entry.path);
+      const src: Sel[] = inSel ? sel : [{ path: entry.path, isDir: entry.isDir }];
+      if (!inSel) selectOne(src[0]);
+      dragRef.current = src;
+      setDragEntries(src);
+      e.dataTransfer.effectAllowed = "move";
+      // 数据本身用不上（同进程内走 ref），但不写的话某些平台不认这是一次有效拖拽
+      e.dataTransfer.setData("text/plain", src.map((s) => s.path).join("\n"));
+    },
+    over: (e: React.DragEvent, entry: DirEntry | null) => {
+      const src = dragRef.current;
+      if (!src.length) return; // 外部拖进来的东西（文件、文本）不接
+      const row = entry?.path ?? workspace;
+      const target = entry ? dropTargetDir(entry) : workspace;
+      if (!canDropInto(src, target)) {
+        setDropRow("");
+        return;
+      }
+      // 只有 preventDefault 过的元素才收得到 drop
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      setDropRow(row);
+    },
+    drop: (e: React.DragEvent, entry: DirEntry | null) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const src = dragRef.current;
+      dragRef.current = [];
+      setDragEntries([]);
+      setDropRow("");
+      if (src.length) void moveInto(src, entry ? dropTargetDir(entry) : workspace);
+    },
+    end: () => {
+      dragRef.current = [];
+      setDragEntries([]);
+      setDropRow("");
+    },
+  };
 
   // ── 文件树：克隆 / 复制 / 剪切 / 粘贴 ─────────────
   /** 目标目录已占用的名称：直接问后端，不用可能过期的 childrenMap。 */
@@ -4315,16 +4534,30 @@ function App() {
     return new Set(entries.map((e) => e.name));
   }
 
-  /** 克隆：同目录复制一份，重名自动排号（用例.yml → 用例 副本.yml → 用例 副本 2.yml）。 */
-  async function cloneEntry(entry: DirEntry) {
-    const dir = dirName(entry.path);
+  /**
+   * 克隆：各自在所在目录复制一份，重名自动排号（用例.yml → 用例 副本.yml → 用例 副本 2.yml）。
+   *
+   * 同目录克隆多项时占用名要**在批次内累积**（`planClone`）：不然两个同名文件会算出同一个
+   * 「x 副本」，第二次拷贝直接盖掉第一次的结果。
+   */
+  async function cloneEntries(items: Sel[]) {
+    const targets = pruneDescendants(items);
+    if (!targets.length) return;
     try {
-      const taken = await takenNamesIn(dir);
-      const to = joinPath(dir, uniqueName(entry.name, (n) => taken.has(n)));
-      noteSelfWrite(to);
-      await invoke("copy_path", { from: entry.path, to });
-      await loadDir(dir);
-      setExpanded((prev) => new Set(prev).add(dir));
+      const dirs = Array.from(new Set(targets.map((it) => dirName(it.path))));
+      const takenByDir = new Map<string, Set<string>>();
+      for (const d of dirs) takenByDir.set(d, await takenNamesIn(d));
+      const plan = planClone(targets, (d) => takenByDir.get(d) || new Set());
+      for (const p of plan) {
+        noteSelfWrite(p.to);
+        await invoke("copy_path", { from: p.from, to: p.to });
+      }
+      for (const d of dirs) await loadDir(d);
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        dirs.forEach((d) => next.add(d));
+        return next;
+      });
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     }
@@ -4337,23 +4570,31 @@ function App() {
   }
 
   async function pasteInto(targetDir: string) {
-    if (!clip || !targetDir) return;
-    const { path: from, isDir } = clip;
+    if (!clip.length || !targetDir) return;
     try {
-      if (!(await pathExists(from))) {
-        setError(`剪贴板中的 ${baseName(from)} 已不存在`);
-        setClip(null);
-        return;
+      // 剪贴板里的东西可能在复制之后被删/移走了，逐个核实——失效的剔除，其余照粘
+      const alive: Sel[] = [];
+      const gone: string[] = [];
+      for (const c of clip) {
+        if (await pathExists(c.path)) alive.push(c);
+        else gone.push(baseName(c.path));
+      }
+      if (gone.length) {
+        setError(`剪贴板中的 ${gone[0]}${gone.length > 1 ? ` 等 ${gone.length} 项` : ""} 已不存在`);
+        setClip(alive);
+        if (!alive.length) return;
       }
       // 目录粘进自身或自己的子目录：会无限递归
-      if (isDir && isUnder(from, targetDir)) {
+      if (alive.some((c) => c.isDir && isUnder(c.path, targetDir))) {
         setError("不能把目录粘贴到它自己或它的子目录中");
         return;
       }
-      const taken = await takenNamesIn(targetDir);
-      const to = joinPath(targetDir, uniqueName(baseName(from), (n) => taken.has(n)));
-      noteSelfWrite(to);
-      await invoke("copy_path", { from, to });
+      // 占用名在批次内累积：一次粘两个同名文件，第二个要看得见第一个刚落地的名字
+      const plan = planCopy(alive, targetDir, await takenNamesIn(targetDir));
+      for (const p of plan) {
+        noteSelfWrite(p.to);
+        await invoke("copy_path", { from: p.from, to: p.to });
+      }
       await loadDir(targetDir);
       setExpanded((prev) => new Set(prev).add(targetDir));
     } catch (e) {
@@ -4378,6 +4619,26 @@ function App() {
     ];
   }
 
+  /**
+   * 多选时的菜单。**只留在多项上说得通的那些**：
+   * 「重命名」「显示文件所在位置」「新建」对一批东西没有意义（前者是另一个功能，
+   * 后两者只能作用于一个），摆出来不如不摆；「粘贴」的落点在多选下也不明确。
+   */
+  function multiCtxItems(items: Sel[]): CtxItem[] {
+    const n = items.length;
+    const runnable = items.filter((it) => it.isDir || (isYamlFile(it.path) && !isAppConfig(it.path)));
+    const out: CtxItem[] = [];
+    if (runnable.length) {
+      out.push({ label: `生成测试报告（${runnable.length} 项）`, onClick: () => openRunDialog(runnable) });
+      out.push({ sep: true });
+    }
+    out.push({ label: `克隆 ${n} 项`, onClick: () => cloneEntries(items) });
+    out.push({ label: `复制 ${n} 项`, onClick: () => setClip(items) });
+    out.push({ sep: true });
+    out.push({ label: `删除 ${n} 项`, onClick: () => deleteEntries(items), danger: true });
+    return out;
+  }
+
   function ctxItems(entry: DirEntry | null): CtxItem[] {
     const dir = entry ? (entry.isDir ? entry.path : dirName(entry.path)) : workspace;
     const items: CtxItem[] = [];
@@ -4393,20 +4654,20 @@ function App() {
     if (canRun) {
       if (items.length) items.push({ sep: true });
       if (!runIsDir) items.push({ label: "打开并运行", onClick: () => openAndRun(runTarget) });
-      items.push({ label: "生成测试报告", onClick: () => openRunDialog(runTarget, runIsDir) });
+      items.push({ label: "生成测试报告", onClick: () => openRunDialog([{ path: runTarget, isDir: runIsDir }]) });
     }
 
     if (entry) {
       if (items.length) items.push({ sep: true });
-      items.push({ label: "克隆", onClick: () => cloneEntry(entry) });
-      items.push({ label: "复制", onClick: () => setClip({ path: entry.path, isDir: entry.isDir }) });
+      items.push({ label: "克隆", onClick: () => cloneEntries([{ path: entry.path, isDir: entry.isDir }]) });
+      items.push({ label: "复制", onClick: () => setClip([{ path: entry.path, isDir: entry.isDir }]) });
     }
     // 粘贴常驻在能收东西的位置（目录 / 根），剪贴板为空时禁用而非隐藏——固定位置比忽隐忽现好找
     if (!entry || entry.isDir) {
       items.push({
-        label: clip ? `粘贴「${baseName(clip.path)}」` : "粘贴",
+        label: clip.length > 1 ? `粘贴 ${clip.length} 项` : clip.length ? `粘贴「${baseName(clip[0].path)}」` : "粘贴",
         onClick: () => pasteInto(dir),
-        disabled: !clip,
+        disabled: !clip.length,
       });
     }
     if (entry) {
@@ -4418,32 +4679,45 @@ function App() {
     items.push({ label: "显示文件所在位置", onClick: () => revealEntry(entry ? entry.path : workspace) });
     if (entry) {
       items.push({ sep: true });
-      items.push({ label: "删除", onClick: () => deleteEntry(entry), danger: true });
+      items.push({ label: "删除", onClick: () => deleteEntries([{ path: entry.path, isDir: entry.isDir }]), danger: true });
     }
     return items;
   }
 
   /** 选中工作空间根（根行点击 / 右键 / 「⋯」都落到它，粘贴目标即工作空间根）。 */
   function selectRoot() {
-    if (workspace) setTreeSel({ path: workspace, isDir: true });
+    if (workspace) selectOne({ path: workspace, isDir: true });
+  }
+
+  /**
+   * 右键 / 「⋯」的落点规则（同 Finder、VSCode）：**点在已选中的行上，菜单作用于整个选区；
+   * 点在选区外的行上，先把选区收回到这一行**。少了后半条，用户会在毫无察觉的情况下
+   * 对一批东西执行操作。
+   */
+  function ctxTargets(entry: DirEntry | null): Sel[] {
+    if (!entry) return [];
+    const inSel = sel.some((s) => s.path === entry.path);
+    if (inSel && sel.length > 1) return sel;
+    if (!inSel) selectOne({ path: entry.path, isDir: entry.isDir });
+    return [];
   }
 
   function openContext(e: React.MouseEvent, entry: DirEntry | null) {
     e.preventDefault();
     e.stopPropagation();
     // 菜单与选中态始终一致（同 VSCode）：entry=null 即针对工作空间根
-    if (entry) setTreeSel({ path: entry.path, isDir: entry.isDir });
-    else selectRoot();
-    setCtxMenu({ x: e.clientX, y: e.clientY, entry });
+    const multi = ctxTargets(entry);
+    if (!entry) selectRoot();
+    setCtxMenu({ x: e.clientX, y: e.clientY, entry, multi: multi.length ? multi : undefined });
   }
 
   /** 行尾「⋯」：与右键同一份菜单，锚定按钮左下角。 */
   function openMoreMenu(e: React.MouseEvent, entry: DirEntry) {
     e.preventDefault();
     e.stopPropagation();
-    setTreeSel({ path: entry.path, isDir: entry.isDir });
+    const multi = ctxTargets(entry);
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setCtxMenu({ x: r.left, y: r.bottom + 4, entry });
+    setCtxMenu({ x: r.left, y: r.bottom + 4, entry, multi: multi.length ? multi : undefined });
   }
 
   /** 文件树内的 Ctrl/⌘+C、Ctrl/⌘+V（只在侧栏有焦点时生效，不劫持编辑区的复制粘贴）。 */
@@ -4453,11 +4727,11 @@ function App() {
     if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return; // 搜索框等照常
     const k = e.key.toLowerCase();
     if (k === "c") {
-      if (!treeSel) return;
+      if (!sel.length) return;
       e.preventDefault();
-      setClip({ path: treeSel.path, isDir: treeSel.isDir });
+      setClip(sel);
     } else if (k === "v") {
-      if (!clip) return;
+      if (!clip.length) return;
       e.preventDefault();
       pasteInto(pasteTargetDir());
     }
@@ -4790,12 +5064,26 @@ function App() {
                 </div>
               ) : (
                 <div className="tree">
+                  {/* 选中数：只在多选时出现——单选是绝大多数时候的状态，那时它只是一条噪音。
+                      折叠目录后没有它，没人知道自己手上还攥着几项 */}
+                  {sel.length > 1 && (
+                    <div className="tree-selbar">
+                      <span>已选 {sel.length} 项</span>
+                      <button type="button" onClick={clearSel}>
+                        清除
+                      </button>
+                    </div>
+                  )}
                   {/* 工作空间根：与普通行同样可点选、可悬浮出「⋯」，菜单走 entry=null 那套（新建 / 粘贴 / 显示位置） */}
                   <div
-                    className={`tree-root-name ${treeSel?.path === workspace ? "selected" : ""}`}
+                    className={`tree-root-name ${treeSel?.path === workspace ? "selected" : ""} ${
+                      dropRow === workspace ? "is-drop" : ""
+                    }`}
                     title={workspace}
                     onClick={() => selectRoot()}
                     onContextMenu={(e) => openContext(e, null)}
+                    onDragOver={(e) => treeDrag.over(e, null)}
+                    onDrop={(e) => treeDrag.drop(e, null)}
                   >
                     <FolderIcon />
                     <span className="tree-name">{baseName(workspace)}</span>
@@ -4821,12 +5109,15 @@ function App() {
                       depth={0}
                       expanded={expanded}
                       childrenMap={childrenMap}
-                      selectedPath={treeSel?.path || ""}
+                      selectedPaths={selectedPaths}
+                      leadPath={treeSel?.path || ""}
                       menuPath={ctxMenu?.entry?.path || ""}
-                      onToggle={toggleDir}
-                      onSelect={onSelectFile}
+                      dragPaths={dragPaths}
+                      dropPath={dropRow}
+                      onRowClick={onRowClick}
                       onContext={openContext}
                       onMore={openMoreMenu}
+                      drag={treeDrag}
                     />
                   ))}
                 </div>
@@ -4997,8 +5288,6 @@ function App() {
                   onChange={onEnvChange}
                   workspacePath={workspace}
                   configPath={currentCasePath}
-                  aiAutoSetup={aiAutoSetup}
-                  onAiAutoSetupChange={setAiAutoSetup}
                   section={settingsSection}
                   onSectionChange={setSettingsSection}
                   shortcutOverrides={scOverrides}
@@ -5370,7 +5659,13 @@ function App() {
         <ContextMenu
           x={ctxMenu.x}
           y={ctxMenu.y}
-          items={ctxMenu.newOnly ? newItems(workspace) : ctxItems(ctxMenu.entry)}
+          items={
+            ctxMenu.newOnly
+              ? newItems(workspace)
+              : ctxMenu.multi
+                ? multiCtxItems(ctxMenu.multi)
+                : ctxItems(ctxMenu.entry)
+          }
           onClose={() => setCtxMenu(null)}
         />
       )}

@@ -457,7 +457,7 @@ pub struct WorkspaceSettings {
     pub ca_cert: String,
     /// 整个请求的超时上限（毫秒），0 = 不限制
     pub timeout_ms: u64,
-    /// 自动收发 Cookie（jar 存 `<workspace>/.apicase/cookies.json`）。默认 `true`——
+    /// 自动收发 Cookie（jar 存 `<workspace>/.apicase/cookies.yml`）。默认 `true`——
     /// 对齐 Postman / Bruno 与浏览器直觉：登录一次，后面的请求自然带着会话。
     pub cookies: bool,
     /// 断言失败是否**不**阻断下游 step。默认 `false` = 阻断。

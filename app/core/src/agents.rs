@@ -72,6 +72,9 @@ pub fn section(cli_on_path: bool) -> String {
 \n\
 典型闭环：**查格式 → 写 .yml → check 自检 → run 验证 → 读失败现场再改**。\n\
 \n\
+登录态存在 `.apicase/cookies.yml`，是一份可直接编辑的 YAML（`apicase docs cookies` 看格式）——\n\
+换 token、清会话都改这个文件，**没有对应的命令**。\n\
+\n\
 读结果时注意三种状态是三回事：\n\
 `failed` 是请求发出去了但断言没过（**被测服务**的问题）、\n\
 `error` 是请求本身失败（网络 / TLS / 超时，多半是**环境或用例自身**的问题）、\n\
@@ -122,11 +125,29 @@ fn splice(existing: &str, body: &str) -> Option<String> {
     Some(out)
 }
 
-/// 工作空间里有没有 apicase 的那一段（界面上显示状态用）。
-pub fn present(root: &Path) -> bool {
-    std::fs::read_to_string(root.join(AGENTS_FILE))
-        .map(|t| t.contains(BEGIN) && t.contains(END))
-        .unwrap_or(false)
+/// 工作空间里 apicase 那一段的状态（界面上显示用）。
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+pub enum State {
+    /// 文件不存在，或存在但没有 apicase 段落
+    Absent,
+    /// 段落在，但内容不是当前版本——**升级后的常态**。
+    /// 与「已配置」分开报，否则用户看着绿灯，AI 手上却是旧说明。
+    Stale,
+    /// 段落在且已是最新
+    Ready,
+}
+
+/// 段落状态。`cli_on_path` 与 `section` 同义——它决定正文里有没有那段兜底路径，
+/// 传错会让「装完 CLI」凭空变成一次「不一致」。
+pub fn state(root: &Path, cli_on_path: bool) -> State {
+    let Ok(existing) = std::fs::read_to_string(root.join(AGENTS_FILE)) else {
+        return State::Absent;
+    };
+    match splice(&existing, &section(cli_on_path)) {
+        Some(t) if t == existing => State::Ready,
+        Some(_) => State::Stale,
+        None => State::Absent,
+    }
 }
 
 #[cfg(test)]
@@ -143,14 +164,16 @@ mod tests {
     #[test]
     fn creates_then_stays_idempotent() {
         let root = tmp("create");
-        assert!(!present(&root));
+        assert_eq!(state(&root, true), State::Absent);
 
         assert_eq!(write(&root, true).expect("写入"), Written::Created);
-        assert!(present(&root));
+        assert_eq!(state(&root, true), State::Ready);
         assert_eq!(write(&root, true).expect("再写"), Written::Unchanged, "第二次不该有改动");
 
         let text = std::fs::read_to_string(root.join(AGENTS_FILE)).expect("读");
-        for must in ["apicase docs", "apicase check", "apicase run --json", "failed", "skipped"] {
+        for must in
+            ["apicase docs", "apicase check", "apicase run --json", "failed", "skipped", ".apicase/cookies.yml"]
+        {
             assert!(text.contains(must), "应含 `{must}`");
         }
         let _ = std::fs::remove_dir_all(&root);
@@ -184,6 +207,20 @@ mod tests {
         assert!(text.trim_end().ends_with("后记"), "后面的内容也要留住：\n{text}");
         assert!(!text.contains("旧内容"), "自己那一段应被替换");
         assert_eq!(text.matches(BEGIN).count(), 1, "标记不该重复");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 内容是旧版本的要报「不一致」而不是「已配置」——后者会让用户以为 AI 手上是新说明
+    #[test]
+    fn an_outdated_section_reads_as_stale() {
+        let root = tmp("stale");
+        std::fs::write(root.join(AGENTS_FILE), format!("{BEGIN}\n旧版本的说明\n{END}\n")).expect("写");
+        assert_eq!(state(&root, true), State::Stale);
+
+        assert_eq!(write(&root, true).expect("写入"), Written::Updated);
+        assert_eq!(state(&root, true), State::Ready, "更新过就该是最新");
+        // CLI 在不在 PATH 会改变正文（兜底路径那一段），状态跟着变
+        assert_eq!(state(&root, false), State::Stale);
         let _ = std::fs::remove_dir_all(&root);
     }
 

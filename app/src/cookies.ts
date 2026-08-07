@@ -6,10 +6,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { formatDateTime } from "./datetime";
 
 /** jar 相对工作空间根的位置（与报告目录同在 `.apicase/` 下，已随它一起进 .gitignore）。 */
-export const COOKIE_JAR_REL = ".apicase/cookies.json";
+export const COOKIE_JAR_REL = ".apicase/cookies.yml";
 
 /**
  * 一条 cookie。`domain + path + name` 是主键——只按 name 删会误伤同名不同域的那条。
+ *
+ * 没有 `httpOnly`：它约束的是浏览器里 `document.cookie` 的读取，apicase 没有那个上下文，
+ * 收发行为不受它影响，摆出来只是一个改了没反应的开关（详见 `core/src/cookie.rs`）。
  */
 export interface CookieItem {
   domain: string;
@@ -17,7 +20,6 @@ export interface CookieItem {
   name: string;
   value: string;
   secure: boolean;
-  httpOnly: boolean;
   /** 过期时间（Unix 毫秒）；缺省 = 会话 cookie */
   expiresMs?: number;
   /** 已过期：不会再被发送，但仍列出来——否则用户看到「没有 cookie」却又删不掉它 */
@@ -40,7 +42,6 @@ export interface CookieInput {
   name: string;
   value: string;
   secure: boolean;
-  httpOnly: boolean;
   expiresMs?: number;
 }
 

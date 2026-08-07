@@ -40,7 +40,6 @@ pub fn run() {
             // 设置页「AI」：命令行工具接进 PATH / 生成 AGENTS.md
             ai::ai_status,
             ai::ai_install_cli,
-            ai::ai_uninstall_cli,
             ai::ai_write_agents,
             // 应用级
             app::init_workspace,

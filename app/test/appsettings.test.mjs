@@ -44,8 +44,6 @@ const DEFAULTS = {
   shortcuts: {},
   shortcutsEnabled: true,
   showHiddenFiles: false,
-  // 默认关：AGENTS.md 会随 git 走，往用户的仓库里自动塞文件是冒犯
-  aiAutoSetup: false,
 };
 
 eq(DEFAULT_APP_SETTINGS, DEFAULTS, "默认设置");
@@ -120,11 +118,9 @@ store.clear();
 eq(loadCachedSettings().showHiddenFiles, false, "缺字段时默认不显示隐藏文件");
 store.setItem(CACHE, JSON.stringify({ showHiddenFiles: true }));
 eq(loadCachedSettings().showHiddenFiles, true, "显式 true 才显示隐藏文件");
-// aiAutoSetup 只有显式 true 才开（同 showHiddenFiles）——它会往仓库里写文件，不能靠猜
-store.setItem(CACHE, JSON.stringify({ aiAutoSetup: true }));
-eq(loadCachedSettings().aiAutoSetup, true, "显式 true 才自动补齐");
-store.setItem(CACHE, JSON.stringify({ aiAutoSetup: "yes" }));
-eq(loadCachedSettings().aiAutoSetup, false, "非布尔值不算开");
+// 已退休的键（aiAutoSetup：AI 初始化改为恒自动）不该再冒出来——settings.json 里的残留要被忽略
+store.setItem(CACHE, JSON.stringify({ aiAutoSetup: false }));
+ok(!("aiAutoSetup" in loadCachedSettings()), "退休的键不进 AppSettings");
 store.setItem(CACHE, JSON.stringify({ showHiddenFiles: "yes" }));
 eq(loadCachedSettings().showHiddenFiles, false, "类型写错按关闭处理");
 

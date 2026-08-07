@@ -303,8 +303,8 @@ body,
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  min-width: 240px;
-  max-width: 320px;
+  min-width: 320px;
+  max-width: 460px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -358,20 +358,25 @@ body,
   gap: 8px;
   overflow: hidden;
 }
-/* 文件夹图标右侧的 名称/路径 两行文本列 */
+/* 文件夹图标右侧的 名称 + 路径：同一行，名称在前、路径弱化跟随 */
 .ws-recent-text {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
   min-width: 0;
   overflow: hidden;
 }
 .ws-recent-name {
+  flex: 0 1 auto;
+  max-width: 55%; /* 名字再长也给路径留出可读的一段 */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .ws-recent-path {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 12px;
   color: var(--muted);
   overflow: hidden;
@@ -383,14 +388,22 @@ body,
   font-size: 13px;
   color: var(--muted);
 }
-/* 最近项一行：打开按钮（占满）+ 右侧删除按钮 */
+/* 最近项一行：打开按钮（占满）+ 右侧删除按钮。
+   底色画在整行上，这样 hover 高亮把删除按钮一起圈进去。 */
 .ws-recent-row {
   display: flex;
   align-items: center;
+  border-radius: 6px;
+}
+.ws-recent-row:hover {
+  background: var(--hover);
 }
 .ws-recent-row .ws-recent {
   flex: 1;
   min-width: 0; /* 让 name/path 的省略号生效 */
+}
+.ws-recent-row .ws-recent:hover {
+  background: transparent; /* 高亮交给整行，避免按钮范围内出现双层底色 */
 }
 /* 删除按钮：常驻占位（opacity 切换，避免出现时挤动路径文字），hover 行时淡入 */
 .ws-recent-del {
@@ -520,6 +533,31 @@ body,
   font-size: 14px;
   user-select: none;
 }
+/* 多选反馈条：只在选区 > 1 项时渲染（单选时它只是噪音）。
+   与树同宽、贴在根行之上，让「已选几项」和树本身处在同一视觉块里。 */
+.tree-selbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 24px;
+  padding: 0 8px 0 16px;
+  margin-bottom: 2px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--hover);
+}
+.tree-selbar button {
+  padding: 0;
+  font-size: 12px;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.tree-selbar button:hover {
+  text-decoration: underline;
+}
 /* 工作空间根行：与 .tree-row 同一套盒模型与交互反馈（行高 / 圆角 / 小手 / hover 底色 / 选中态），
    仅字重加粗以示层级；原先靠 padding 撑出的下间距改用 margin，免得 hover 底色比别的行高一截。 */
 .tree-root-name {
@@ -580,6 +618,25 @@ body,
   color: var(--text);
   font-weight: 500;
 }
+/* ── 拖拽移动 ──
+   拖动中的那一行淡下去（看得清自己拎着的是哪个），落点行整行高亮 + 虚线框。
+   用虚线而不是实底色：与「选中」区分得开，否则拖动时满屏两种蓝底分不出哪个是落点 */
+.tree-row.is-dragging {
+  opacity: 0.45;
+}
+.tree-row.is-drop,
+.tree-root-name.is-drop {
+  background: var(--accent-tint);
+  outline: 1px dashed var(--accent);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+/* 落点行里的文字提到正常色：拖拽时它是当下唯一要看的一行 */
+.tree-row.is-drop .tree-name,
+.tree-root-name.is-drop .tree-name {
+  color: var(--text);
+}
+
 /* 行尾「⋯」更多操作：悬浮 / 选中 / 该行菜单打开时显形（菜单打开后不能消失，否则鼠标移向菜单会闪） */
 .tree-more {
   flex-shrink: 0;
@@ -2125,11 +2182,14 @@ body.resizing-pane .pane-resizer::after {
 .settings-hint.is-warn {
   color: var(--warn-text);
 }
-/* 设置项行：左侧「标题 + 说明」占满剩余宽度，右侧是开关或输入控件 */
+/* 设置项行：左侧「标题 + 说明」占满剩余宽度，右侧是开关或输入控件。
+   行高与「位置」区的 path-value（32px）对齐——两组共用 settings-section 的 12px 间距，
+   行块矮一截就会显得挤，看着像两套疏密不同的排版 */
 .set-row {
   display: flex;
   align-items: center;
   gap: 16px;
+  min-height: 32px;
 }
 .set-row-main {
   flex: 1;
@@ -2460,9 +2520,8 @@ body.resizing-pane .pane-resizer::after {
 .cookie-table th:nth-child(3) { width: 72px; }
 .cookie-table th:nth-child(4) { width: 132px; }
 .cookie-table th:nth-child(5),
-.cookie-table th:nth-child(6),
-.cookie-table th:nth-child(7) { width: 56px; }
-.cookie-table th:nth-child(8) { width: 58px; }
+.cookie-table th:nth-child(6) { width: 56px; }
+.cookie-table th:nth-child(7) { width: 58px; }
 /* 名称与值等宽字体：cookie 的值多是 token / 十六进制串，等宽更好逐字核对 */
 .cookie-cell-name,
 .cookie-cell-value,
@@ -2783,7 +2842,7 @@ body.resizing-pane .pane-resizer::after {
   color: var(--accent);
   font-weight: 500;
 }
-/* 属性：两个复选框，整体高度与同行的输入框一致，基线才对得齐 */
+/* 属性：复选框行，整体高度与同行的输入框一致，基线才对得齐 */
 .cookie-flags {
   display: flex;
   align-items: center;
@@ -3757,9 +3816,14 @@ body.resizing-pane .pane-resizer::after {
 .env-name-input.is-invalid {
   border-color: var(--red);
 }
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   background: var(--accent-dark);
   border-color: var(--accent-dark);
+}
+/* 进行中 / 前置条件不满足：减淡并停掉 hover，与其它按钮的禁用态一致 */
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ── 文件树顶部工具栏（搜索 + 新建）── */
@@ -3926,20 +3990,22 @@ body.resizing-pane .pane-resizer::after {
   opacity: 0.5;
 }
 .sc-group {
-  margin-top: 14px;
+  margin-top: 18px;
 }
 .sc-group-name {
   font-size: 13px;
   font-weight: 600;
   color: var(--muted);
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
+/* 不画分隔线：一屏二十来行，每行一条横线是纯粹的视觉噪音——
+   行与行靠留白区分即可，分组名已经把边界说清楚了 */
 .sc-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 0;
-  border-bottom: 1px solid var(--border);
+  padding: 5px 0;
+  min-height: 32px;
 }
 .sc-label {
   font-size: 14px;
@@ -4990,59 +5056,173 @@ body.resizing-ai .ai-resizer::after {
 }
 
 /* ── 设置页「AI」分区 ────────────────────────────────
-   三行操作项（命令行工具 / AGENTS.md / 自动补齐）+ 一段 MCP 配置。
-   状态用左侧圆点表示：亮 = 就绪。比在标题里写「已安装 / 未安装」更好扫。 */
-.ai-settings { display: flex; flex-direction: column; gap: 14px; }
+   两张卡：①「初始化」这一个动作（按钮 + 自动/手动）+ 它做成了什么的状态；
+   ② MCP —— 另一条路，按客户端给出各自的接入命令。
+   状态用左侧圆点表示：绿 = 就绪、橙 = 需要留意、灰 = 没有。比在文案里写「已安装 / 未安装」更好扫。 */
+.ai-settings { display: flex; flex-direction: column; gap: 18px; }
 .settings-lead { margin: 0 0 2px; color: var(--muted); font-size: 13px; line-height: 1.6; }
 
+/* 不画边框：两块之间一条分割线就够了。外框套外框（卡里还有代码块的框）
+   会把设置页切成一堆小盒子，反而看不出主次 */
+.ai-card {
+  display: flex;
+  flex-direction: column;
+}
+.ai-card + .ai-card {
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+/* 卡内首行：左「标题 + 说明」，右侧操作。控件都不换行，标题那一列自己吸收剩余宽度 */
 .ai-row {
-  display: grid;
-  grid-template-columns: 10px 1fr auto;
+  display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
 }
-.ai-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--border);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--border) 40%, transparent);
-}
-.ai-dot.is-on {
-  background: #22a06b;
-  box-shadow: 0 0 0 2px color-mix(in srgb, #22a06b 25%, transparent);
-}
-.ai-row-text { min-width: 0; }
-.ai-row-title { font-size: 13.5px; font-weight: 600; }
+.ai-row-text { flex: 1; min-width: 0; }
+.ai-row-title { font-size: 14px; font-weight: 600; color: var(--text); }
 .ai-row-hint {
-  margin-top: 2px; font-size: 12px; color: var(--muted); line-height: 1.5;
-  overflow-wrap: anywhere;   /* 路径很长，不能把面板撑破 */
+  margin-top: 3px; font-size: 12px; color: var(--muted); line-height: 1.5;
 }
 
-.ai-note {
-  margin: -6px 0 0 22px; font-size: 12px; color: var(--warn, #b26a00); line-height: 1.5;
+/* 主按钮在这里是小一号：卡内动作，不该有模态确认键那么重 */
+.btn-primary.sm { height: 28px; padding: 0 14px; font-size: 13px; }
+
+/* Agent 下拉（复用全局 ui-select）：Agent 会越加越多，一排分段按钮迟早把标题挤没 */
+.ai-client-select { flex: none; width: 160px; }
+.ai-client-select .ui-select-trigger { height: 28px; }
+
+/* 状态区：与上半分开一格，值本身就是状态（路径 / 已配置 / 不一致 / 未配置）。
+   不加状态点、不着色——这两行是「现在是什么样」的事实陈述，不是要抢注意力的告警 */
+.ai-state {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+.ai-state-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 20px;
+  font-size: 13px;
+}
+.ai-state-k { flex: none; width: 104px; color: var(--muted); }
+/* 值单行截断（全文进 title）：路径动辄五六十字符，换行会把两行状态挤成一团 */
+.ai-state-v {
+  min-width: 0;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-state-v.is-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+/* 尾注（「是另一个 apicase，未接管」这类）：跟在值后面，不另起一行占版面 */
+.ai-state-note { flex: none; font-size: 12px; color: var(--muted); }
+
+.ai-note { margin: 0; font-size: 12px; color: var(--warn-text); line-height: 1.5; }
+
+.ai-msg { font-size: 12.5px; padding: 7px 10px; border-radius: 6px; line-height: 1.5; }
+.ai-msg.is-ok { background: color-mix(in srgb, var(--green) 12%, transparent); color: var(--green); }
+.ai-msg.is-err { background: var(--error-bg); color: var(--red); overflow-wrap: anywhere; }
+
+/* 命令配置 / 文件配置：**二选一**，故做成标签页而不是上下摞两个代码块——
+   后者读起来像是要依次都做一遍 */
+.ai-tabs {
+  display: flex;
+  gap: 18px;
+  margin-top: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.ai-tab {
+  position: relative;
+  padding: 0 0 8px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.ai-tab.is-on {
+  color: var(--text);
+  font-weight: 600;
+}
+.ai-tab.is-on::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+}
+.ai-tab:hover:not(.is-on):not(:disabled) { color: var(--text); }
+/* 这家客户端没有命令行入口：标签灰着点不动，title 里说明原因 */
+.ai-tab:disabled { opacity: 0.4; cursor: default; }
+
+/* 接入 / 删除：两步对称地各带一个小标题——装完发现不对却找不到怎么撤，比装不上更恼火 */
+.ai-step {
+  margin-top: 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+/* 小标题下面紧跟代码块，不必再顶一格 */
+.ai-step + .ai-cmd { margin-top: 6px; }
+
+/* 「写到哪儿」：贴在两步之前——动手之前就该知道这份配置会落在哪个文件里 */
+.ai-where {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  overflow-wrap: anywhere;   /* 路径里没有空格可断，只能按字符折 */
 }
 
-.ai-auto { display: flex; gap: 9px; align-items: flex-start; padding: 2px 2px 0; cursor: pointer; }
-.ai-auto input { margin-top: 3px; flex: none; }
-.ai-auto span { font-size: 13px; line-height: 1.5; }
-.ai-auto em { display: block; font-style: normal; font-size: 12px; color: var(--muted); margin-top: 2px; }
-
-.ai-msg { font-size: 12.5px; padding: 8px 12px; border-radius: 6px; line-height: 1.5; }
-.ai-msg.is-ok { background: color-mix(in srgb, #22a06b 12%, transparent); color: #1a7d52; }
-.ai-msg.is-err { background: color-mix(in srgb, #d64545 12%, transparent); color: #b93b3b; overflow-wrap: anywhere; }
-
-.ai-mcp {
-  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
-  padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px;
+/* 要粘进客户端的那一段：跟随主题的浅底（--code-bg 是报告用的深色代码面，
+   放这儿浅色主题下就成了黑底黑字），右侧跟一个复制按钮 */
+.ai-cmd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
 }
-.ai-code {
-  margin: 0; width: 100%; box-sizing: border-box;
-  padding: 10px 12px; border-radius: 6px;
-  background: var(--code-bg, rgba(127, 127, 127, 0.1));
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 11.5px; line-height: 1.55;
-  overflow-x: auto;   /* 配置行较长，让它自己横向滚，别把面板顶宽 */
+/* JSON 片段是多行的：按钮改为顶端对齐，否则它会飘到代码块正中间 */
+.ai-cmd.is-block { align-items: flex-start; }
+.ai-cmd pre {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow-x: auto;   /* 工作空间路径可能很长，让它自己横向滚，别把面板顶宽 */
+}
+.ai-cmd .btn-ghost.sm { flex: none; }
+
+/* 删除区：整块仍是正常配色，只有**要拿掉的那一段**标红——
+   整块标红会读成「这个文件要整份删掉」，而实际上只是删掉 apicase 这一项 */
+.ai-step.is-remove { color: var(--red); }
+.ai-del { color: var(--red); }
+/* 面板型客户端的删除是一句操作说明，不是代码，用正文字体 */
+.ai-cmd.is-text pre {
+  font-family: inherit;
+  font-size: 13px;
+  white-space: normal;
+}
+.ai-cmd-note { margin-top: 7px; font-size: 12px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
+.ai-cmd-note code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
 }

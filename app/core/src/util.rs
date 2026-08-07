@@ -119,6 +119,87 @@ pub fn http_date(ms: u64) -> String {
     )
 }
 
+/// Unix 毫秒 → **秒级** ISO 8601（`2026-08-12T03:04:05Z`）。
+///
+/// 与 `iso8601` 的差别只在不带毫秒：写进 `.apicase/cookies.yml` 的过期时间是给人看、
+/// 给人改的，而 cookie 的 `Expires` 本来就只到秒——`.000` 是纯噪音。
+pub fn iso8601_secs(ms: u64) -> String {
+    let secs = ms / 1000;
+    let (y, mo, d) = civil_from_days((secs / 86_400) as i64);
+    let tod = secs % 86_400;
+    format!("{y:04}-{mo:02}-{d:02}T{:02}:{:02}:{:02}Z", tod / 3600, (tod % 3600) / 60, tod % 60)
+}
+
+/// ISO 8601 / RFC 3339 文本 → Unix 毫秒。**宽进**：这是手写文件里的字段。
+///
+/// 认得下列写法（缺失的部分按 0 补）：
+/// `2026-08-12`、`2026-08-12T03:04`、`2026-08-12 03:04:05`、`2026-08-12T03:04:05.123Z`、
+/// `2026-08-12T11:04:05+08:00`。**无时区标记时按 UTC**——写文件的人若要本地时间，
+/// 带上偏移即可，猜时区只会让同一份文件在两台机器上意思不同。
+///
+/// 1970 之前与认不出的一律 `None`：cookie 的过期时间在 1970 前没有意义，
+/// 而返回一个 0 会让它当场"已过期"、悄悄消失。
+pub fn parse_iso8601(s: &str) -> Option<u64> {
+    let t = s.trim();
+    // 日期与时间的分隔可以是 T 或空格；没有时间部分就是当天 00:00:00 UTC
+    let (date, rest) = match t.find(['T', 't', ' ']) {
+        Some(i) => (&t[..i], t[i + 1..].trim()),
+        None => (t, ""),
+    };
+    let mut dp = date.split('-');
+    let y: i64 = dp.next()?.trim().parse().ok()?;
+    let mo: u32 = match dp.next() {
+        Some(v) => v.trim().parse().ok()?,
+        None => 1,
+    };
+    let d: u32 = match dp.next() {
+        Some(v) => v.trim().parse().ok()?,
+        None => 1,
+    };
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+        return None;
+    }
+
+    // 尾部时区：Z（UTC）或 ±HH:MM / ±HHMM / ±HH。找符号要从时间部分里找，
+    // 日期里的 `-` 不在这一段，故不会误判
+    let (time, offset_min) = match rest.char_indices().find(|(i, c)| matches!(c, '+' | '-') && *i > 0) {
+        Some((i, sign)) => {
+            let tz = &rest[i + 1..];
+            let mut p = tz.split(':');
+            let h: i64 = p.next().and_then(|v| v.get(..2).unwrap_or(v).trim().parse().ok())?;
+            let m: i64 = match p.next() {
+                Some(v) => v.trim().parse().ok()?,
+                // `+0800` 这种不带冒号的写法：分钟跟在小时后面
+                None => tz.get(2..4).and_then(|v| v.parse().ok()).unwrap_or(0),
+            };
+            let mins = h * 60 + m;
+            (&rest[..i], if sign == '-' { -mins } else { mins })
+        }
+        None => (rest.trim_end_matches(['Z', 'z']), 0),
+    };
+
+    let mut tp = time.trim().split(':');
+    let hh: i64 = match tp.next().filter(|v| !v.is_empty()) {
+        Some(v) => v.trim().parse().ok()?,
+        None => 0,
+    };
+    let mm: i64 = match tp.next() {
+        Some(v) => v.trim().parse().ok()?,
+        None => 0,
+    };
+    // 秒可能带小数（`05.123`）——毫秒精度对 cookie 无意义，取整秒即可
+    let ss: i64 = match tp.next() {
+        Some(v) => v.split('.').next()?.trim().parse().ok()?,
+        None => 0,
+    };
+    if hh > 23 || mm > 59 || ss > 60 {
+        return None;
+    }
+
+    let secs = days_from_civil(y, mo, d) * 86_400 + hh * 3600 + mm * 60 + ss - offset_min * 60;
+    u64::try_from(secs).ok().map(|s| s.saturating_mul(1000))
+}
+
 /// 天序号（自 1970-01-01）→ 公历年月日。
 /// Howard Hinnant 的 `civil_from_days`：把三月当年首，闰年规则因此退化成纯算术，
 /// 没有查表、没有分支，闰年与世纪年自然正确。
@@ -133,6 +214,17 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// 公历年月日 → 天序号（自 1970-01-01）。`civil_from_days` 的逆运算（同一篇算法）。
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as i64; // [0, 399]
+    let mp = if m > 2 { m - 3 } else { m + 9 } as i64; // 以三月为 0
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146_097 + doe - 719_468
 }
 
 #[cfg(test)]
@@ -185,6 +277,43 @@ mod tests {
         ];
         for (ms, want) in cases {
             assert_eq!(http_date(ms), want, "{ms}");
+        }
+    }
+
+    /// 秒级 ISO：与 `iso8601` 同一套历法，只是去掉毫秒
+    #[test]
+    fn iso8601_secs_drops_the_milliseconds() {
+        assert_eq!(iso8601_secs(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso8601_secs(1_785_456_896_789), "2026-07-31T00:14:56Z");
+        assert_eq!(iso8601_secs(1_709_164_800_000), "2024-02-29T00:00:00Z");
+    }
+
+    /// 写出去的能原样读回来——`.apicase/cookies.yml` 每保存一次就走一遍这条往返，
+    /// 差一秒都会让过期时间每次落盘漂一点
+    #[test]
+    fn iso8601_round_trips_to_the_same_second() {
+        for ms in [0u64, 1_785_369_600_000, 1_709_164_800_000, 1_767_225_599_000, 4_102_444_800_000] {
+            assert_eq!(parse_iso8601(&iso8601_secs(ms)), Some(ms), "{ms}");
+        }
+        // 带毫秒的也认，毫秒部分丢掉（cookie 的过期只到秒）
+        assert_eq!(parse_iso8601("2026-07-31T00:14:56.789Z"), Some(1_785_456_896_000));
+    }
+
+    /// 手写文件里的各种写法都要认——这是给人和 AI 改的字段，不该挑格式
+    #[test]
+    fn parse_iso8601_accepts_handwritten_forms() {
+        let noon = 1_785_369_600_000; // 2026-07-30T00:00:00Z
+        assert_eq!(parse_iso8601("2026-07-30"), Some(noon), "只有日期＝当天零点 UTC");
+        assert_eq!(parse_iso8601("2026-07-30 00:00:00"), Some(noon), "空格分隔");
+        assert_eq!(parse_iso8601("  2026-07-30T00:00Z  "), Some(noon), "省略秒 + 两端空白");
+        // 带偏移：+08:00 的 08:00 就是 UTC 的零点
+        assert_eq!(parse_iso8601("2026-07-30T08:00:00+08:00"), Some(noon));
+        assert_eq!(parse_iso8601("2026-07-30T08:00:00+0800"), Some(noon), "不带冒号的偏移");
+        assert_eq!(parse_iso8601("2026-07-29T16:00:00-08:00"), Some(noon), "负偏移");
+
+        // 认不出的一律 None：宁可当作"没有过期时间"（会话 cookie），也不要算出个错的时刻
+        for bad in ["", "下周三", "2026-13-01", "2026-07-32", "2026-07-30T25:00:00Z", "1969-12-31"] {
+            assert_eq!(parse_iso8601(bad), None, "{bad}");
         }
     }
 

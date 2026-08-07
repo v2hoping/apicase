@@ -145,9 +145,9 @@ pub enum Command {
     /// 环境与变量
     Env(EnvArgs),
 
-    /// Cookie jar
-    Cookie(CookieArgs),
-
+    // 刻意**没有 cookie 子命令**：会话就存在 `.apicase/cookies.yml` 里，是一份可读可写的
+    // YAML（格式见 `apicase docs cookies`）。再包一套命令等于给同一份数据开第二条路径，
+    // 而两条路径必然漂移——人与 AI 直接改文件即可。
     /// 运行报告
     Report(ReportArgs),
 
@@ -294,36 +294,6 @@ pub enum EnvCommand {
     Show {
         #[arg(value_name = "名称")]
         name: Option<String>,
-    },
-}
-
-#[derive(Args, Debug)]
-pub struct CookieArgs {
-    #[command(subcommand)]
-    pub command: Option<CookieCommand>,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum CookieCommand {
-    /// 列出 jar 里的 cookie
-    Ls {
-        /// 只看这个域
-        #[arg(value_name = "域")]
-        domain: Option<String>,
-    },
-    /// 删除一条 cookie
-    Rm {
-        #[arg(value_name = "域")]
-        domain: String,
-        #[arg(value_name = "路径")]
-        path: String,
-        #[arg(value_name = "名称")]
-        name: String,
-    },
-    /// 清空（给了域就只清该域）
-    Clear {
-        #[arg(value_name = "域")]
-        domain: Option<String>,
     },
 }
 

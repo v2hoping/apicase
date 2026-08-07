@@ -21,7 +21,8 @@ pub const DATA_DIR: &str = ".apicase";
 /// 报告目录（相对工作空间根）。
 pub const REPORTS_DIR: &str = ".apicase/reports";
 /// cookie jar（相对工作空间根）。桌面端与 CLI 共用这一个文件，会话因此互通。
-pub const COOKIE_JAR: &str = ".apicase/cookies.json";
+/// 是 YAML 而非库的内部 JSON——人和 AI 要直接改它（见 `cookie` 模块的文档）。
+pub const COOKIE_JAR: &str = ".apicase/cookies.yml";
 
 /// 新建工作空间时写入的 `application.yml` 模板。
 pub const CONFIG_TEMPLATE: &str = "# apicase 工作空间配置\n\
@@ -151,7 +152,7 @@ impl Workspace {
     /// 工作空间设置 → 客户端配置。
     ///
     /// 两件只有这里知道的事：**CA 的相对路径在此还原为绝对路径**（存盘用相对是为了随 git 走），
-    /// **cookie jar 落在 `<root>/.apicase/cookies.json`**（桌面端同一个文件）。
+    /// **cookie jar 落在 `<root>/.apicase/cookies.yml`**（桌面端同一个文件）。
     pub fn client_config(&self, proxy: Option<ProxyConfig>) -> ClientConfig {
         let s = &self.settings;
         ClientConfig {
@@ -226,6 +227,30 @@ impl Workspace {
 /// 文件系统非法字符换 `-` → 合并连续 `-` → 去首尾的 `-` / `.` / 空白 → 截到 60 字节。
 /// 截断按**字符边界**切，不会留下半个汉字。
 pub fn report_file_name(stamp: &str, target: &str) -> String {
+    match sanitize_target(target) {
+        n if n.is_empty() => format!("{stamp}.html"),
+        n => format!("{stamp}-{n}.html"),
+    }
+}
+
+/// 多目标时的报告名：`<时间戳>-<首个目标>等N项.html`。
+///
+/// 只写首个目标会让人以为只跑了它——报告目录里，文件名是找回某次运行的唯一线索，
+/// 「跑了 9 块却写着 04-认证」比没有名字更误导。
+pub fn report_file_name_multi(stamp: &str, targets: &[&str]) -> String {
+    let usable: Vec<&str> = targets.iter().copied().filter(|s| !s.trim().is_empty() && *s != ".").collect();
+    match usable.len() {
+        0 => format!("{stamp}.html"),
+        1 => report_file_name(stamp, usable[0]),
+        n => match sanitize_target(usable[0]) {
+            first if first.is_empty() => format!("{stamp}-等{n}项.html"),
+            first => format!("{stamp}-{first}等{n}项.html"),
+        },
+    }
+}
+
+/// 目标名 → 可做文件名的一段：取最后一节、去 yaml 后缀、非法字符换 `-`、截到 60 字节。
+fn sanitize_target(target: &str) -> String {
     let base = target.rsplit(['/', '\\']).next().unwrap_or(target);
     let base = strip_yaml_ext(base);
 
@@ -240,13 +265,7 @@ pub fn report_file_name(stamp: &str, target: &str) -> String {
             cleaned.push(ch);
         }
     }
-    let name = clip_bytes(cleaned.trim_matches(|c: char| c == '-' || c == '.' || c.is_whitespace()), 60);
-
-    if name.is_empty() {
-        format!("{stamp}.html")
-    } else {
-        format!("{stamp}-{name}.html")
-    }
+    clip_bytes(cleaned.trim_matches(|c: char| c == '-' || c == '.' || c.is_whitespace()), 60).to_string()
 }
 
 /// 去掉 `.yml` / `.yaml` 后缀（大小写不敏感）。
@@ -442,6 +461,22 @@ mod tests {
         assert_eq!(ws.rel(&root.join("api").join("login.yml")), "api/login.yml");
         assert_eq!(ws.rel(Path::new("/somewhere/else.yml")), "/somewhere/else.yml", "空间外的原样返回");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 多目标：文件名要能看出「不止跑了第一个」——报告目录里文件名是找回某次运行的唯一线索
+    #[test]
+    fn report_file_name_multi_says_how_many() {
+        let s = "20260803143022";
+        assert_eq!(report_file_name_multi(s, &["api"]), "20260803143022-api.html", "单个＝原来的规则");
+        assert_eq!(
+            report_file_name_multi(s, &["04-认证", "07-多步flow", "hello.yml"]),
+            "20260803143022-04-认证等3项.html"
+        );
+        // 空目标（跑整个工作空间）被滤掉，不参与计数
+        assert_eq!(report_file_name_multi(s, &["", "api", "."]), "20260803143022-api.html");
+        assert_eq!(report_file_name_multi(s, &[]), "20260803143022.html");
+        // 首个目标清洗后为空时仍要留下项数
+        assert_eq!(report_file_name_multi(s, &["...", "b"]), "20260803143022-等2项.html");
     }
 
     /// 与前端 `reportFileName` 逐字对齐——两处生成的名字不同，报告目录里就会出现两套命名

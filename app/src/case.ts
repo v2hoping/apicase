@@ -128,7 +128,7 @@ export interface WorkspaceSettings {
   caCert: string; // CA 证书文件，**相对工作空间根**的路径（绝对路径换机器就失效）
   timeoutMs: number; // 整个请求的超时上限（毫秒），0 = 不限制
   /**
-   * 自动收发 Cookie（jar 存 `<workspace>/.apicase/cookies.json`）。默认 true——
+   * 自动收发 Cookie（jar 存 `<workspace>/.apicase/cookies.yml`）。默认 true——
    * 对齐 Postman / Bruno 与浏览器直觉：登录一次，后面的请求自然带着会话。
    */
   cookies: boolean;

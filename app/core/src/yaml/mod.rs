@@ -60,7 +60,10 @@ fn yaml_key_to_string(k: serde_yaml::Value) -> String {
 }
 
 /// 解析成 JSON 值；空文档按空映射处理（与前端 `load(text) ?? {}` 一致）。
-fn load(text: &str) -> Result<Value, String> {
+///
+/// 公开出去是给 `.apicase/cookies.yml` 用的：那份文件同样是手写的 YAML，
+/// 读取要与 case 走同一个解析器（否则会出现「case 里能写、cookies 里写不了」的怪事）。
+pub fn load(text: &str) -> Result<Value, String> {
     let v: serde_yaml::Value =
         serde_yaml::from_str(text).map_err(|e| format!("YAML 解析失败：{e}"))?;
     Ok(match yaml_to_json(v) {

@@ -239,9 +239,16 @@ fn open_writer(ws: &Workspace, req: &RunRequest, rel_targets: &[String]) -> Resu
         ReportSink::Auto if ws.is_scratch() => return Ok(None),
         ReportSink::Auto => {
             // 跑整个工作空间时目标是根，相对路径为空——用工作空间名，
-            // 否则一堆只有时间戳的报告文件放在一起，光看名字分不出跑的是什么
-            let target = rel_targets.first().map(String::as_str).filter(|s| !s.is_empty() && *s != ".");
-            let name = workspace::report_file_name(&crate::local_stamp(), target.unwrap_or(&ws.name()));
+            // 否则一堆只有时间戳的报告文件放在一起，光看名字分不出跑的是什么。
+            // 多目标则是 `<首个目标>等N项`：只写第一个会让人以为只跑了它
+            let usable: Vec<&str> =
+                rel_targets.iter().map(String::as_str).filter(|s| !s.is_empty() && *s != ".").collect();
+            let ws_name = ws.name();
+            let name = if usable.is_empty() {
+                workspace::report_file_name(&crate::local_stamp(), &ws_name)
+            } else {
+                workspace::report_file_name_multi(&crate::local_stamp(), &usable)
+            };
             ws.reports_dir().join(name)
         }
     };

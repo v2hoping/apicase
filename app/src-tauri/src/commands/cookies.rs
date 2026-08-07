@@ -1,7 +1,7 @@
 //! Cookie jar 的管理命令（设置页「Cookies」用）。
 //!
 //! 同 `exec`：**没有语义**，全部转发给 `apicase-core` 的 `cookie` 模块。
-//! jar 的路径由前端给（`<workspace>/.apicase/cookies.json`）——core 不猜工作空间在哪，
+//! jar 的路径由前端给（`<workspace>/.apicase/cookies.yml`）——core 不猜工作空间在哪，
 //! 将来的 CLI 会用同一批函数、自己决定路径。
 
 use apicase_core::cookie::{self, CookieInput, CookieItem, CookieKey};

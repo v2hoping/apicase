@@ -1,11 +1,23 @@
 //! Cookie jar：自动收 `Set-Cookie`、按域回带、按工作空间持久化。
 //!
+//! # 落盘格式是 YAML，且是**给人和 AI 直接编辑的**
+//!
+//! 早期存 `cookie_store` 自己的 JSON（一行一条，`raw_cookie` 里塞着完整的 `Set-Cookie` 串），
+//! 那是库的内部表示：人读着费劲、AI 更不敢改，于是「换个 token 再跑一遍」只能绕回界面点。
+//! 现在存 `.apicase/cookies.yml`，字段就是 cookie 的语义字段——这样它和用例一样是纯文本，
+//! 谁都能改，也就**不必再为 cookie 提供一套专门的命令**（那会是第二条路径，与文件必然漂移）。
+//!
+//! 代价是这份文件由程序持续重写（每收到一次 `Set-Cookie`），**手写的注释与顺序不会保留**，
+//! 故文件头那段说明每次都重新生成。
+//!
 //! # 为什么不自己解析
 //!
-//! RFC 6265 的域匹配（`Domain=.example.com` 覆盖子域）、路径匹配、`Secure` / `HttpOnly`
-//! 的适用条件、`Expires` 与 `Max-Age` 的优先级……这套规则自己写的每一种错法，
+//! RFC 6265 的域匹配（`Domain=.example.com` 覆盖子域）、路径匹配、`Secure` 的适用条件、
+//! `Expires` 与 `Max-Age` 的优先级……这套规则自己写的每一种错法，
 //! 表现都是「某个 cookie 莫名其妙没带上」——最难排查的那类问题。故用 `cookie_store`
 //! （reqwest 自己的 `Jar` 用的也是它），我们只负责持久化、开关与管理接口。
+//! 手工写进 yml 的那些同样走这条路：拼成一行 `Set-Cookie` 交给它解析，
+//! 不给「手写的能用、服务端下发的不能用」留出现的余地。
 //!
 //! # 为什么要装进 reqwest 而不是在响应回来后自己收
 //!
@@ -20,11 +32,12 @@
 use crate::http::ClientConfig;
 use crate::request::HttpRequest;
 use crate::report::KvPair;
-use crate::util::http_date;
+use crate::util::{http_date, iso8601_secs};
 use cookie_store::{CookieExpiration, CookieStore, RawCookie};
 use reqwest::header::HeaderValue;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -44,7 +57,7 @@ pub struct CookieConfig {
     /// 自动收发的总开关
     #[serde(default)]
     pub enabled: bool,
-    /// jar 的落盘路径（绝对路径；桌面端是 `<workspace>/.apicase/cookies.json`）。
+    /// jar 的落盘路径（绝对路径；桌面端是 `<workspace>/.apicase/cookies.yml`）。
     /// 缺省 = 只在内存里活着（CLI 的一次性执行、尚未打开工作空间时）
     #[serde(default)]
     pub jar_path: Option<String>,
@@ -59,6 +72,10 @@ impl CookieConfig {
 
 /// 管理界面看到的一条 cookie。`domain + path + name` 是 cookie 的主键——
 /// 只给 name 会误删同名不同域的那条。
+///
+/// **不带 `HttpOnly`**：它约束的是浏览器里 `document.cookie` 的读取，apicase 没有那个上下文，
+/// `cookie_store` 的匹配也只在非 http(s) 协议下才据它拦截（`is_http_scheme`）——
+/// 我们发出去的只有 http/https，故它对收发毫无影响。留着就是一个改了也没反应的开关。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CookieItem {
@@ -67,7 +84,6 @@ pub struct CookieItem {
     pub name: String,
     pub value: String,
     pub secure: bool,
-    pub http_only: bool,
     /// 过期时间（Unix 毫秒）；None = 会话 cookie。
     /// 给毫秒而不是格式化好的串：编辑框要拿它回填，显示格式是渲染层的事。
     pub expires_ms: Option<u64>,
@@ -94,8 +110,6 @@ pub struct CookieInput {
     pub value: String,
     #[serde(default)]
     pub secure: bool,
-    #[serde(default)]
-    pub http_only: bool,
     #[serde(default)]
     pub expires_ms: Option<u64>,
 }
@@ -129,13 +143,14 @@ impl CookieJar {
     /// 从磁盘读一份（文件不存在 / 读坏了都回落空 jar——一份读不回来的 cookie 文件
     /// 不该让请求发不出去，最坏结果只是重新登录一次）。
     fn load(path: Option<PathBuf>) -> Self {
-        let store = path
-            .as_deref()
-            .and_then(|p| std::fs::File::open(p).ok())
-            // load_all 而非 load：过期的也读回来，管理界面才列得出、删得掉（gc 在落盘时做）
-            .and_then(|f| cookie_store::serde::json::load_all(std::io::BufReader::new(f)).ok())
-            .unwrap_or_default();
-        Self { path, store: RwLock::new(store), write: Mutex::new(WriteState::default()) }
+        let (store, legacy) = match path.as_deref() {
+            Some(p) => read_store(p),
+            None => (CookieStore::default(), false),
+        };
+        // 从旧的 cookies.json 读来的**当场标脏**：否则只读不写的那些运行（没收到 Set-Cookie）
+        // 永远不会触发落盘，旧文件就一直留着、一直被读，"已经换成 yml 了"只是个错觉
+        let write = WriteState { dirty: legacy, last: None };
+        Self { path, store: RwLock::new(store), write: Mutex::new(write) }
     }
 
     /// 锁中毒不让 jar 报废（同 `ClientPool::lock` 的理由）：里面只是可重建的 cookie 数据，
@@ -171,7 +186,6 @@ impl CookieJar {
                 name: c.name().to_string(),
                 value: c.value().to_string(),
                 secure: c.secure().unwrap_or(false),
-                http_only: c.http_only().unwrap_or(false),
                 expires_ms: match &c.expires {
                     // 1970 前的时间戳只可能来自坏数据，按「无过期时间」处理而不是算出负数
                     CookieExpiration::AtUtc(t) => {
@@ -190,60 +204,18 @@ impl CookieJar {
     /// 新增或修改一条 cookie（管理界面的「＋」与铅笔走同一个入口）。
     ///
     /// `prev` 是修改前的主键：改了域 / 路径 / 名等于换了一条 cookie，不删旧的就会留下一条孤儿。
-    ///
-    /// 实现走「拼一行 `Set-Cookie` 交给解析器」而不是自己拼装属性对象：
-    /// 这样域、路径、过期的合法性判定与真实响应走的是同一套代码，不会出现
-    /// 「手工加的能用、服务端下发的不能用」这种两套语义的分裂。
     pub fn put(&self, prev: Option<&CookieKey>, item: &CookieInput) -> Result<(), String> {
-        let name = item.name.trim();
-        if name.is_empty() {
-            return Err("Cookie 名不能为空".into());
-        }
-        let domain = item.domain.trim();
-        let host = domain.trim_start_matches('.');
-        if host.is_empty() {
-            return Err("域不能为空".into());
-        }
-        let path = match item.path.trim() {
-            "" => "/",
-            p => p,
-        };
-        if !path.starts_with('/') {
-            return Err("路径要以 / 开头".into());
-        }
-        // Secure 的 cookie 只有 https 页面才存得下，故用它决定这个"虚拟请求地址"的协议
-        let scheme = if item.secure { "https" } else { "http" };
-        let url = Url::parse(&format!("{scheme}://{host}{path}")).map_err(|e| format!("域不合法（{domain}）: {e}"))?;
-
-        let mut line = format!("{name}={}; Path={path}", item.value);
-        // 带前导点 = 用户要子域一并生效，翻译成 Domain 属性；不带则不写该属性（host-only）
-        if domain.starts_with('.') {
-            line.push_str(&format!("; Domain={domain}"));
-        }
-        if item.secure {
-            line.push_str("; Secure");
-        }
-        if item.http_only {
-            line.push_str("; HttpOnly");
-        }
-        if let Some(ms) = item.expires_ms {
-            line.push_str(&format!("; Expires={}", http_date(ms)));
-        }
-        let raw = RawCookie::parse(line).map_err(|e| format!("Cookie 不合法: {e}"))?;
-
         {
             let mut st = self.write_store();
+            // **先插新的再删旧的**：反过来的话，新的一条因过期时间已过而存不下时，
+            // 旧的那条也已经没了——用户只是想改个值，结果两头落空
+            let key = insert_into(&mut st, item)?;
             if let Some(p) = prev {
-                st.remove(&p.domain, &p.path, &p.name);
-            }
-            st.insert_raw(&raw, &url).map_err(|e| match e {
-                // 这两个是用户填错时最常撞上的，原文是英文且过于技术化，换成能直接照做的说法
-                cookie_store::CookieError::Expired => "过期时间已经过去了，这条 cookie 存不下".to_string(),
-                cookie_store::CookieError::DomainMismatch => {
-                    format!("域 {domain} 与该 cookie 不匹配")
+                // 主键没变时新的就落在原位，再删一次等于把刚写进去的抹掉
+                if (&p.domain, &p.path, &p.name) != (&key.domain, &key.path, &key.name) {
+                    st.remove(&p.domain, &p.path, &p.name);
                 }
-                other => format!("保存失败: {other}"),
-            })?;
+            }
         }
         self.mark_dirty();
         self.flush();
@@ -321,13 +293,13 @@ impl CookieJar {
         }
         // gc 掉已过期的，否则文件会一直涨——过期 cookie 既不发送也没有保留价值
         self.gc();
-        let mut buf: Vec<u8> = Vec::new();
-        // 保存**含会话 cookie**：浏览器的语义是"关标签页就丢"，但 apicase 的使用形态是
+        // 落盘**含会话 cookie**：浏览器的语义是"关标签页就丢"，但 apicase 的使用形态是
         // 「昨天登录过、今天接着调」，这里对齐 Postman 而不是对齐浏览器
-        if cookie_store::serde::json::save_incl_expired_and_nonpersistent(&self.read(), &mut buf).is_err() {
-            return;
+        write_atomic(&path, to_yaml(&self.list()).as_bytes());
+        // 旧格式的 cookies.json 已被这一份取代，留着就是第二个真相（且它比这份旧）
+        if let Some(old) = legacy_path(&path) {
+            let _ = std::fs::remove_file(old);
         }
-        write_atomic(&path, &buf);
     }
 
     fn gc(&self) {
@@ -343,7 +315,198 @@ impl CookieJar {
     }
 }
 
-/// 写盘走「临时文件 + rename」：直接覆写时若进程在半途没了，留下的是半截 JSON，
+// ── 落盘格式（YAML）────────────────────────────────
+
+/// 文件头。**每次落盘重新生成**——这份文件由程序持续重写，用户写在里面的注释留不住，
+/// 那就至少保证「怎么改」的说明一直在最上面（要改的人多半就是照着它改）。
+const FILE_HEADER: &str = "\
+# apicase 的 cookie 会话。可以直接编辑，保存后下次运行即生效。
+# 本文件由 apicase 自动维护（响应里的 Set-Cookie 会写回这里），手写的注释与顺序不会保留。
+#
+# 顶层是域名，前缀 . 表示子域一并生效（.demo.com 也发给 api.demo.com）。
+# 每条只有 name 必填，其余省略即默认：path: /、secure: false，
+# expires 省略 = 会话 cookie（不过期，关掉应用也留着）。
+# expires 写 ISO 8601，如 2026-08-12T03:04:05Z；不带时区按 UTC，也可写 +08:00。
+";
+
+/// 旧格式（`cookie_store` 的内部 JSON）的位置：与 yml 同名不同后缀。
+///
+/// jar 路径本身就以 `.json` 结尾时返回 `None`——那时"旧格式的位置"就是它自己，
+/// 迁移后的清理会把刚写好的文件删掉。
+fn legacy_path(path: &Path) -> Option<PathBuf> {
+    let legacy = path.with_extension("json");
+    (legacy != path).then_some(legacy)
+}
+
+/// 从磁盘读一份 store，并告知**是不是从旧的 `cookies.json` 读的**（调用方据此立刻标脏，
+/// 让下一次落盘完成迁移）。先认 yml，没有才试同名的旧文件。
+///
+/// 读不到、读坏了都回落空 store：一份读不回来的 cookie 文件不该让请求发不出去，
+/// 最坏结果只是重新登录一次。
+fn read_store(path: &Path) -> (CookieStore, bool) {
+    if let Ok(text) = std::fs::read_to_string(path) {
+        return (from_yaml(&text), false);
+    }
+    legacy_path(path)
+        .and_then(|p| std::fs::File::open(p).ok())
+        // load_all 而非 load：过期的也读回来，管理界面才列得出、删得掉（gc 在落盘时做）
+        .and_then(|f| cookie_store::serde::json::load_all(std::io::BufReader::new(f)).ok())
+        .map(|s| (s, true))
+        .unwrap_or_default()
+}
+
+/// store 里的 cookie → 落盘文本。域名分组，默认值不落盘（同 case 序列化的裁剪风格）。
+fn to_yaml(items: &[CookieItem]) -> String {
+    let mut root = serde_json::Map::new();
+    for c in items {
+        // 带 Domain 属性的写成 `.example.com`——与界面、与手写时的约定同一套记法，
+        // 不这样标出来，编辑一次就把子域通配悄悄丢了
+        let key = if c.host_only { c.domain.clone() } else { format!(".{}", c.domain) };
+        let mut m = serde_json::Map::new();
+        m.insert("name".into(), JsonValue::String(c.name.clone()));
+        m.insert("value".into(), JsonValue::String(c.value.clone()));
+        if c.path != "/" {
+            m.insert("path".into(), JsonValue::String(c.path.clone()));
+        }
+        if c.secure {
+            m.insert("secure".into(), JsonValue::Bool(true));
+        }
+        if let Some(ms) = c.expires_ms {
+            m.insert("expires".into(), JsonValue::String(iso8601_secs(ms)));
+        }
+        match root.get_mut(&key) {
+            Some(JsonValue::Array(a)) => a.push(JsonValue::Object(m)),
+            _ => {
+                root.insert(key, JsonValue::Array(vec![JsonValue::Object(m)]));
+            }
+        }
+    }
+    // 空 jar 也把说明留下：文件在那儿、告诉人怎么往里加，好过一个零字节文件
+    if root.is_empty() {
+        return FILE_HEADER.to_string();
+    }
+    format!("{FILE_HEADER}\n{}", crate::yaml::to_yaml(&JsonValue::Object(root)))
+}
+
+/// 落盘文本 → store。**宽进**：认不出的那一条丢掉就是，绝不因为一个字段写坏而整份作废——
+/// 那意味着「AI 改错一行，登录态全没了」。
+///
+/// 两种形态都收：规范的「域名 → 列表」，以及每条自带 `domain` 的扁平列表
+/// （手写时顺手写成这样的概率不低）。读进来之后下次落盘自然规范化成前者。
+fn from_yaml(text: &str) -> CookieStore {
+    let mut store = CookieStore::default();
+    let Ok(root) = crate::yaml::load(text) else { return store };
+    match root {
+        JsonValue::Object(m) => {
+            for (domain, v) in m {
+                match v {
+                    JsonValue::Array(a) => {
+                        for it in &a {
+                            push_item(&mut store, it, &domain);
+                        }
+                    }
+                    // 一个域只有一条时写成映射也认
+                    obj @ JsonValue::Object(_) => push_item(&mut store, &obj, &domain),
+                    _ => {}
+                }
+            }
+        }
+        JsonValue::Array(a) => {
+            for it in &a {
+                push_item(&mut store, it, "");
+            }
+        }
+        _ => {}
+    }
+    store
+}
+
+/// yml 里的一条 → store。`domain` 是它所在的顶层 key；条目里写了 `domain` 则以条目为准。
+///
+/// 认不得的字段（如旧文件里的 `httpOnly`）直接忽略，下次落盘自然消失——
+/// 手写文件里多一个字段就整条丢掉，比留着它更糟。
+fn push_item(store: &mut CookieStore, v: &JsonValue, domain: &str) {
+    let Some(m) = v.as_object() else { return };
+    // 值写成数字、布尔（`value: 123`）一样收下：HTTP 里没有类型，读回来都是字符串
+    let text = |k: &str| m.get(k).map(crate::util::js_string).unwrap_or_default();
+    // 布尔字段写成 "true" / "yes" 这类字符串也认——手写文件不该在这种地方较真
+    let flag = |k: &str| match m.get(k) {
+        Some(JsonValue::Bool(b)) => *b,
+        Some(JsonValue::String(s)) => matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1"),
+        _ => false,
+    };
+    let own = text("domain");
+    let d = if own.trim().is_empty() { domain } else { own.trim() };
+    let expires_ms = match m.get("expires") {
+        // 数字按 Unix 毫秒（导出的报告、脚本拼出来的多半是这种）
+        Some(JsonValue::Number(n)) => n.as_u64(),
+        Some(JsonValue::String(s)) => crate::util::parse_iso8601(s),
+        _ => None,
+    };
+    let _ = insert_into(
+        store,
+        &CookieInput {
+            domain: d.to_string(),
+            path: text("path"),
+            name: text("name"),
+            value: text("value"),
+            secure: flag("secure"),
+            expires_ms,
+        },
+    );
+}
+
+/// 把一条 cookie 塞进 store，返回它落地后的主键。
+///
+/// 实现走「拼一行 `Set-Cookie` 交给解析器」而不是自己拼装属性对象：这样域、路径、过期的
+/// 合法性判定与真实响应走的是同一套代码，不会出现「手工加的能用、服务端下发的不能用」
+/// 这种两套语义的分裂。管理界面（`put`）与手写的 yml（`from_yaml`）共用它。
+fn insert_into(store: &mut CookieStore, item: &CookieInput) -> Result<CookieKey, String> {
+    let name = item.name.trim();
+    if name.is_empty() {
+        return Err("Cookie 名不能为空".into());
+    }
+    let domain = item.domain.trim();
+    let host = domain.trim_start_matches('.');
+    if host.is_empty() {
+        return Err("域不能为空".into());
+    }
+    let path = match item.path.trim() {
+        "" => "/",
+        p => p,
+    };
+    if !path.starts_with('/') {
+        return Err("路径要以 / 开头".into());
+    }
+    // Secure 的 cookie 只有 https 页面才存得下，故用它决定这个"虚拟请求地址"的协议
+    let scheme = if item.secure { "https" } else { "http" };
+    let url =
+        Url::parse(&format!("{scheme}://{host}{path}")).map_err(|e| format!("域不合法（{domain}）: {e}"))?;
+
+    let mut line = format!("{name}={}; Path={path}", item.value);
+    // 带前导点 = 用户要子域一并生效，翻译成 Domain 属性；不带则不写该属性（host-only）
+    if domain.starts_with('.') {
+        line.push_str(&format!("; Domain={domain}"));
+    }
+    if item.secure {
+        line.push_str("; Secure");
+    }
+    if let Some(ms) = item.expires_ms {
+        line.push_str(&format!("; Expires={}", http_date(ms)));
+    }
+    let raw = RawCookie::parse(line).map_err(|e| format!("Cookie 不合法: {e}"))?;
+
+    store.insert_raw(&raw, &url).map_err(|e| match e {
+        // 这两个是用户填错时最常撞上的，原文是英文且过于技术化，换成能直接照做的说法
+        cookie_store::CookieError::Expired => "过期时间已经过去了，这条 cookie 存不下".to_string(),
+        cookie_store::CookieError::DomainMismatch => format!("域 {domain} 与该 cookie 不匹配"),
+        other => format!("保存失败: {other}"),
+    })?;
+    // store 里的域名一律小写、去掉前导点（`CookieDomain` 的规范化），主键跟着它走
+    Ok(CookieKey { domain: host.to_lowercase(), path: path.to_string(), name: name.to_string() })
+}
+
+/// 写盘走「临时文件 + rename」：直接覆写时若进程在半途没了，留下的是半截文件，
 /// 下次加载失败即整份会话丢失。失败一律静默——cookie 落盘不该让请求出错。
 fn write_atomic(path: &Path, data: &[u8]) {
     if let Some(dir) = path.parent() {
@@ -513,7 +676,7 @@ mod tests {
     /// 落盘 → 重新加载，会话仍在（会话 cookie 也要留住）
     #[test]
     fn persists_across_reload() {
-        let path = tmp_path("persist.json");
+        let path = tmp_path("persist.yml");
         let jar = jar_with("http://localhost/api", &["sid=xyz"], Some(&path));
         jar.flush();
         assert!(path.exists(), "应已落盘");
@@ -526,10 +689,109 @@ mod tests {
     /// 坏掉的 jar 文件不该让请求发不出去，最坏只是重新登录一次
     #[test]
     fn broken_file_falls_back_to_empty() {
-        let path = tmp_path("broken.json");
-        std::fs::write(&path, b"{ not json at all").expect("写文件");
+        let path = tmp_path("broken.yml");
+        std::fs::write(&path, "{ 这不是 YAML: [").expect("写文件");
         let jar = CookieJar::load(Some(path.clone()));
         assert!(jar.list().is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── 落盘格式（YAML）────────────────────────────
+    //
+    // 这份文件是给人和 AI 直接编辑的，故「长什么样」与「能不能读回来」同等重要：
+    // 写得再对，人看不懂也照样只能回来点界面。
+
+    /// 落盘文本：按域分组、默认值不写、说明在最上面
+    #[test]
+    fn yaml_groups_by_domain_and_omits_defaults() {
+        let jar = Arc::new(CookieJar::load(None));
+        jar.put(None, &input("api.test", "sid", "abc")).expect("保存");
+        jar.put(None, &CookieInput { secure: true, path: "/admin".into(), ..input(".team.test", "t", "1") })
+            .expect("保存");
+
+        let text = to_yaml(&jar.list());
+        assert!(text.starts_with("# apicase"), "说明要在最上面：\n{text}");
+        assert!(text.contains("expires 省略 = 会话 cookie"), "说明要讲清省略的含义");
+
+        assert!(text.contains("api.test:\n  - name: sid\n    value: abc\n"), "实际：\n{text}");
+        // 默认值不落盘：path=/ 与 secure: false 都不该出现在第一条上
+        assert!(!text.contains("path: /\n"), "path: / 是默认值，不该写出来：\n{text}");
+        // 带 Domain 属性的写成 .team.test——不这样标出来，编辑一次就把子域通配丢了
+        assert!(text.contains(".team.test:"), "实际：\n{text}");
+        assert!(text.contains("path: /admin") && text.contains("secure: true"));
+        // HttpOnly 不再是字段：它对 apicase 的收发没有影响，写出去只会让人以为改了有用
+        assert!(!text.contains("httpOnly"), "不该再写 httpOnly：\n{text}");
+    }
+
+    /// 往返：写出去再读回来，一条不多一条不少，子域标记与过期时间都保住
+    #[test]
+    fn yaml_round_trips() {
+        let jar = Arc::new(CookieJar::load(None));
+        let at = (crate::util::now_ms() / 1000 + 86_400) * 1000; // 整秒的将来时刻
+        jar.put(None, &input("api.test", "sid", "abc")).expect("保存");
+        jar.put(None, &CookieInput { expires_ms: Some(at), ..input(".team.test", "t", "1") }).expect("保存");
+
+        let again = CookieJar { path: None, store: RwLock::new(from_yaml(&to_yaml(&jar.list()))), write: Mutex::new(WriteState::default()) };
+        let (a, b) = (jar.list(), again.list());
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert_eq!(
+                (&x.domain, &x.path, &x.name, &x.value, x.secure, x.expires_ms, x.host_only),
+                (&y.domain, &y.path, &y.name, &y.value, y.secure, y.expires_ms, y.host_only),
+            );
+        }
+    }
+
+    /// 手写的文件要收得下：省略字段、值写成数字、布尔写成字符串、条目里自带域名、
+    /// 以及旧文件里那个已经取消的 `httpOnly`（忽略它，别把整条丢了）
+    #[test]
+    fn yaml_accepts_handwritten_files() {
+        let store = from_yaml(
+            "api.demo.com:\n  - name: sid\n    value: 12345\n    httpOnly: true\n\
+             .demo.com:\n  - name: theme\n    value: dark\n    secure: 'true'\n",
+        );
+        let jar = CookieJar { path: None, store: RwLock::new(store), write: Mutex::new(WriteState::default()) };
+        let items = jar.list();
+        assert_eq!(items.len(), 2);
+        assert_eq!(jar.header_for("http://api.demo.com/x").as_deref(), Some("sid=12345"), "数字值按字符串收下");
+        assert!(items.iter().any(|c| c.name == "theme" && c.secure && !c.host_only), "实际 {items:?}");
+
+        // 扁平列表（每条自带 domain）——手写时顺手写成这样的概率不低
+        let flat = from_yaml("- domain: a.test\n  name: k\n  value: v\n- domain: b.test\n  name: k2\n  value: v2\n");
+        assert_eq!(flat.iter_any().count(), 2);
+    }
+
+    /// 一条写坏只丢那一条：绝不能出现「AI 改错一行，登录态全没了」
+    #[test]
+    fn yaml_drops_only_the_broken_entry() {
+        let store = from_yaml(
+            "api.demo.com:\n  - name: good\n    value: 1\n  - value: 没有名字\n  - name: bad-path\n    path: 不以斜杠开头\n",
+        );
+        let names: Vec<String> = store.iter_any().map(|c| c.name().to_string()).collect();
+        assert_eq!(names, vec!["good"], "只有合法的那条该留下：{names:?}");
+    }
+
+    /// 旧的 cookies.json 要能读回来，且落盘后就地换成 yml、旧文件删掉（不留第二个真相）
+    #[test]
+    fn migrates_the_legacy_json_jar() {
+        let path = tmp_path("migrate.yml");
+        let legacy = path.with_extension("json");
+        let _ = std::fs::remove_file(&legacy);
+        // 用 cookie_store 自己写一份旧文件——手抄一份它的内部格式，测的就成了我抄得对不对
+        let old = jar_with("http://legacy.test/api", &["sid=old; Path=/"], None);
+        let mut buf: Vec<u8> = Vec::new();
+        cookie_store::serde::json::save_incl_expired_and_nonpersistent(&old.read(), &mut buf).expect("旧格式序列化");
+        std::fs::write(&legacy, &buf).expect("写旧文件");
+
+        let jar = CookieJar::load(Some(path.clone()));
+        assert_eq!(jar.header_for("http://legacy.test/x").as_deref(), Some("sid=old"), "旧格式要读得回来");
+
+        // 不额外标脏：读到旧格式这件事本身就该让下一次落盘完成迁移，
+        // 否则只读不写的运行永远迁不过来，旧文件一直被读
+        jar.flush();
+        assert!(path.exists(), "应写出 yml");
+        assert!(!legacy.exists(), "旧的 json 该删掉，否则下次还从它读");
+        assert!(std::fs::read_to_string(&path).expect("读").contains("name: sid"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -564,7 +826,6 @@ mod tests {
             name: name.into(),
             value: value.into(),
             secure: false,
-            http_only: false,
             expires_ms: None,
         }
     }
@@ -642,7 +903,7 @@ mod tests {
     /// 用户手写的 Cookie 头优先，jar 不插手
     #[test]
     fn manual_cookie_header_wins() {
-        let path = tmp_path("attach.json");
+        let path = tmp_path("attach.yml");
         let jar = jar_with("http://localhost/api", &["sid=fromjar"], Some(&path));
         jar.flush();
         reset_registry();
@@ -728,7 +989,7 @@ mod tests {
     /// 服务端下发的 Set-Cookie 要在下一个请求上原样带回去——本需求的主线
     #[tokio::test]
     async fn set_cookie_comes_back_on_the_next_request() {
-        let path = tmp_path("e2e-on.json");
+        let path = tmp_path("e2e-on.yml");
         reset_registry();
         crate::http::clear_client_cache();
 
@@ -752,7 +1013,7 @@ mod tests {
     /// 开关关掉：既不带也不收，jar 文件也不该被创建
     #[tokio::test]
     async fn switch_off_sends_nothing() {
-        let path = tmp_path("e2e-off.json");
+        let path = tmp_path("e2e-off.yml");
         reset_registry();
         crate::http::clear_client_cache();
 
@@ -769,7 +1030,7 @@ mod tests {
     /// 同一路径全进程共用一份 store——两份各写各的，谁后落盘谁把对方抹掉
     #[test]
     fn same_path_shares_one_jar() {
-        let path = tmp_path("shared.json");
+        let path = tmp_path("shared.yml");
         let p = path.to_string_lossy().into_owned();
         reset_registry();
         let a = jar_at(Some(&p));

@@ -19,10 +19,8 @@ export interface AppSettings {
   shortcuts: Overrides; // 快捷键自定义绑定
   shortcutsEnabled: boolean; // 快捷键功能总开关
   showHiddenFiles: boolean; // 文件树是否显示隐藏项（. 开头，如 .apicase/.env）
-  // 打开工作空间时自动补齐 AI 相关配置（命令行工具进 PATH + 生成 AGENTS.md）。
-  // **默认关**：AGENTS.md 会随 git 走，往别人的仓库里自动塞文件是冒犯；
-  // 勾这个动作本身就是明确意图。
-  aiAutoSetup: boolean;
+  // 打开工作空间时自动初始化 AI 相关配置（命令行工具进 PATH + 生成 AGENTS.md）**恒做**，
+  // 故这里没有对应字段——曾有过 `aiAutoSetup`（2026-08-05 移除）。
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -32,7 +30,6 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   shortcuts: {},
   shortcutsEnabled: true,
   showHiddenFiles: false,
-  aiAutoSetup: false,
 };
 
 /** 首帧同步读取用的镜像（localStorage）；权威源仍是 settings.json。 */
@@ -102,8 +99,6 @@ function parseAppSettings(v: unknown, fallback: Partial<AppSettings> = {}): AppS
     shortcuts: pick("shortcuts", normalizeOverrides),
     shortcutsEnabled: pick("shortcutsEnabled", (raw) => raw !== false),
     showHiddenFiles: pick("showHiddenFiles", (raw) => raw === true),
-    // 只有显式 true 才开（同 showHiddenFiles）：默认不往用户的仓库里塞 AGENTS.md
-    aiAutoSetup: pick("aiAutoSetup", (raw) => raw === true),
   };
 }
 

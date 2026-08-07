@@ -185,8 +185,20 @@ var ApicaseFmt = (function () {
 
     var parts = [];
     parts.push("环境 <b>" + esc(r.environment.name || "无") + "</b>");
-    if (r.options && r.options.targets && r.options.targets.length) {
-      parts.push("目标 <b>" + esc(r.options.targets.join("、")) + "</b>");
+    // 目标可能有很多（界面里多选、CLI 里给一串）：三个以内全列，超了就收成
+    // 「前两项 等 N 项」并给一个可展开的完整列表——头部高度得是恒定的，
+    // 但"到底跑了哪些"又必须查得到，那是报告最基本的自证
+    var tg = (r.options && r.options.targets) || [];
+    if (tg.length) {
+      if (tg.length <= 3) {
+        parts.push("目标 <b>" + esc(tg.join("、")) + "</b>");
+      } else {
+        parts.push(
+          "目标 <b>" + esc(tg.slice(0, 2).join("、")) + "</b>" +
+          ' <button type="button" class="tgt-toggle" id="tgt-toggle" aria-expanded="false">等 ' +
+          tg.length + " 项<span class=\"tgt-caret\">▾</span></button>"
+        );
+      }
     }
     parts.push("开始 <b>" + esc(fmtTime(r.startedAt)) + "</b>");
     parts.push("耗时 <b>" + esc(fmtMs(r.durationMs)) + "</b>");
@@ -197,6 +209,22 @@ var ApicaseFmt = (function () {
       parts.push("失败传播 <b>断言失败继续</b>");
     }
     document.getElementById("sub").innerHTML = parts.join("<span>·</span>");
+
+    // 完整目标列表：只在收起过的时候才有内容，点标题切换显隐
+    var box = document.getElementById("targets");
+    if (tg.length > 3) {
+      box.innerHTML = tg.map(function (t) { return '<span class="tgt">' + esc(t) + "</span>"; }).join("");
+      var btn = document.getElementById("tgt-toggle");
+      btn.onclick = function () {
+        var open = box.hidden;
+        box.hidden = !open;
+        btn.setAttribute("aria-expanded", open ? "true" : "false");
+        btn.className = open ? "tgt-toggle is-open" : "tgt-toggle";
+      };
+    } else {
+      box.hidden = true;
+      box.innerHTML = "";
+    }
 
     var done = s.passed + s.failed + s.error + s.skipped;
     var bar = document.getElementById("progress");
