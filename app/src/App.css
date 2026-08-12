@@ -1,18 +1,25 @@
 :root {
-  /* ── 中性骨架 ── */
-  --border: #ececec; /* 纯中性分隔线 */
-  --border-strong: #dcdcdc; /* hover 边框 / 端口环等更实的分隔线 */
-  --bg: #f9f9f9; /* 唯一层次色（纯中性极浅灰）：文件树侧栏 / 设置导航 / 次级面，衬托纯白主体 */
+  /* ── 中性骨架 ──
+     中性色带**极轻微的冷色温**（色相 ~220°、饱和 6~12%），不是纯灰。纯灰在大面积铺开时
+     显得发死、发脏，掺一点与品牌蓝同源的色温后，白面显得干净、灰面显得沉静——这是
+     开发者工具（Linear / Vercel / Xcode）与消费级模板拉开距离的地方之一。
+     幅度必须小到说不出"这是蓝的"，否则就成了着色的界面。 */
+  --border: #e6e8ee; /* 分隔线：只需"看得见边界"，不需要"划一道线" */
+  --grid-line: #eef0f4; /* 表格内部竖线：比 --border 再轻一档，几百条线同屏时才不吵 */
+  --border-strong: #d3d7e0; /* hover 边框 / 端口环等更实的分隔线 */
+  --bg: #f5f6f9; /* 层次色：文件树侧栏 / 设置导航 / 次级面，衬托纯白主体 */
   --panel: #ffffff; /* 主体白：顶栏 / 主工作区 / 底部栏 / 右侧栏 / 卡片 */
-  --panel-2: #f9f9f9; /* 次级面（只读输入、表头等）统一用层次色 */
-  --text: #1c1c1e;
-  --text-strong: #111114; /* 计数等需更黑一档 */
-  --muted: #8a8a8e;
+  --panel-2: #f5f6f9; /* 次级面（只读输入、表头等）统一用层次色 */
+  --text: #17191d;
+  --text-strong: #0d0f13; /* 计数等需更黑一档 */
+  /* 次要文字：原 #8a8a8e 在白底上对比度仅约 3.5:1，低于 WCAG AA 的 4.5:1——
+     占位符、路径、说明这些"看得懂但不抢眼"的内容并不等于"看不清"。现约 5.4:1。 */
+  --muted: #676e7b;
   /* 列表/按钮的交互底色：hover < selected < selected-hover，另有更深一档 hover-strong（关闭按钮等） */
-  --hover: #f0f0f0;
-  --hover-strong: #e8e8e8;
-  --selected: #ebebeb;
-  --selected-hover: #e3e3e3;
+  --hover: #eef0f4;
+  --hover-strong: #e4e7ed;
+  --selected: #e7eaf0;
+  --selected-hover: #dde1e9;
   --on-accent: #ffffff; /* 有色底上的文字（发送/主按钮等） */
   /* ── 语义色 ── */
   --green: #2e9b53;
@@ -39,6 +46,13 @@
      光"菜单"一类就有 6/20、6/24、8/24 三种——肉眼不可辨，是随手写的而非设计决策。
      按浮层的层级分三档，另加一档微凸起。深色主题只需覆盖上面的颜色变量，
      这里的 var() 在使用点才求值，故自动跟随。 */
+  /* ── 等宽字体栈 ──
+     URL、JSON、Header、路径、cookie 值……这个软件里真正要逐字核对的内容全是等宽的，
+     它的观感几乎等同于产品观感。原先 25 处各写一份，且只到 Menlo（2009 年的字体）；
+     现收敛为一个变量并前置 SF Mono / JetBrains Mono——前者是 macOS 系统等宽的现代款，
+     后者开发者机器上普遍装了。`ui-monospace` 在 macOS 上即解析为 SF Mono。 */
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", "Cascadia Code",
+    Menlo, Consolas, monospace;
   --shadow-raise: 0 1px 2px var(--shadow-weak); /* 微凸起：段控件选中态、画布节点 */
   --shadow-menu: 0 6px 20px var(--shadow-med); /* 下拉 / 右键菜单 / 补全浮层 */
   --shadow-panel: 0 10px 30px var(--shadow-strong); /* 独立浮层面板（日期选择器） */
@@ -54,28 +68,33 @@
   --info-border: #cfe0f2;
   --info-text: #3a5a8a;
   /* ── 代码面（深色底，两主题都偏深）+ 行内代码 ── */
-  --code-bg: #1e1e1e;
+  --code-bg: #14171c;
   --code-fg: #e6e6e6;
-  --inline-code-bg: #f0f0f0;
+  --inline-code-bg: #eef0f4;
   --inline-code-fg: #d6336c;
-  --th-bg: #f9f9f9;
+  /* JSON 着色：与语义色同源但压低饱和——响应体是长时间盯着看的，
+     饱和度高的语法色在整屏 JSON 上会发闹。键最重（找字段靠它），值次之。 */
+  --json-key: #1f4d8f;
+  --json-str: #1a7f5a;
+  --json-num: #9a5b00;
+  --th-bg: #f5f6f9;
   /* ── DAG 画布 / 小地图 ──（纯中性，与整体一致）*/
-  --canvas-bg: #fcfcfc;
-  --canvas-grid: #ececec;
-  --edge: #cccccc; /* 连线默认色 */
-  --dot-idle: #d4d4d4; /* 状态点默认灰 */
+  --canvas-bg: #fafbfd;
+  --canvas-grid: #e6e8ee;
+  --edge: #c2c7d1; /* 连线默认色 */
+  --dot-idle: #ccd1da; /* 状态点默认灰 */
   --minimap-bg: rgba(255, 255, 255, 0.92);
-  --minimap-node: #cccccc;
+  --minimap-node: #c2c7d1;
   /* ── AI 对话 ──（气泡底与 --panel-2 同中性浅灰；头像蓝紫为 AI 标识，保留）*/
   --ai-avatar-bg: #eceef9;
   --ai-avatar-fg: #5b6ed6;
-  --ai-bubble-bg: #f9f9f9;
+  --ai-bubble-bg: #f5f6f9;
   /* ── 文件树图标 ──（文件图标中性灰）*/
   --icon-folder: #6b83a8;
-  --icon-file: #a0a0a0;
+  --icon-file: #99a0ac;
   /* 缩进参考线：要能看见层级、又不能抢内容。比 --border 略重（后者落在 --bg 上几乎不可见），
      比 --border-strong 轻（那个当线用会显得脏）。 */
-  --indent-guide: #e0e0e0;
+  --indent-guide: #dce0e7;
 
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     Helvetica, Arial, sans-serif;
@@ -88,18 +107,21 @@
 /* ── 深色主题：覆盖同名变量（由 documentElement 的 data-theme=dark 触发）── */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --border: #33333a;
-  --border-strong: #45454e;
-  --bg: #1a1a1d;
-  --panel: #232328;
-  --panel-2: #2b2b31;
-  --text: #e7e7ea;
-  --text-strong: #f6f6f8;
-  --muted: #9a9aa1;
-  --hover: #303036;
-  --hover-strong: #3b3b42;
-  --selected: #3a3a41;
-  --selected-hover: #45454d;
+  /* 深色同样走冷色温（原为偏紫的中性色），且整体压暗一档——IDE 的深色底越沉，
+     代码与状态色浮得越出来。层次仍是 bg < panel < panel-2 三级。 */
+  --border: #292e36;
+  --grid-line: #22272e; /* 表格内部竖线，见浅色注释 */
+  --border-strong: #39404a;
+  --bg: #141619;
+  --panel: #1b1e23;
+  --panel-2: #21252b;
+  --text: #e4e7ec;
+  --text-strong: #f4f6f8;
+  --muted: #8a93a1;
+  --hover: #242931;
+  --hover-strong: #2e343d;
+  --selected: #2b323b;
+  --selected-hover: #353d47;
   --on-accent: #ffffff;
   --green: #40bd6a;
   --blue: #4d94ff;
@@ -126,23 +148,26 @@
   --info-bg: #1b2a3c;
   --info-border: #2c4463;
   --info-text: #86b3e6;
-  --code-bg: #161619;
+  --code-bg: #101317;
   --code-fg: #e6e6ea;
-  --inline-code-bg: #303036;
+  --inline-code-bg: #262b33;
   --inline-code-fg: #f072a2;
-  --th-bg: #2b2b31;
-  --canvas-bg: #1b1b1f;
-  --canvas-grid: #2e2e35;
-  --edge: #4a4a53;
-  --dot-idle: #46464e;
-  --minimap-bg: rgba(28, 28, 32, 0.92);
-  --minimap-node: #5a5a63;
+  --json-key: #7cb3ff;
+  --json-str: #6cd39a;
+  --json-num: #e0b072;
+  --th-bg: #21252b;
+  --canvas-bg: #16191e;
+  --canvas-grid: #252b33;
+  --edge: #414954;
+  --dot-idle: #3b424c;
+  --minimap-bg: rgba(27, 30, 35, 0.92);
+  --minimap-node: #505965;
   --ai-avatar-bg: #2a2d48;
   --ai-avatar-fg: #9aa6ea;
-  --ai-bubble-bg: #2a2a31;
+  --ai-bubble-bg: #21252b;
   --icon-folder: #7f97bd;
-  --icon-file: #8b91a1;
-  --indent-guide: #3a3a43;
+  --icon-file: #868f9d;
+  --indent-guide: #2e343d;
 }
 
 * {
@@ -174,6 +199,39 @@ button,
   transition: background-color 0.12s, color 0.12s, border-color 0.12s;
 }
 
+/* 聚焦反馈：边框转 accent 之外，再加一圈极淡的光环。
+   1px 边框变色在浅色主题下太弱——尤其表单里一排输入框时，很难一眼找到焦点在哪。
+   3px 的 accent-ring（透明度 0.28）不刺眼，但足以让焦点"亮"起来，是当代通行做法。
+   放在这里统一给，各控件不必再各写一份。 */
+.url-group:focus-within,
+.tree-search-wrap:focus-within,
+.unit-input:focus-within,
+.auth-panel .field-row > .var-input:focus-within,
+.auth-panel .secret-field:focus-within,
+.modal-input:focus,
+.body-input:focus,
+.raw-editor:focus,
+.ct-input:focus,
+.field-row input:focus,
+.set-row-input input:focus,
+.sm-id-input:focus,
+.cookie-field input:focus,
+.env-name-input:focus,
+.ui-select.is-open .ui-select-trigger {
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* 按下反馈：主按钮与图标按钮轻微下沉 1px。
+   开发者工具点击频次高，这一下"实感"比动画更值钱——且 0.06s 快到不拖手。 */
+.send-btn:active:not(:disabled),
+.btn-primary:active:not(:disabled),
+.btn-danger:active:not(:disabled),
+.btn-ghost:active:not(:disabled),
+.flow-tool-btn:active:not(:disabled),
+.save-btn.ghost:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
 /* 禁用态：全站一个光标。原先 default / not-allowed 混用，且透明度散着
    0.35 / 0.4 / 0.5 / 0.55 / 0.6 五档——同一个应用里，禁用按钮有的淡到几乎看不见、
    有的和正常态差不多。not-allowed 比 default 多给一条信息：不是点了没反应，是这会儿不能点。
@@ -183,6 +241,25 @@ button:disabled,
 input:disabled,
 textarea:disabled {
   cursor: not-allowed;
+}
+
+/* 尊重系统的「减弱动态效果」：过渡与入场动画一律压到近乎瞬时。
+   但**不停**转圈与脉冲点——它们不是装饰，是「正在跑」的唯一信号，
+   一律停掉等于把运行状态藏起来，那是把无障碍做成了功能缺失。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  .send-spinner,
+  .run-spinner,
+  .fn-status.dot-running {
+    animation-duration: 0.9s !important;
+    animation-iteration-count: infinite !important;
+  }
 }
 
 /* 键盘焦点：统一给所有按钮一圈 accent 描边。
@@ -893,19 +970,30 @@ body.resizing-row iframe {
   display: flex;
   gap: 8px;
 }
-/* method + url 连体容器：共用一个边框、内部无分隔，初始无阴影 */
+/* method + url 连体容器：共用一个边框、内部无分隔。
+   这是整个软件的第一操作位，故边框比普通输入重一档（--border-strong）——
+   一眼就能落到"请求地址在哪"，而不必先扫一遍才找到。 */
 .url-group {
   flex: 1;
   display: flex;
   align-items: center;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
   background: var(--panel);
   /* 不裁剪：方法下拉的选项面板需溢出到容器下方 */
   overflow: visible;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.url-group:hover {
+  border-color: var(--muted);
 }
 .url-group:focus-within {
   border-color: var(--accent);
+}
+/* method 与 url 之间补一条分隔：连体不等于糊成一块，
+   方法是"选"的、地址是"填"的，两种操作各自的边界要看得出来 */
+.url-group .ui-select.method-select {
+  border-right: 1px solid var(--border);
 }
 /* ── 自定义下拉控件（替代原生 select）──
    触发器为纯平按钮（无系统灰白阴影），选项面板固定出现在控件正下方。 */
@@ -1109,6 +1197,23 @@ body.resizing-row iframe {
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* 发送中：保持实色，不走禁用的淡化——这一刻表达的是「正在进行」而非「不可用」，
+   淡下去会读成功能失效了。光标给 progress，说明"等它"而不是"点不了"。 */
+.send-btn.is-sending:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+.send-spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 7px;
+  vertical-align: -1px;
+  border: 1.5px solid color-mix(in srgb, var(--on-accent) 32%, transparent);
+  border-top-color: var(--on-accent);
+  border-radius: 50%;
+  animation: run-spin 0.65s linear infinite; /* 复用批量运行那处的 keyframe */
+}
 
 /* 方法配色 */
 .method-get {
@@ -1211,15 +1316,38 @@ body.resizing-row iframe {
   outline: none;
   border-color: var(--accent);
 }
-/* ── Excel 风格网格（参数 / 请求头 / 表单 / 输出 / 环境变量表）──
-   连续单线网格、单元格内嵌输入（无独立边框圆角），聚焦时高亮所在单元格。 */
+/* ── 网格表（参数 / 请求头 / 表单 / 输出 / 环境变量表）──
+   仍是「可编辑网格」：列要对齐、单元格内嵌输入、聚焦高亮所在格。
+   但把线**压到最轻**——原先每格四条 --border 实线，一屏表格就是几百条线在抢注意力，
+   而真正要读的是里面的键值。现在竖线用更淡一档、外框收一圈，表头去掉灰底改为
+   一条稍重的底线：表头本来就靠字重和位置就能认出来，不必再铺一层色。 */
+/* 外框直角：密集数据表用直角比圆角更利落（同 Linear / Notion 的表格）。
+   且 <table> 上的 overflow:hidden 本就不裁边框，想要圆角得逐个角单元格去设，
+   而单元格里填满的 input 又会盖回直角——为一点圆角引一串补丁不值当。 */
+.kv-table.grid {
+  border: 1px solid var(--border);
+  border-collapse: separate;
+  border-spacing: 0;
+}
 .kv-table.grid th,
 .kv-table.grid td {
-  border: 1px solid var(--border);
+  border-right: 1px solid var(--grid-line);
+  border-bottom: 1px solid var(--grid-line);
+}
+.kv-table.grid th:last-child,
+.kv-table.grid td:last-child {
+  border-right: none;
+}
+.kv-table.grid tbody tr:last-child td {
+  border-bottom: none;
 }
 .kv-table.grid th {
   padding: 6px 8px;
-  background: var(--panel-2);
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
 }
 .kv-table.grid td {
   padding: 0;
@@ -1300,7 +1428,7 @@ body.resizing-row iframe {
 .cell-file-path {
   min-width: 0;
   flex: 1;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 12px;
   color: var(--text);
   overflow: hidden;
@@ -1319,7 +1447,7 @@ body.resizing-row iframe {
 .kv-table.readonly td {
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 13px;
 }
 .kv-table .hk {
@@ -1354,7 +1482,7 @@ body.resizing-row iframe {
   flex: 1;
   min-height: 120px;
   padding: 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 14px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1447,16 +1575,21 @@ body.resizing-row iframe {
 .response-content .tab-panel.body {
   padding: 0;
 }
+/* 状态 / 耗时 / 大小：一次请求的「结果摘要」，是响应区最先被看的三个数。
+   等宽数字让它们在反复发送时**不左右跳动**——变化的是数值本身，不是它的位置。 */
 .response-meta {
   display: flex;
   align-items: center;
-  gap: 12px;
-  font-size: 13px;
+  gap: 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 .status-badge {
   padding: 2px 8px;
-  border-radius: 4px;
-  font-weight: 700;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
 }
 /* 状态码徽标：文字用语义色，底用同色浅色调（color-mix 派生，浅/深主题各自适配）*/
 .status-2xx {
@@ -1529,18 +1662,38 @@ body.resizing-row iframe {
 .stale-btn.reload:hover {
   background: var(--accent-dark);
 }
+/* 响应体：这个软件里被盯得最久的一块区域，按「读代码」而非「显示文本」来排。
+   行高 1.65（原 1.5）——JSON 缩进层级靠视线纵向扫描，行太挤会串行；
+   tabular-nums 让数字等宽对齐（时间戳、ID 逐位比对时不会错位）。 */
 .response-body {
   margin: 0;
-  padding: 12px;
+  padding: 14px 16px;
   box-sizing: border-box;
   min-height: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.65;
+  font-variant-numeric: tabular-nums;
   background: var(--panel);
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
+  tab-size: 2;
+}
+/* JSON 语法着色：只分四类——键 / 字符串 / 数值·布尔·null / 标点。
+   再细分就成了「彩色的 JSON」，读的时候反而要先解析颜色。标点压到 muted，
+   让大括号和逗号退到背景里，键与值自己浮出来。 */
+.json-key {
+  color: var(--json-key);
+}
+.json-str {
+  color: var(--json-str);
+}
+.json-num {
+  color: var(--json-num);
+}
+.json-punct {
+  color: var(--muted);
 }
 /* .response-empty 的样式见上方「区域级空态」 */
 
@@ -1815,7 +1968,7 @@ body.resizing-row iframe {
 }
 .auth-preview code {
   min-width: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 12px;
   color: var(--text);
   word-break: break-all;
@@ -1856,7 +2009,7 @@ body.resizing-row iframe {
   color: var(--muted);
 }
 .body-ct-value {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 12px;
   color: var(--text);
 }
@@ -1896,7 +2049,7 @@ body.resizing-row iframe {
 }
 .binary-path {
   min-width: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 12px;
   color: var(--text);
   overflow: hidden;
@@ -1976,7 +2129,7 @@ body.resizing-row iframe {
 .sc-key {
   min-width: 22px;
   text-align: center;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 13px;
   color: var(--text);
   background: var(--bg);
@@ -2158,7 +2311,7 @@ body.resizing-row iframe {
   border-radius: 6px;
   background: var(--panel-2);
   color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 12px;
   line-height: 1.5;
   user-select: text; /* 侧栏那套 user-select:none 不该波及到这里——路径要能选中复制 */
@@ -2583,7 +2736,7 @@ body.resizing-row iframe {
 .cookie-cell-name,
 .cookie-cell-value,
 .cookie-cell-path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   user-select: text; /* 值要能选中复制——排查时经常要把它贴到别处 */
 }
 .cookie-cell-name {
@@ -2593,7 +2746,7 @@ body.resizing-row iframe {
   white-space: nowrap;
 }
 .cookie-domain {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
@@ -2704,7 +2857,7 @@ body.resizing-row iframe {
 }
 /* 值多是 token / 十六进制串，等宽字体便于逐字核对（同列表里的值列） */
 .cookie-value-input {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 12px !important;
 }
 /* ── 日期时间选择器（DateTimePicker）───────────────
@@ -3141,25 +3294,39 @@ body.resizing-row iframe {
   text-decoration: underline;
 }
 
-/* Tab 计数徽章 */
-/* 计数数字：黑色、字号小于标签、贴在标签右上角（上标） */
+/* Tab 计数徽章：由「贴右上角的上标」改为跟在标签后的小圆底数字。
+   上标形态在 11px 下细得像脚注，且抬高后与下一行 tab 的间距被压掉；
+   平排的胶囊底更好认，也不影响 tab 的行高。语义色（断言的绿/红）照旧生效。 */
 .tab-count {
   display: inline-block;
-  margin-left: 1px;
+  margin-left: 5px;
+  padding: 0 5px;
+  min-width: 16px;
   font-size: 11px;
-  line-height: 1;
+  line-height: 16px;
+  text-align: center;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  background: var(--hover);
+  border-radius: 999px;
+}
+.tab.active .tab-count {
   color: var(--text-strong);
-  vertical-align: super;
+  background: var(--selected);
 }
 .tab.active .tab-count {
   color: var(--text-strong);
 }
+/* 断言的通过/失败比：底色也跟着走语义色，绿底绿字比灰底绿字更快分辨「跑通了没」。
+   写在 .tab.active .tab-count 之后，激活态不会把语义色盖掉。 */
 .tab-count.all-ok {
   color: var(--green);
+  background: color-mix(in srgb, var(--green) 13%, transparent);
 }
 .tab-count.has-bad {
   color: var(--red);
+  background: color-mix(in srgb, var(--red) 13%, transparent);
 }
 
 /* ── 断言表 ── */
@@ -3168,7 +3335,7 @@ body.resizing-row iframe {
 }
 .panel-hint code {
   padding: 1px 5px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 12px;
   color: var(--accent-dark);
   background: var(--accent-tint);
@@ -3201,7 +3368,7 @@ body.resizing-row iframe {
   gap: 12px;
   width: 100%;
   padding: 5px 8px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 13px;
   color: var(--text);
   text-align: left;
@@ -3291,7 +3458,7 @@ body.resizing-row iframe {
   width: 100%;
   min-height: 260px;
   padding: 12px 14px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 13px;
   line-height: 1.6;
   color: var(--text);
@@ -3845,7 +4012,7 @@ body.resizing-row iframe {
    多个对象名连用时还会串成一片括号。副标题是 muted 底色，对象名提到正常文字色即可跳出。 */
 .q {
   padding: 1px 5px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 0.94em;
   color: var(--text-strong);
   background: var(--hover);
@@ -4071,7 +4238,7 @@ body.resizing-row iframe {
   text-align: center;
   padding: 3px 8px;
   font-size: 13px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -4272,7 +4439,7 @@ body.resizing-row {
 }
 .panel-head-glyph {
   color: var(--accent);
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--mono);
   font-weight: 700;
 }
 .panel-head-actions {
@@ -4351,7 +4518,7 @@ body.resizing-row {
   color: var(--text);
 }
 .term-tab-glyph {
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--mono);
   font-weight: 700;
   font-size: 12px;
   color: var(--muted);
@@ -4643,7 +4810,7 @@ body.resizing-row {
   width: 100%;
   min-width: 0;
   padding: 12px 14px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 13px;
   line-height: 1.6;
   color: var(--text);
@@ -4735,7 +4902,7 @@ body.resizing-row {
   color: var(--muted);
 }
 .markdown-view code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 0.88em;
   padding: 1px 5px;
   border-radius: 4px;
@@ -4968,7 +5135,7 @@ body.resizing-row {
    显示成 `登录/…-01`。常规 LTR 截尾，完整路径给 title。 */
 .run-preview-list li {
   padding: 3px 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 12px;
   color: var(--text);
   white-space: nowrap;
@@ -5084,7 +5251,7 @@ body.resizing-row {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.ai-state-v.is-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.ai-state-v.is-mono { font-family: var(--mono); font-size: 12px; }
 /* 尾注（「是另一个 apicase，未接管」这类）：跟在值后面，不另起一行占版面 */
 .ai-state-note { flex: none; font-size: 12px; color: var(--muted); }
 
@@ -5170,7 +5337,7 @@ body.resizing-row {
   min-width: 0;
   margin: 0;
   color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 12px;
   line-height: 1.6;
   white-space: pre;
@@ -5194,6 +5361,6 @@ body.resizing-row {
   border-radius: 4px;
   background: var(--panel-2);
   color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 11px;
 }

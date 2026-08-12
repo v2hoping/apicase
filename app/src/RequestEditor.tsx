@@ -915,8 +915,15 @@ export function RequestEditor({
             isVarSet={isVarSet}
           />
         </div>
-        <button className="send-btn" onClick={onSend} disabled={sending}>
-          {sending ? "发送中…" : sendLabel}
+        <button className={`send-btn ${sending ? "is-sending" : ""}`} onClick={onSend} disabled={sending}>
+          {sending ? (
+            <>
+              <span className="send-spinner" aria-hidden="true" />
+              发送中
+            </>
+          ) : (
+            sendLabel
+          )}
         </button>
       </div>
 

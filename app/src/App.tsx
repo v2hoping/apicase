@@ -68,6 +68,7 @@ import { TerminalPane } from "./TerminalPane";
 import { type ThemeMode, resolveTheme, applyTheme } from "./theme";
 import { type AppSettings, loadCachedSettings, loadAppSettings, saveAppSettings, filterExistingPaths, pathExists } from "./settings";
 import { type ProxyConfig, type ProxyMode, proxyPayload } from "./proxy";
+import { prettyJson, tokenizeJson, JSON_COLOR_LIMIT } from "./json";
 import { AiChat } from "./AiChat";
 import { MarkdownEditor } from "./markdown";
 import { HtmlPreview } from "./HtmlPreview";
@@ -188,12 +189,22 @@ function statusClass(status: number): string {
   return "status-5xx";
 }
 
-function prettyBody(body: string): string {
-  try {
-    return JSON.stringify(JSON.parse(body), null, 2);
-  } catch {
-    return body;
-  }
+/* 响应体渲染：JSON 美化 + 语法着色，非 JSON 原样返回（切分逻辑见 json.ts）。
+   产出 React 节点而非 HTML 串——响应体是**服务端返回的任意内容**，
+   走 innerHTML 等于把 XSS 面敞开，而 React 的文本节点天然转义。 */
+function renderBody(body: string): ReactNode {
+  const pretty = prettyJson(body);
+  if (pretty === null) return body; // 非 JSON：原文照旧
+  if (pretty.length > JSON_COLOR_LIMIT) return pretty; // 过大：只美化不着色
+  return tokenizeJson(pretty).map((t, i) =>
+    t.cls ? (
+      <span key={i} className={t.cls}>
+        {t.text}
+      </span>
+    ) : (
+      t.text
+    ),
+  );
 }
 
 // 路径工具（baseName / dirName / joinPath / relPath / isUnder / retargetPath / uniqueName）见 pathutil.ts
@@ -2618,7 +2629,7 @@ function App() {
   const [outputsCtx, setOutputsCtx] = useState<Record<string, Record<string, unknown>>>({});
   const [runningAll, setRunningAll] = useState(false);
   const [respTab, setRespTab] = useState<"body" | "headers" | "assert">("body");
-  // 响应体恒用 prettyBody 美化（非 JSON 自动回退原文），不再提供「美化」开关
+  // 响应体恒用 renderBody 美化 + 着色（非 JSON 自动回退原文），不再提供「美化」开关
   const [error, setError] = useState<string | null>(null);
   // 响应区高度（px，可上下拖动）+ 折叠态（拖到最下收成一行「响应」）
   const [respHeight, setRespHeight] = useState(240);
@@ -5573,7 +5584,7 @@ function App() {
                             {resp && (
                                 <div className={`tab-panel${respTab === "body" ? " body" : ""}`}>
                                   {respTab === "body" ? (
-                                    <pre className="response-body">{prettyBody(resp.body)}</pre>
+                                    <pre className="response-body">{renderBody(resp.body)}</pre>
                                   ) : respTab === "headers" ? (
                                     <table className="kv-table grid readonly">
                                       <thead>
