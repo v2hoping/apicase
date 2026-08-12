@@ -1537,15 +1537,17 @@ function SettingsPage({
                   {shownEnvs.map((e) => (
                     <div key={e} className={`env-row ${e === cur ? "active" : ""}`} onClick={() => setSelEnv(e)}>
                       <span className="env-row-name">{e}</span>
+                      {/* 与 Cookies 分区的行内删除同一套：图标按钮 + hover 转红。
+                          原先这里是个纯文字 ×、没有 hover 底色，同是「列表行里删一条」却两个样 */}
                       <button
-                        className="env-row-del"
+                        className="icon-btn is-danger env-row-del"
                         title="删除环境"
                         onClick={(ev) => {
                           ev.stopPropagation();
                           delEnv(e);
                         }}
                       >
-                        ×
+                        <TrashIcon />
                       </button>
                     </div>
                   ))}

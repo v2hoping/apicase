@@ -200,8 +200,8 @@ export default function AiSettings({ workspace }: { workspace: string }) {
               {st.link.replace(/\/[^/]+$/, "")} 还不在 PATH 里，装完需要自行加进 shell 配置。
             </div>
           )}
-          {msg && <div className="ai-msg is-ok">{msg}</div>}
-          {err && <div className="ai-msg is-err">{err}</div>}
+          {msg && <div className="ai-result is-ok">{msg}</div>}
+          {err && <div className="ai-result is-err">{err}</div>}
         </div>
       </div>
 
