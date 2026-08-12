@@ -7,7 +7,7 @@
 // 类型与 `core/src/report.rs` 的 serde 模型逐字段对齐（camelCase）。
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import type { Request as CaseStep } from "./case";
+import { MAX_CONCURRENCY, type Request as CaseStep } from "./case";
 import type { ProxyConfig } from "./proxy";
 
 export const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
@@ -179,20 +179,31 @@ export function debugRunOpts(
   };
 }
 
-/** 批量运行：串行、失败继续、报文体截断 64KB。 */
+/**
+ * 批量运行：失败继续、报文体截断 64KB，并发度跟随工作空间设置（缺省 1 = 串行）。
+ *
+ * `concurrency` 在此 clamp 到 `1..=MAX_CONCURRENCY`：0 会让执行内核的信号量容量为 0，
+ * 表现是整轮运行永远拿不到令牌而挂起——一个空输入框不该换来一个卡死的运行。
+ */
 export function batchRunOpts(
   environment: EnvironmentInfo,
   client: ClientConfig,
   continueOnAssertionFailure = false,
+  concurrency = 1,
 ): RunOpts {
   return {
     environment,
-    concurrency: 1,
+    concurrency: clampConcurrency(concurrency),
     stopOnFailure: false,
     continueOnAssertionFailure,
     maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
     client,
   };
+}
+
+/** 并发度归一：非数字 / 小于 1 → 1；超上限截到 {@link MAX_CONCURRENCY}；小数向下取整。 */
+export function clampConcurrency(n: number): number {
+  return Number.isFinite(n) ? Math.min(Math.max(Math.floor(n), 1), MAX_CONCURRENCY) : 1;
 }
 
 export interface BatchTarget {

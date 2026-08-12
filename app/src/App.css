@@ -533,31 +533,6 @@ body,
   font-size: 14px;
   user-select: none;
 }
-/* 多选反馈条：只在选区 > 1 项时渲染（单选时它只是噪音）。
-   与树同宽、贴在根行之上，让「已选几项」和树本身处在同一视觉块里。 */
-.tree-selbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  height: 24px;
-  padding: 0 8px 0 16px;
-  margin-bottom: 2px;
-  font-size: 12px;
-  color: var(--muted);
-  background: var(--hover);
-}
-.tree-selbar button {
-  padding: 0;
-  font-size: 12px;
-  color: var(--accent);
-  background: none;
-  border: none;
-  cursor: pointer;
-}
-.tree-selbar button:hover {
-  text-decoration: underline;
-}
 /* 工作空间根行：与 .tree-row 同一套盒模型与交互反馈（行高 / 圆角 / 小手 / hover 底色 / 选中态），
    仅字重加粗以示层级；原先靠 padding 撑出的下间距改用 margin，免得 hover 底色比别的行高一截。 */
 .tree-root-name {
@@ -2237,7 +2212,36 @@ body.resizing-pane .pane-resizer::after {
   -webkit-appearance: none;
   margin: 0;
 }
-.set-row-unit {
+/* 带单位的输入：外壳画边框与底色，里面的 input 透明无边框，单位跟在数值右边——
+   看起来是「一个」控件（[6000 毫秒]），而单位不可编辑。
+   壳是 <label>，故点它任意处都聚焦输入；焦点态靠 :focus-within 落到壳上。 */
+.unit-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 140px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  cursor: text;
+}
+.unit-input:focus-within {
+  border-color: var(--accent);
+}
+/* 边框与底色已由壳承担，input 只剩文本（宽度让给 flex，右对齐紧挨单位） */
+.set-row-input .unit-input input {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+.unit-input-suffix {
+  flex-shrink: 0;
   font-size: 13px;
   color: var(--muted);
 }
@@ -4189,10 +4193,17 @@ body.resizing-pane .pane-resizer::after {
   transform: translateY(-50%);
   background: transparent;
 }
-.panel-resizer-h:hover::after,
-body.resizing-row .panel-resizer-h::after {
+/* 高亮只给「正在拖的那一条」。响应区顶边与终端区顶边同时在场时都是
+   .panel-resizer-h，若只按 body.resizing-row 匹配会两条一起变蓝，看着像选中了两个边界，
+   故拖动方额外挂 is-resp / is-bottom 与对应的 body 类配对。
+   hover 则在任何拖动进行中一律不算：鼠标会从被拖的那条一路扫过另一条，
+   那一瞬间点亮它同样是「两个边都被选中」。 */
+body:not(.resizing-row):not(.resizing-col) .panel-resizer-h:hover::after,
+body.resizing-resp .panel-resizer-h.is-resp::after,
+body.resizing-bottom .panel-resizer-h.is-bottom::after {
   background: var(--accent);
 }
+/* 光标、禁选与 iframe 屏蔽两条边共用，仍挂在通用的 resizing-row 上 */
 body.resizing-row {
   cursor: row-resize;
   user-select: none;

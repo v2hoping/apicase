@@ -15,11 +15,13 @@ import {
   Environments,
   WorkspaceSettings,
   DEFAULT_WS_SETTINGS,
+  MAX_CONCURRENCY,
   analyzeCase,
   dumpCase,
   splitQueryFromUrl,
   parseAppConfig,
   dumpAppConfig,
+  setActiveEnv as writeActiveEnv, // 与同名的 React setter 区分
 } from "./case";
 import { ReqDraft, RequestDraft, draftToRequest, emptyDraft, caseToRequests } from "./draft";
 import {
@@ -34,6 +36,7 @@ import {
   type StepOutcome,
   debugRunOpts as makeDebugOpts,
   batchRunOpts as makeBatchOpts,
+  clampConcurrency,
   runStep,
   runBatch,
   cancelRun as cancelRunIpc,
@@ -205,6 +208,14 @@ function isYamlFile(path: string): boolean {
 function isAppConfig(path: string): boolean {
   const n = baseName(path).toLowerCase();
   return n === "application.yml" || n === "application.yaml";
+}
+
+/**
+ * 顶层 `active` 缺失或指向不存在的环境时，选哪一套。
+ * 优先名为 default 的（新建工作空间模板里就是它），否则第一套，一套都没有则空串。
+ */
+function fallbackEnv(names: string[]): string {
+  return names.includes("default") ? "default" : names[0] || "";
 }
 
 // Markdown 文本文件：用 markdown 编辑器（编辑/预览/分屏）打开
@@ -1323,8 +1334,8 @@ function SettingsPage({
     setRenameError("");
   }, [cur]);
 
-  // 应用侧存储位置（配置目录 / settings.json）：由 Tauri 按 identifier 推导，各平台不同，
-  // 只能问后端要。进入「通用」页时取一次，顺带拿到「是否已创建」用于禁用「显示位置」。
+  // 应用侧存储位置（~/.apicase/settings.json）：三平台同形，但主目录只有后端知道，
+  // 只能问它要。进入「通用」页时取一次，顺带拿到「是否已创建」用于禁用「显示位置」。
   const [appPaths, setAppPaths] = useState<AppPaths | null>(null);
   useEffect(() => {
     if (section !== "通用") return;
@@ -1336,6 +1347,17 @@ function SettingsPage({
       alive = false;
     };
   }, [section]);
+
+  // 并行度输入框的**显示文本**。
+  //
+  // 不直接把 `wsSettings.concurrency` 当 value：那样每敲一个字符都会被 clamp 一次，
+  // 而清空输入框（想从 1 改成 16）会立刻回落成 "1"，接着输入就得到 "116"。
+  // 故编辑期间只留住文本，空串不写回设置（保持旧值），失焦时再显示归一后的值。
+  const [concurrencyText, setConcurrencyText] = useState(String(wsSettings.concurrency));
+  useEffect(() => {
+    // 外部来源改了它（切工作空间、直接编辑 application.yml 文本）时跟上
+    setConcurrencyText(String(wsSettings.concurrency));
+  }, [wsSettings.concurrency]);
 
   // 报告目录是否已创建（首次运行前并不存在，「显示位置」要据此禁用）
   const [reportsDirExists, setReportsDirExists] = useState<boolean | undefined>(undefined);
@@ -1682,18 +1704,24 @@ function SettingsPage({
                 <div className="set-row-label">请求超时时间</div>
               </div>
               <div className="set-row-input">
-                <input
-                  type="number"
-                  min={0}
-                  step={100}
-                  placeholder="0（不限制）"
-                  value={wsSettings.timeoutMs || ""}
-                  onChange={(e) => {
-                    const n = Math.floor(Number(e.target.value));
-                    onWsSettingsChange({ ...wsSettings, timeoutMs: Number.isFinite(n) && n > 0 ? n : 0 });
-                  }}
-                />
-                <span className="set-row-unit">毫秒</span>
+                {/* 数值与单位合成一个控件：边框画在外壳上，「毫秒」是壳内的静态后缀而非可输入内容
+                    ——单位不是值的一部分，不该能被改。外壳用 <label>，点框内任意处（含「毫秒」）
+                    都落到输入上；可访问名走 aria-label，否则读屏会把这个框念成「毫秒」。 */}
+                <label className="unit-input">
+                  <input
+                    type="number"
+                    min={0}
+                    step={100}
+                    placeholder="0（不限制）"
+                    aria-label="请求超时时间（毫秒）"
+                    value={wsSettings.timeout || ""}
+                    onChange={(e) => {
+                      const n = Math.floor(Number(e.target.value));
+                      onWsSettingsChange({ ...wsSettings, timeout: Number.isFinite(n) && n > 0 ? n : 0 });
+                    }}
+                  />
+                  <span className="unit-input-suffix">毫秒</span>
+                </label>
               </div>
             </div>
 
@@ -1736,6 +1764,31 @@ function SettingsPage({
               >
                 <span className="sc-switch-thumb" />
               </button>
+            </div>
+
+            {/* ⑥ 并行度：只作用于**目录批量运行**（用例之间）。同 ⑤，它是被测服务的属性
+                （这套接口能扛多少并发回归），故随 git 走、团队共享，CLI 不带 -j 时用的也是它。 */}
+            <div className="set-row">
+              <div className="set-row-main">
+                <div className="set-row-label">用例并行度</div>
+              </div>
+              <div className="set-row-input">
+                <input
+                  type="number"
+                  min={1}
+                  max={MAX_CONCURRENCY}
+                  step={1}
+                  value={concurrencyText}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    setConcurrencyText(raw);
+                    // 空串是编辑中间态（刚删光准备重输），不写回设置——写回会让它立刻变成 1
+                    if (raw.trim() === "") return;
+                    onWsSettingsChange({ ...wsSettings, concurrency: clampConcurrency(Number(raw)) });
+                  }}
+                  onBlur={() => setConcurrencyText(String(wsSettings.concurrency))}
+                />
+              </div>
             </div>
           </div>
         )}
@@ -2557,8 +2610,6 @@ function App() {
   const [runDialog, setRunDialog] = useState<RunDialogState | null>(null);
   const runDialogRef = useRef<RunDialogState | null>(null);
   runDialogRef.current = runDialog;
-  // 「打开并运行」：openCase 是异步的，记下待运行的路径，等 requests 就绪后再发
-  const pendingRunRef = useRef<string | null>(null);
 
   // 运行态：每个请求一份（响应区展示当前选中请求）
   const [runMap, setRunMap] = useState<Record<string, RunState>>({});
@@ -2654,15 +2705,6 @@ function App() {
 
   const mark = () => setDirty(true);
 
-  // 「打开并运行」的第二步：文件已打开且请求就绪，此时才发得出去
-  useEffect(() => {
-    const want = pendingRunRef.current;
-    if (!want || want !== currentCasePath || !requests.length) return;
-    pendingRunRef.current = null;
-    if (requests.length > 1) void onRunAll();
-    else void onSendRequest(requests[0].id);
-  }, [currentCasePath, requests]);
-
   const selected = requests.find((s) => s.id === selectedRequestId) || requests[0];
   const isFlow = requests.length >= 2 || requests.some((s) => s.outputs.length > 0 || s.dependsOn.length > 0);
   const effectiveText = !!currentCasePath && (textMode || requests.length === 0 || (!showFlow && !showRequest));
@@ -2737,7 +2779,7 @@ function App() {
     function onUp() {
       if (!bottomResizingRef.current) return;
       bottomResizingRef.current = false;
-      document.body.classList.remove("resizing-row");
+      document.body.classList.remove("resizing-row", "resizing-bottom");
     }
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -2810,7 +2852,7 @@ function App() {
     function onUp() {
       if (!respResizingRef.current) return;
       respResizingRef.current = false;
-      document.body.classList.remove("resizing-row");
+      document.body.classList.remove("resizing-row", "resizing-resp");
     }
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -3070,15 +3112,39 @@ function App() {
   async function loadEnvironments(root: string) {
     try {
       const text = await invoke<string>("read_text_file", { path: joinPath(root, "application.yml") });
-      const { environment: envs, settings } = await parseAppConfig(text);
+      const { environment: envs, settings, active } = await parseAppConfig(text);
       setEnvironments(envs);
       setWsSettings(settings);
       const names = Object.keys(envs);
-      setActiveEnv(names.includes("default") ? "default" : names[0] || "");
+      // 顶层 active 优先；它指向不存在的环境（被删或改名）时才回落，规则同 CLI 的 default_env
+      setActiveEnv(active && names.includes(active) ? active : fallbackEnv(names));
     } catch {
       setEnvironments({});
       setWsSettings({ ...DEFAULT_WS_SETTINGS });
       setActiveEnv("");
+    }
+  }
+
+  /**
+   * 顶栏切换环境：改内存 + 写回 application.yml 的顶层 `active`。
+   *
+   * 从磁盘读原文而不是拿 rawText——application.yml 未必开着，开着也可能有未保存的改动。
+   * 写盘失败（只读 / 没有这个文件）**不回滚**：本次会话照样按新环境跑，只是记不住。
+   */
+  async function switchEnv(name: string) {
+    setActiveEnv(name);
+    setEnvMenuOpen(false);
+    if (!workspace) return;
+    const path = joinPath(workspace, "application.yml");
+    try {
+      const base = await invoke<string>("read_text_file", { path });
+      const content = await writeActiveEnv(base, name);
+      noteSelfWrite(path); // 抑制本次写入的监听回声
+      await invoke("write_text_file", { path, content });
+      // 配置正开着且没有未保存改动时同步文本，否则编辑器里还显示旧的 active
+      if (currentCasePath === path && !dirty) setRawText(content);
+    } catch {
+      /* 记不住不该挡住切换 */
     }
   }
 
@@ -3578,7 +3644,7 @@ function App() {
   function onEnvChange(next: Environments) {
     setEnvironments(next);
     const names = Object.keys(next);
-    if (activeEnv && !names.includes(activeEnv)) setActiveEnv(names.includes("default") ? "default" : names[0] || "");
+    if (activeEnv && !names.includes(activeEnv)) setActiveEnv(fallbackEnv(names));
     mark();
   }
   // 可视设置页编辑请求设置（证书校验 / 自定义 CA / 超时）：同 onEnvChange，改完标脏待保存
@@ -3598,7 +3664,7 @@ function App() {
         await invoke("write_text_file", { path: currentCasePath, content });
         setRawText(content);
         const names = Object.keys(environments);
-        if (!names.includes(activeEnv)) setActiveEnv(names.includes("default") ? "default" : names[0] || "");
+        if (!names.includes(activeEnv)) setActiveEnv(fallbackEnv(names));
       } else if (effectiveText) {
         await invoke("write_text_file", { path: currentCasePath, content: rawText });
         // application.yml：保存后重载 environment / 请求设置，使切换与发请求即时生效
@@ -3608,7 +3674,7 @@ function App() {
           setEnvironments(envs);
           setWsSettings(cfg.settings);
           const names = Object.keys(envs);
-          if (!names.includes(activeEnv)) setActiveEnv(names.includes("default") ? "default" : names[0] || "");
+          if (!names.includes(activeEnv)) setActiveEnv(fallbackEnv(names));
         }
         // 仅 .yml/.yaml：文本此时有效则回填结构态；非 case 文件（.txt/.json）不解析、保持纯文本
         if (isYamlFile(currentCasePath) && !isAppConfig(currentCasePath)) {
@@ -3882,7 +3948,7 @@ function App() {
     if (wsSettings.useCustomCa && wsSettings.caCert.trim() && workspace) {
       options.caCertPath = joinPath(workspace, wsSettings.caCert.trim());
     }
-    if (wsSettings.timeoutMs > 0) options.timeoutMs = wsSettings.timeoutMs;
+    if (wsSettings.timeout > 0) options.timeoutMs = wsSettings.timeout;
     // cookie jar 跟工作空间走；没打开工作空间时不给路径，jar 只在内存里活着
     const cookies = {
       enabled: wsSettings.cookies,
@@ -4163,6 +4229,9 @@ function App() {
       { name: d.env, vars: environments[d.env] || {} },
       clientConfig,
       d.continueOnAssertionFailure,
+      // 并行度跟工作空间设置走，不进运行对话框：它是「这套接口能扛多少并发」的项目属性，
+      // 不是每次运行前要重新拿主意的事（同 verifySsl / 超时，与失败传播不同）
+      wsSettings.concurrency,
     );
     // 报告头里的运行参数**从 opts 派生**，不并列写第二遍——
     // 半年后回看一份失败报告，"当时用的哪套环境、截断阈值多少"直接决定结论能不能信，
@@ -4263,15 +4332,6 @@ function App() {
     if (!runSessions[runId]) return;
     void cancelRunIpc(runId);
     setRunSessions((m) => (m[runId] ? { ...m, [runId]: { ...m[runId], cancelling: true } } : m));
-  }
-
-  /**
-   * 「打开并运行」：打开标签后自动发送。
-   * 走 pendingRunRef 而非直接调 onSendRequest——openCase 是异步的，requests 此刻还没就绪。
-   */
-  function openAndRun(path: string) {
-    pendingRunRef.current = path;
-    openTab(path);
   }
 
   // ── 文件管理（右键菜单触发）─────────────────────
@@ -4646,14 +4706,13 @@ function App() {
     if (!entry || entry.isDir) items.push(...newItems(dir));
 
     // ── 运行 ──
-    // 「打开并运行」= 调试（打开标签 + 自动发送）；「生成测试报告」= 回归（出一份可归档的报告）。
-    // 两者分成两项而非共用一个「运行」：同一个词做两件事，用户点第二次就会困惑。
+    // 只留「生成测试报告」= 回归（出一份可归档的报告）。
+    // 调试运行不在这里给入口：双击打开再点「发送 / ▶ 运行」即可，菜单里再放一项是重复路径。
     const runTarget = entry ? entry.path : workspace;
     const runIsDir = entry ? entry.isDir : true;
     const canRun = runIsDir || (isYamlFile(runTarget) && !isAppConfig(runTarget));
     if (canRun) {
       if (items.length) items.push({ sep: true });
-      if (!runIsDir) items.push({ label: "打开并运行", onClick: () => openAndRun(runTarget) });
       items.push({ label: "生成测试报告", onClick: () => openRunDialog([{ path: runTarget, isDir: runIsDir }]) });
     }
 
@@ -4720,11 +4779,24 @@ function App() {
     setCtxMenu({ x: r.left, y: r.bottom + 4, entry, multi: multi.length ? multi : undefined });
   }
 
-  /** 文件树内的 Ctrl/⌘+C、Ctrl/⌘+V（只在侧栏有焦点时生效，不劫持编辑区的复制粘贴）。 */
+  /**
+   * 文件树内的键盘操作（只在侧栏有焦点时生效，不劫持编辑区的复制粘贴）：
+   * `Esc` 取消选择、`Ctrl/⌘+C` 复制、`Ctrl/⌘+V` 粘贴。
+   */
   function onTreeKeyDown(e: React.KeyboardEvent) {
-    if (!workspace || !(e.metaKey || e.ctrlKey) || e.altKey) return;
+    if (!workspace) return;
     const t = e.target as HTMLElement;
-    if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return; // 搜索框等照常
+    const inField = t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable;
+    // Esc 取消选择：多选之后最顺手的退出。没有它，想清空只能去够「清除」按钮，
+    // 或者随便点一行——而后者会打开文件 / 展开目录，还剩一项选中，都不是「取消」
+    if (e.key === "Escape" && !inField) {
+      if (!sel.length) return;
+      e.preventDefault();
+      clearSel();
+      return;
+    }
+    if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+    if (inField) return; // 搜索框等照常
     const k = e.key.toLowerCase();
     if (k === "c") {
       if (!sel.length) return;
@@ -4912,10 +4984,7 @@ function App() {
                     <button
                       key={name}
                       className={`ws-item env-item ${name === activeEnv ? "active" : ""}`}
-                      onClick={() => {
-                        setActiveEnv(name);
-                        setEnvMenuOpen(false);
-                      }}
+                      onClick={() => void switchEnv(name)}
                     >
                       <span className="env-check">{name === activeEnv ? "✓" : ""}</span>
                       <span className="env-name">{name}</span>
@@ -4993,9 +5062,16 @@ function App() {
         <aside
           className="sidebar"
           style={{ width: sidebarWidth }}
-          // tabIndex=-1：点击可聚焦（Ctrl/⌘+C·V 只在树内生效），但不打乱 Tab 顺序
+          // tabIndex=-1：点击可聚焦（Esc / Ctrl/⌘+C·V 只在树内生效），但不打乱 Tab 顺序
           tabIndex={-1}
           onKeyDown={onTreeKeyDown}
+          // 点树下方的空白 = 取消选择（同 Finder）。这里判「点到的不是任何可交互元素」，
+          // 而不是给 .tree 撑满高度——后者要改侧栏的布局与滚动，代价大得多
+          onClick={(e) => {
+            const t = e.target as HTMLElement;
+            if (t.closest(".tree-row, .tree-root-name, .tree-toolbar, .search-results, .tree-empty")) return;
+            clearSel();
+          }}
           onContextMenu={(e) => {
             if (workspace) openContext(e, null);
           }}
@@ -5064,16 +5140,6 @@ function App() {
                 </div>
               ) : (
                 <div className="tree">
-                  {/* 选中数：只在多选时出现——单选是绝大多数时候的状态，那时它只是一条噪音。
-                      折叠目录后没有它，没人知道自己手上还攥着几项 */}
-                  {sel.length > 1 && (
-                    <div className="tree-selbar">
-                      <span>已选 {sel.length} 项</span>
-                      <button type="button" onClick={clearSel}>
-                        清除
-                      </button>
-                    </div>
-                  )}
                   {/* 工作空间根：与普通行同样可点选、可悬浮出「⋯」，菜单走 entry=null 那套（新建 / 粘贴 / 显示位置） */}
                   <div
                     className={`tree-root-name ${treeSel?.path === workspace ? "selected" : ""} ${
@@ -5411,12 +5477,12 @@ function App() {
                       {/* 响应区顶边拖动条：细命中区（6px）+ 悬停/拖动显示蓝线，参照 sidebar-resizer；折叠态隐藏 */}
                       {!respCollapsed && (
                         <div
-                          className="panel-resizer-h"
+                          className="panel-resizer-h is-resp"
                           title="拖动调整响应区高度"
                           onMouseDown={(e) => {
                             e.preventDefault();
                             respResizingRef.current = true;
-                            document.body.classList.add("resizing-row");
+                            document.body.classList.add("resizing-row", "resizing-resp");
                           }}
                         />
                       )}
@@ -5573,12 +5639,12 @@ function App() {
           {termEverOpened.current && (
             <>
               <div
-                className="panel-resizer-h"
+                className="panel-resizer-h is-bottom"
                 style={{ display: showBottom ? "block" : "none" }}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   bottomResizingRef.current = true;
-                  document.body.classList.add("resizing-row");
+                  document.body.classList.add("resizing-row", "resizing-bottom");
                 }}
               />
               <div className="bottom-panel" style={{ height: bottomHeight, display: showBottom ? "flex" : "none" }}>

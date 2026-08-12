@@ -32,18 +32,33 @@ pub fn dump_case(case: Case) -> String {
     yaml::dump_case(&case)
 }
 
-/// `application.yml` 的解析结果：环境表 + 工作空间设置一次取回。
-/// 前端每次读这个文件都要这两样，分成两个命令等于两次 IPC + 两次 YAML 解析。
+/// `application.yml` 的解析结果：环境表 + 当前环境 + 工作空间设置一次取回。
+/// 前端每次读这个文件都要这几样，分成多个命令等于多次 IPC + 多次 YAML 解析。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub environment: Environments,
     pub settings: WorkspaceSettings,
+    /// 顶层 `active`；没写则为 `null`，由前端回落第一套。
+    pub active: Option<String>,
 }
 
 #[tauri::command]
 pub fn parse_app_config(text: String) -> AppConfig {
-    AppConfig { environment: yaml::parse_environments(&text), settings: yaml::parse_settings(&text) }
+    AppConfig {
+        environment: yaml::parse_environments(&text),
+        settings: yaml::parse_settings(&text),
+        active: yaml::parse_active_env(&text),
+    }
+}
+
+/// 只改顶层 `active`，返回新的文件内容。
+///
+/// 单独一个命令而不并进 `dump_app_config`：后者走「解析 → 重新 emit」会抹掉注释，
+/// 而切环境是顶栏一点就写盘的高频动作。这条路是文本级替换，注释和排版都留着。
+#[tauri::command]
+pub fn set_active_env(base_text: String, name: String) -> String {
+    yaml::set_active_env(&base_text, &name)
 }
 
 /// 把可视化编辑的 environment / settings 写回 `application.yml`（保留其它顶层键）。
@@ -264,9 +279,9 @@ mod tests {
 
     #[test]
     fn app_config_commands_round_trip() {
-        let text = "environment:\n  dev:\n    baseUrl: http://x\nsettings:\n  timeoutMs: 5000\ncustom:\n  keep: me\n";
+        let text = "environment:\n  dev:\n    baseUrl: http://x\nsettings:\n  timeout: 5000\ncustom:\n  keep: me\n";
         let cfg = parse_app_config(text.into());
-        assert_eq!(cfg.settings.timeout_ms, 5000);
+        assert_eq!(cfg.settings.timeout, 5000);
         assert_eq!(cfg.environment.keys().collect::<Vec<_>>(), vec!["dev"]);
 
         let out = dump_app_config(text.into(), cfg.environment.clone(), Some(cfg.settings.clone()));

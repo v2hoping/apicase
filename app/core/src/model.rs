@@ -446,6 +446,12 @@ impl Default for Case {
 
 // ── 工作空间设置 ────────────────────────────────────
 
+/// 并行度上限。
+///
+/// 手滑把 `4` 写成 `400` 的代价不是「慢一点」，而是几百条连接同时打到被测服务上——
+/// 那是一次压测，不是一次回归。故解析期就 clamp 住，而不是照单全收。
+pub const MAX_CONCURRENCY: u32 = 64;
+
 /// 工作空间级请求设置（`application.yml` 的 `settings:` 键）。跟随项目走 git，团队共享。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -456,7 +462,7 @@ pub struct WorkspaceSettings {
     /// CA 证书文件，**相对工作空间根**的路径（绝对路径换机器就失效）
     pub ca_cert: String,
     /// 整个请求的超时上限（毫秒），0 = 不限制
-    pub timeout_ms: u64,
+    pub timeout: u64,
     /// 自动收发 Cookie（jar 存 `<workspace>/.apicase/cookies.yml`）。默认 `true`——
     /// 对齐 Postman / Bruno 与浏览器直觉：登录一次，后面的请求自然带着会话。
     pub cookies: bool,
@@ -464,6 +470,13 @@ pub struct WorkspaceSettings {
     /// `error`（请求没发出去）不受此影响，恒阻断——那种情况下游拿到的只会是
     /// 未解析的 `${{...}}` 字面量，跑下去既是噪音又会把脏请求打到被测服务上。
     pub continue_on_assertion_failure: bool,
+    /// **case 之间**的并发数；1 = 串行（默认）。case 内部的 step 恒按拓扑序串行——
+    /// 它们之间有 `dependsOn` 与 outputs 传递，并发跑没有意义。
+    ///
+    /// 归工作空间而非应用设置：「这套接口能扛多少并发回归」是被测服务的属性，
+    /// 换台电脑不会变，且团队该按同一个值跑，否则「我这儿过了你那儿挂」查不出根因。
+    /// 取值恒在 `1..=MAX_CONCURRENCY`（`parse_settings` 已 clamp）。
+    pub concurrency: u32,
 }
 
 impl Default for WorkspaceSettings {
@@ -472,9 +485,10 @@ impl Default for WorkspaceSettings {
             verify_ssl: true,
             use_custom_ca: false,
             ca_cert: String::new(),
-            timeout_ms: 0,
+            timeout: 0,
             cookies: true,
             continue_on_assertion_failure: false,
+            concurrency: 1,
         }
     }
 }

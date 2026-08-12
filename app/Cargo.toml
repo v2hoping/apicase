@@ -44,7 +44,9 @@ regex = "1"
 # ── 以下只有 cli 用到 ──────────────────────────────
 # 命令行解析：Rust 生态的事实标准，顺带带来规范的 --help、子命令与 shell 补全生成。
 # 这些手写很快会失控，而「遵循业界规范」正是 CLI 的核心诉求。
-clap = { version = "4", features = ["derive", "wrap_help"] }
+# unicode：帮助排版按显示宽度算列。value_name 用了中文（<目录> <格式>），
+# 少了它 clap 把中文当 1 列，含中文的行说明列会整体偏移 2 格
+clap = { version = "4", features = ["derive", "wrap_help", "unicode"] }
 clap_complete = "4"
 # 本地时区偏移（报告文件名的时间戳是给人看的，UTC 会让下午三点跑的那份写着 07）。
 # core 仍不引时区库——它产出的是 UTC 的 ISO 时间戳，跨时区归档用。

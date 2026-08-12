@@ -53,7 +53,7 @@ export function rangeBetween(rows: Sel[], anchor: string, to: string): Sel[] {
 /**
  * Cmd/Ctrl 点击：在选区里加入或去掉一项，**保持可见顺序**。
  *
- * 顺序要紧：选中栏说"已选 N 项"、删除确认里列出的次序、粘贴落地的次序都按它走，
+ * 顺序要紧：删除确认里的项数与措辞、粘贴落地的次序都按它走，
  * 按点击先后排会让同一批选中项每次的顺序都不一样。
  */
 export function toggleSel(sel: Sel[], item: Sel, rows: Sel[]): Sel[] {

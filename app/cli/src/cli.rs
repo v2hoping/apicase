@@ -95,16 +95,25 @@ pub struct GlobalOpts {
     #[arg(short = 'e', long, global = true, value_name = "名称")]
     pub env: Option<String>,
 
-    /// 输出格式（默认：终端下 text，管道下 json）
-    #[arg(long, global = true, value_name = "格式", value_enum)]
+    /// 输出格式：text 表格 / json 结构化（默认：终端下 text，管道下 json）
+    #[arg(long, global = true, value_name = "格式", value_enum, hide_possible_values = true)]
     pub format: Option<Format>,
 
     /// 等价于 --format json
     #[arg(long, global = true, conflicts_with = "format")]
     pub json: bool,
 
-    /// 何时着色
-    #[arg(long, global = true, value_name = "时机", value_enum, default_value_t = ColorWhen::Auto)]
+    /// 何时着色：auto 跟随终端 / always 强制（CI、管道给 less）/ never 关闭
+    #[arg(
+        long,
+        global = true,
+        value_name = "时机",
+        value_enum,
+        default_value_t = ColorWhen::Auto,
+        // 取值写进说明里了，比 clap 那两行方括号好读，也省下两行
+        hide_default_value = true,
+        hide_possible_values = true
+    )]
     pub color: ColorWhen,
 
     /// 只输出结果，不输出进度
@@ -182,9 +191,9 @@ pub struct RunArgs {
     #[arg(long = "step", value_name = "ID")]
     pub steps: Vec<String>,
 
-    /// 用例之间的并发数
-    #[arg(short = 'j', long, value_name = "N", default_value_t = 1)]
-    pub concurrency: u32,
+    /// 用例之间的并发数。省略 = 跟随工作空间设置（application.yml 的 settings.concurrency）
+    #[arg(short = 'j', long, value_name = "N")]
+    pub concurrency: Option<u32>,
 
     /// 首个失败即停
     #[arg(long)]
@@ -434,11 +443,17 @@ mod tests {
     fn run_defaults_are_conservative() {
         let cli = Cli::try_parse_from(["apicase", "run"]).expect("应能解析");
         let Some(Command::Run(a)) = cli.command else { panic!("应是 run") };
-        assert_eq!(a.concurrency, 1, "默认串行");
+        // 并行度**不在这里定默认**：省略即跟随工作空间设置（settings.concurrency），
+        // 否则 CI 里不带 -j 跑出来的就与桌面端点「运行」不是同一件事
+        assert_eq!(a.concurrency, None, "省略 = 跟随工作空间设置");
         assert!(!a.bail);
         assert!(!a.insecure);
         assert!(a.targets.is_empty(), "省略目标 = 整个工作空间");
         assert_eq!(a.detail, Detail::Summary, "JSON 默认给摘要，全份要显式说");
+
+        let cli = Cli::try_parse_from(["apicase", "run", "-j", "8"]).expect("应能解析");
+        let Some(Command::Run(a)) = cli.command else { panic!("应是 run") };
+        assert_eq!(a.concurrency, Some(8), "给了就是这一次的临时覆盖");
     }
 
     /// --report 与 --no-report 互斥：同时给了意思自相矛盾，该在解析期就拦下

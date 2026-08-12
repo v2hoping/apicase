@@ -88,6 +88,15 @@ pub fn to_yaml(v: &Value) -> String {
     out
 }
 
+/// 把一个字符串输出成能直接拼进 YAML 的行内标量（不带换行）。
+///
+/// 用**宽松**规则，理由同 `emit_pair` 里的 key：调用方（顶层 `active`）的值永远按
+/// 字符串取用，不存在类型歧义，`dev` 不该被写成 `'dev'`。名字里有冒号、`#` 之类时
+/// 仍会正确加上引号。
+pub fn inline_scalar(s: &str) -> String {
+    scalar_str(s, Quote::Loose)
+}
+
 fn indent_to(out: &mut String, n: usize) {
     for _ in 0..n {
         out.push(' ');

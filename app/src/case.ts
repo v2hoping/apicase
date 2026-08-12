@@ -126,7 +126,7 @@ export interface WorkspaceSettings {
   verifySsl: boolean; // SSL/TLS 证书验证；关闭后接受任何服务端证书（降安全，UI 警示）
   useCustomCa: boolean; // 是否启用自定义 CA
   caCert: string; // CA 证书文件，**相对工作空间根**的路径（绝对路径换机器就失效）
-  timeoutMs: number; // 整个请求的超时上限（毫秒），0 = 不限制
+  timeout: number; // 整个请求的超时上限（毫秒），0 = 不限制
   /**
    * 自动收发 Cookie（jar 存 `<workspace>/.apicase/cookies.yml`）。默认 true——
    * 对齐 Postman / Bruno 与浏览器直觉：登录一次，后面的请求自然带着会话。
@@ -138,15 +138,29 @@ export interface WorkspaceSettings {
    * `${{...}}` 字面量，跑下去既是噪音又会把脏请求打到被测服务上。
    */
   continueOnAssertionFailure: boolean;
+  /**
+   * **用例之间**的并发数；1 = 串行（默认）。上限 {@link MAX_CONCURRENCY}。
+   *
+   * 只作用于目录批量运行。case 内部的 step 恒按拓扑序串行——它们之间有 dependsOn
+   * 与 outputs 传递，并发跑没有意义；界面上的「发送 / ▶ 运行全部」因此不受此项影响。
+   */
+  concurrency: number;
 }
+
+/**
+ * 并行度上限（与 Rust 侧 `model::MAX_CONCURRENCY` 一致）。
+ * 手滑把 4 写成 400 的代价不是「慢一点」，而是几百条连接同时打到被测服务上。
+ */
+export const MAX_CONCURRENCY = 64;
 
 export const DEFAULT_WS_SETTINGS: WorkspaceSettings = {
   verifySsl: true,
   useCustomCa: false,
   caCert: "",
-  timeoutMs: 0,
+  timeout: 0,
   cookies: true,
   continueOnAssertionFailure: false,
+  concurrency: 1,
 };
 
 /** 环境表：`{ 环境名: { 变量: 值 } }`（顺序即 application.yml 里的书写顺序） */
@@ -175,11 +189,22 @@ export function dumpCase(c: Case): Promise<string> {
 }
 
 /**
- * 一次读全 application.yml 的两块配置。
- * 合成一个命令而非两个：这两样每次都一起用，分开就是两次 IPC + 两次 YAML 解析。
+ * 一次读全 application.yml 的几块配置。
+ * 合成一个命令而非多个：这几样每次都一起用，分开就是多次 IPC + 多次 YAML 解析。
+ * `active` 为 null = 配置没写这个键，调用方回落第一套。
  */
-export function parseAppConfig(text: string): Promise<{ environment: Environments; settings: WorkspaceSettings }> {
+export function parseAppConfig(
+  text: string,
+): Promise<{ environment: Environments; settings: WorkspaceSettings; active: string | null }> {
   return invoke("parse_app_config", { text });
+}
+
+/**
+ * 只改顶层 active（当前生效的环境），返回新的文件内容。
+ * 走文本级替换而非整份重写——注释与排版都保留，切环境才敢直接写盘。
+ */
+export function setActiveEnv(baseText: string, name: string): Promise<string> {
+  return invoke<string>("set_active_env", { baseText, name });
 }
 
 /**

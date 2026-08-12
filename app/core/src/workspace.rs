@@ -26,7 +26,10 @@ pub const COOKIE_JAR: &str = ".apicase/cookies.yml";
 
 /// 新建工作空间时写入的 `application.yml` 模板。
 pub const CONFIG_TEMPLATE: &str = "# apicase 工作空间配置\n\
+# active：当前生效的环境。界面顶栏一切换就写回这里，CLI 不带 -e 时也用它——\n\
+#         一处来源，两端一致。\n\
 # environment：支持多套环境，可切换（dev / test / prod…）\n\
+active: default\n\
 environment:\n  default: {}\n";
 
 /// 一个打开了的工作空间。
@@ -37,6 +40,9 @@ pub struct Workspace {
     pub config_text: String,
     pub environments: Environments,
     pub settings: WorkspaceSettings,
+    /// 顶层 `active`：当前生效的环境名。界面切换环境即写回这里，两端因此始终一致。
+    /// `None` = 没写这个键，回落第一套。
+    pub active_env: Option<String>,
     /// 根上有没有 `application.yml`。
     ///
     /// **未锚定（`false`）不是错误状态**，只是「这个目录没被声明成工作空间」——
@@ -77,6 +83,7 @@ impl Workspace {
         Ok(Self {
             environments: yaml::parse_environments(&config_text),
             settings: yaml::parse_settings(&config_text),
+            active_env: yaml::parse_active_env(&config_text),
             config_text,
             root,
             anchored,
@@ -135,9 +142,15 @@ impl Workspace {
         self.environments.keys().cloned().collect()
     }
 
-    /// 缺省环境 = 配置里的**第一套**；一套都没有时用 `default`
-    /// （与 `CONFIG_TEMPLATE` 写的那套同名，新建的工作空间因此开箱就对得上）。
+    /// 缺省环境 = 顶层 `active` 指定的那套；没写或指向不存在的环境时回落**第一套**；
+    /// 一套都没有时用 `default`（与 `CONFIG_TEMPLATE` 写的那套同名，新建的工作空间开箱就对得上）。
+    ///
+    /// `active` 指向空气（环境被删或改名）时**不报错也不用它**——拿一套空变量表去跑，
+    /// 只会让 `${{var}}` 原样发出去；回落第一套至少还是套真配置。
     pub fn default_env(&self) -> String {
+        if let Some(a) = self.active_env.as_deref().filter(|a| self.environments.contains_key(*a)) {
+            return a.to_string();
+        }
         self.environments.keys().next().cloned().unwrap_or_else(|| "default".into())
     }
 
@@ -161,7 +174,7 @@ impl Workspace {
                 verify_ssl: (!s.verify_ssl).then_some(false),
                 ca_cert_path: (s.use_custom_ca && !s.ca_cert.is_empty())
                     .then(|| self.root.join(&s.ca_cert).to_string_lossy().into_owned()),
-                timeout_ms: (s.timeout_ms > 0).then_some(s.timeout_ms),
+                timeout_ms: (s.timeout > 0).then_some(s.timeout),
             }),
             cookies: Some(CookieConfig {
                 // 未锚定时不建 jar：cookie 会话是「这个项目的登录态」，
@@ -173,10 +186,16 @@ impl Workspace {
     }
 
     /// 批量运行的默认参数：环境 + 工作空间设置 + 客户端配置。
-    /// 并发、`stopOnFailure` 等由调用方在此基础上覆盖。
+    /// `stopOnFailure` 等由调用方在此基础上覆盖。
+    ///
+    /// **并行度也在这里装好**——桌面端、CLI、MCP 都经由本函数取默认值，
+    /// 三端因此跑的是同一件事；命令行的 `-j` 是在这之上的临时覆盖，不构成第二来源。
     pub fn run_opts(&self, env: EnvironmentInfo, proxy: Option<ProxyConfig>) -> RunOpts {
         let mut o = RunOpts::for_batch(env);
         o.continue_on_assertion_failure = self.settings.continue_on_assertion_failure;
+        // 配置读回来时已 clamp 过，这里的 max 兜的是「设置由 IPC 直接塞进来」的路径：
+        // 0 会让信号量容量为 0，表现是整轮运行永远拿不到令牌而挂起
+        o.concurrency = self.settings.concurrency.clamp(1, crate::model::MAX_CONCURRENCY);
         o.client = self.client_config(proxy);
         o
     }
@@ -390,6 +409,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// 顶层 `active` 决定缺省环境——界面切了 prod，CLI 不带 -e 也该跑 prod
+    #[test]
+    fn active_key_decides_the_default_env() {
+        let root = temp("active");
+        std::fs::create_dir_all(&root).expect("建目录");
+        let write = |text: &str| std::fs::write(root.join(CONFIG_FILE), text).expect("写配置");
+        let envs = "environment:\n  dev: { baseUrl: http://dev }\n  prod: { baseUrl: http://prod }\n";
+
+        write(&format!("active: prod\n{envs}"));
+        let ws = Workspace::open(&root).expect("应能打开");
+        assert_eq!(ws.default_env(), "prod", "active 压过「第一套」");
+        assert_eq!(ws.env_info(None).vars.get("baseUrl").map(String::as_str), Some("http://prod"));
+
+        // 指向空气（环境被删或改名）：回落第一套，而不是拿一套空变量表去跑
+        write(&format!("active: 没这套\n{envs}"));
+        let ws = Workspace::open(&root).expect("应能打开");
+        assert_eq!(ws.default_env(), "dev", "active 指向不存在的环境时回落第一套");
+        assert!(!ws.env_info(None).vars.is_empty(), "回落到的必须是套真配置");
+
+        // -e 仍然压过 active：命令行参数是临时覆盖，不构成第二来源
+        assert_eq!(ws.env_info(Some("prod")).vars.get("baseUrl").map(String::as_str), Some("http://prod"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn config_drives_env_and_client() {
         let root = temp("cfg");
@@ -397,7 +440,7 @@ mod tests {
         std::fs::write(
             root.join(CONFIG_FILE),
             "environment:\n  dev: { baseUrl: http://dev }\n  prod: { baseUrl: http://prod }\n\
-             settings:\n  verifySsl: false\n  useCustomCa: true\n  caCert: certs/ca.pem\n  timeoutMs: 3000\n",
+             settings:\n  verifySsl: false\n  useCustomCa: true\n  caCert: certs/ca.pem\n  timeout: 3000\n",
         )
         .expect("写配置");
         let ws = Workspace::open(&root).expect("应能打开");
@@ -423,6 +466,30 @@ mod tests {
 
         // 失败传播策略跟工作空间配置走
         assert!(!ws.run_opts(ws.env_info(None), None).continue_on_assertion_failure);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 并行度从 `application.yml` 一路装进 `RunOpts`——桌面端、CLI、MCP 都经由 `run_opts`，
+    /// 这条断言钉住的正是「设置页调了 4，跑起来真的是 4」。
+    #[test]
+    fn concurrency_reaches_run_opts() {
+        let root = temp("concurrency");
+        std::fs::create_dir_all(&root).expect("建目录");
+        let opts_of = |cfg: &str| {
+            std::fs::write(root.join(CONFIG_FILE), cfg).expect("写配置");
+            let ws = Workspace::open(&root).expect("应能打开");
+            ws.run_opts(ws.env_info(None), None)
+        };
+
+        assert_eq!(opts_of("environment:\n  dev: {}\n").concurrency, 1, "没配就串行");
+        assert_eq!(opts_of("settings:\n  concurrency: 4\n").concurrency, 4);
+        // 解析期已 clamp，这里再兜一次「设置被直接塞进来」的路径：0 会让信号量挂起整轮运行
+        let mut ws = Workspace::open(&root).expect("应能打开");
+        ws.settings.concurrency = 0;
+        assert_eq!(ws.run_opts(ws.env_info(None), None).concurrency, 1, "0 必须兜成串行");
+        ws.settings.concurrency = 9999;
+        assert_eq!(ws.run_opts(ws.env_info(None), None).concurrency, crate::model::MAX_CONCURRENCY);
 
         let _ = std::fs::remove_dir_all(&root);
     }

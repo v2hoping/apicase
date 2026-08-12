@@ -1,6 +1,6 @@
-// 应用级设置：持久化到 Tauri 应用配置目录下的 settings.json
-// （macOS: ~/Library/Application Support/com.apicase.app/settings.json）。
-// 与 localStorage 的差别：只按应用 identifier 定位，与启动方式（dev / 打包 / 浏览器）无关，
+// 应用级设置：持久化到 ~/.apicase/settings.json —— **三平台同一个位置**
+// （Windows 即 C:\Users\<用户名>\.apicase\settings.json）。
+// 与 localStorage 的差别：位置只由主目录决定，与启动方式（dev / 打包 / 浏览器）无关，
 // 不会像 localStorage 那样按 origin 分桶导致「dev 设的、打包后读不到」。
 // 读写走后端命令 read_app_settings / write_app_settings（Rust 用 app_config_dir）。
 //

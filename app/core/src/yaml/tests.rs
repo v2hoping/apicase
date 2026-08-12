@@ -453,7 +453,7 @@ environment:
     baseUrl: https://api.example.com
 settings:
   verifySsl: false
-  timeoutMs: 5000
+  timeout: 5000
   caCert: certs/ca.pem
   useCustomCa: true
 custom:
@@ -476,7 +476,16 @@ fn parses_settings() {
     assert!(!s.verify_ssl);
     assert!(s.use_custom_ca);
     assert_eq!(s.ca_cert, "certs/ca.pem");
-    assert_eq!(s.timeout_ms, 5000);
+    assert_eq!(s.timeout, 5000);
+}
+
+/// 旧键 `timeoutMs` 仍读得进来；写回时会被清掉（见 `MANAGED_SETTING_KEYS`），
+/// 老工作空间因此不会在改名后静默变成「不限制」。
+#[test]
+fn legacy_timeout_ms_key_still_parses() {
+    assert_eq!(parse_settings("settings:\n  timeoutMs: 5000\n").timeout, 5000);
+    // 新键优先：两个都在时以 `timeout` 为准
+    assert_eq!(parse_settings("settings:\n  timeout: 100\n  timeoutMs: 5000\n").timeout, 100);
 }
 
 /// 配置文件是手写的，一处写坏不该让请求功能整体瘫掉
@@ -488,8 +497,8 @@ fn broken_config_falls_back_to_defaults() {
         assert!(parse_environments(bad).is_empty());
     }
     // 超时写成负数 / 非数字 → 0（不限制）
-    assert_eq!(parse_settings("settings:\n  timeoutMs: -5\n").timeout_ms, 0);
-    assert_eq!(parse_settings("settings:\n  timeoutMs: 很久\n").timeout_ms, 0);
+    assert_eq!(parse_settings("settings:\n  timeout: -5\n").timeout, 0);
+    assert_eq!(parse_settings("settings:\n  timeout: 很久\n").timeout, 0);
     // 只有显式 false 才关校验
     assert!(parse_settings("settings:\n  verifySsl: 随便\n").verify_ssl);
     // 失败传播同理：只有显式 true 才放行，默认（阻断）是更安全的一侧
@@ -581,4 +590,126 @@ fn dump_app_config_keeps_unknown_settings_keys() {
 fn dump_app_config_leaves_settings_untouched_when_none() {
     let out = dump_application_config(APP_YML, &parse_environments(APP_YML), None);
     assert_eq!(parse_settings(&out), parse_settings(APP_YML));
+}
+
+/// 并行度：缺失即串行；写坏 / 越界一律 clamp 进 `1..=MAX_CONCURRENCY`。
+///
+/// **0 尤其要挡住**：它会让执行内核的信号量容量为 0，表现是整轮运行永远拿不到令牌而挂起——
+/// 一个手滑的 `concurrency: 0` 不该换来一个卡死的回归。
+#[test]
+fn concurrency_is_clamped_into_range() {
+    let c = |yaml: &str| parse_settings(yaml).concurrency;
+    assert_eq!(parse_settings("settings: {}\n").concurrency, 1, "缺失即串行");
+    assert_eq!(c("settings:\n  concurrency: 4\n"), 4);
+    assert_eq!(c("settings:\n  concurrency: '8'\n"), 8, "字符串形态也认");
+    assert_eq!(c("settings:\n  concurrency: 0\n"), 1, "0 会让信号量容量为 0 而挂起");
+    assert_eq!(c("settings:\n  concurrency: -3\n"), 1);
+    assert_eq!(c("settings:\n  concurrency: 很多\n"), 1, "非数字回落串行");
+    assert_eq!(c("settings:\n  concurrency: 2.9\n"), 2, "小数向下取整");
+    assert_eq!(c("settings:\n  concurrency: 400\n"), MAX_CONCURRENCY, "越界截到上限，而不是变成一次压测");
+    assert_eq!(c(&format!("settings:\n  concurrency: {}\n", u64::MAX)), MAX_CONCURRENCY, "超 u32 也不溢出");
+}
+
+/// 并行度默认 1 ⇒ 只有 > 1 才落盘；改回 1 时旧值要被清掉（同 cookies / 失败传播）
+#[test]
+fn concurrency_only_persists_when_parallel() {
+    let base = "environment:\n  dev: {}\n";
+    let envs = parse_environments(base);
+
+    let out = dump_application_config(base, &envs, Some(&WorkspaceSettings::default()));
+    assert!(!out.contains("concurrency"), "默认（串行）不该落盘：\n{out}");
+
+    let par = WorkspaceSettings { concurrency: 6, ..Default::default() };
+    let out = dump_application_config(base, &envs, Some(&par));
+    assert!(out.contains("concurrency: 6"), "并发要落盘：\n{out}");
+    assert_eq!(parse_settings(&out).concurrency, 6, "读得回来");
+
+    // 改回串行 ⇒ 旧值必须消失，否则「界面上调回 1、重开又变回 6」
+    let back = dump_application_config(&out, &envs, Some(&WorkspaceSettings::default()));
+    assert_eq!(parse_settings(&back).concurrency, 1, "旧的 6 不该残留：\n{back}");
+
+    // 越界的值即便绕过解析（界面 / IPC 直接塞）也不会写进文件
+    let huge = WorkspaceSettings { concurrency: 9999, ..Default::default() };
+    let out = dump_application_config(base, &envs, Some(&huge));
+    assert!(out.contains(&format!("concurrency: {MAX_CONCURRENCY}")), "落盘前也要 clamp：\n{out}");
+}
+
+// ── 顶层 active（当前生效的环境）───────────────────
+
+#[test]
+fn parses_active_env_and_falls_back_to_none() {
+    assert_eq!(parse_active_env("active: prod\nenvironment:\n  prod: {}\n").as_deref(), Some("prod"));
+    assert_eq!(parse_active_env(APP_YML), None, "没写 active 就是 None");
+    for bad in ["active:\n", "active: ''\n", "active: '   '\n", "active: 42\n", "这不是: [有效\n  yaml"] {
+        assert_eq!(parse_active_env(bad), None, "缺失 / 空 / 类型不符一律 None：{bad:?}");
+    }
+}
+
+/// active 是嵌在别处的同名键时不该被当成顶层的
+#[test]
+fn parse_active_env_ignores_nested_keys() {
+    let text = "environment:\n  dev:\n    active: 骗你的\n";
+    assert_eq!(parse_active_env(text), None);
+}
+
+/// 切环境是顶栏一点就写盘的高频动作，注释绝不能因此消失
+#[test]
+fn set_active_env_keeps_comments_and_layout() {
+    let out = set_active_env(APP_YML, "prod");
+    assert!(out.contains("# apicase 工作空间配置"), "注释要留着：\n{out}");
+    assert!(out.contains("  baseUrl: http://localhost:8080"), "原有排版不动：\n{out}");
+    assert_eq!(parse_active_env(&out).as_deref(), Some("prod"));
+    // 其余内容一字不改
+    assert_eq!(parse_environments(&out), parse_environments(APP_YML));
+    assert_eq!(parse_settings(&out), parse_settings(APP_YML));
+}
+
+/// 新键落在 environment 正上方——「用哪套」紧挨着「有哪几套」
+#[test]
+fn set_active_env_inserts_above_environment() {
+    let out = set_active_env(APP_YML, "dev");
+    let active_at = out.find("active: dev").expect("要写进去");
+    let env_at = out.find("\nenvironment:").expect("environment 还在");
+    assert!(active_at < env_at, "active 应在 environment 之前：\n{out}");
+}
+
+#[test]
+fn set_active_env_replaces_instead_of_duplicating() {
+    let once = set_active_env(APP_YML, "dev");
+    let twice = set_active_env(&once, "prod");
+    assert_eq!(twice.matches("active:").count(), 1, "不能留下重复键：\n{twice}");
+    assert_eq!(parse_active_env(&twice).as_deref(), Some("prod"));
+}
+
+/// 引号写法也要清掉，否则重复键的取值由解析器决定，行为不可预期
+#[test]
+fn set_active_env_clears_quoted_variants() {
+    let out = set_active_env("'active': dev\nenvironment:\n  dev: {}\n", "prod");
+    assert_eq!(out.matches("active").count(), 1, "引号写法也该被替换：\n{out}");
+    assert_eq!(parse_active_env(&out).as_deref(), Some("prod"));
+}
+
+#[test]
+fn set_active_env_with_empty_name_removes_the_key() {
+    let out = set_active_env(&set_active_env(APP_YML, "dev"), "");
+    assert_eq!(parse_active_env(&out), None, "空名字 = 删掉这个键：\n{out}");
+    assert_eq!(parse_environments(&out), parse_environments(APP_YML), "其余不受影响");
+}
+
+/// 配置还没写全（没有 environment 键）时也得能写进去
+#[test]
+fn set_active_env_appends_when_no_environment_key() {
+    let out = set_active_env("settings:\n  cookies: false\n", "dev");
+    assert_eq!(parse_active_env(&out).as_deref(), Some("dev"));
+    assert!(out.contains("cookies: false"), "原有内容还在：\n{out}");
+    assert_eq!(set_active_env("", "dev"), "active: dev\n", "空文件也能写");
+}
+
+/// 名字里有 YAML 指示符时要加引号，否则写出来的是坏文件
+#[test]
+fn set_active_env_quotes_names_needing_it() {
+    for name in ["a: b", "#dev", "yes", "*anchor"] {
+        let out = set_active_env(APP_YML, name);
+        assert_eq!(parse_active_env(&out).as_deref(), Some(name), "取回来要一模一样：\n{out}");
+    }
 }

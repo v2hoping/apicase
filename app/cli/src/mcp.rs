@@ -61,7 +61,7 @@ pub struct RunParams {
     /// 追加或覆盖环境变量
     #[serde(default)]
     pub vars: std::collections::BTreeMap<String, String>,
-    /// 用例之间的并发数，默认 1
+    /// 用例之间的并发数。省略 = 跟随工作空间设置（application.yml 的 settings.concurrency）
     #[serde(default)]
     pub concurrency: Option<u32>,
     /// 首个失败即停
@@ -172,7 +172,7 @@ impl ApicaseMcp {
             env: p.env,
             steps: p.steps,
             vars: p.vars.into_iter().collect(),
-            concurrency: p.concurrency.unwrap_or(1).max(1),
+            concurrency: p.concurrency,
             stop_on_failure: p.bail,
             recursive: true,
             // AI 高频调用，默认不往工作空间里甩几 MB 的 HTML

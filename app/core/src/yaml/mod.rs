@@ -637,6 +637,59 @@ pub fn parse_environments(text: &str) -> Environments {
     out
 }
 
+/// 顶层 `active`：当前生效的环境名。
+///
+/// 放顶层而非 `environment.active`——`environment:` 下的键**就是环境名**，
+/// 混一个保留键进去会让它出现在环境下拉里，还得在每个遍历处特判。
+/// 缺失 / 类型不符 / 空串一律 `None`，由调用方回落。
+pub fn parse_active_env(text: &str) -> Option<String> {
+    let v = load(text).ok()?;
+    let s = v.as_object()?.get(ACTIVE_KEY)?.as_str()?.trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+/// 顶层 `active` 的键名。
+const ACTIVE_KEY: &str = "active";
+
+/// 这一行是不是顶层的 `key:`，是则给出 key（去掉可能的引号）。
+///
+/// 顶层 = 行首没有缩进。块标量的内容、映射的子键都必然带缩进，故不会误判；
+/// 注释行与 `---` 之类不含 `:` 的行也被排除。
+fn top_level_key(line: &str) -> Option<&str> {
+    if line.starts_with([' ', '\t', '#']) {
+        return None;
+    }
+    let (k, _) = line.split_once(':')?;
+    Some(k.trim().trim_matches(['\'', '"']))
+}
+
+/// 就地改写顶层 `active`，**保留注释与原有排版**。
+///
+/// 不复用 `dump_application_config`：那条路是「解析 → 重新 emit」，会把注释全抹掉。
+/// 而切环境是顶栏一点就写盘的高频动作，用户的注释不该因此消失。
+/// 传空名字 = 删掉这个键（回到「用第一套」）。
+pub fn set_active_env(text: &str, name: &str) -> String {
+    let name = name.trim();
+    // 先清掉已有的（含 `'active':` 这种引号写法），避免留下重复键
+    let mut lines: Vec<String> =
+        text.lines().filter(|l| top_level_key(l) != Some(ACTIVE_KEY)).map(str::to_string).collect();
+    if !name.is_empty() {
+        // 放在 `environment:` 正上方——「用哪套」紧挨着「有哪几套」最好读；
+        // 没有 environment 键（配置还没写全）就落到末尾
+        let at = lines
+            .iter()
+            .position(|l| top_level_key(l) == Some("environment"))
+            .unwrap_or(lines.len());
+        lines.insert(at, format!("{ACTIVE_KEY}: {}", emit::inline_scalar(name)));
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
 /// 取某套环境的变量表（环境不存在即空表）。
 pub fn env_vars(envs: &Environments, name: &str) -> Vars {
     let mut out = Vars::new();
@@ -656,32 +709,58 @@ pub fn parse_settings(text: &str) -> WorkspaceSettings {
     let Some(st) = v.as_object().and_then(|m| m.get("settings")).and_then(Value::as_object) else {
         return d;
     };
-    // 超时：非数字 / 负数 / 非有限值一律回 0（不限制），小数取整
-    let timeout_ms = match st.get("timeoutMs") {
+    // 超时：非数字 / 负数 / 非有限值一律回 0（不限制），小数取整。
+    // 旧键 `timeoutMs` 仍读得进来（下次写回时被 `MANAGED_SETTING_KEYS` 清掉，自动迁移）
+    let timeout = match st.get("timeout").or_else(|| st.get("timeoutMs")) {
         Some(Value::Number(n)) => n.as_f64().filter(|f| f.is_finite() && *f > 0.0).map(|f| f as u64).unwrap_or(0),
         Some(Value::String(s)) => s.trim().parse::<f64>().ok().filter(|f| f.is_finite() && *f > 0.0).map(|f| f as u64).unwrap_or(0),
         _ => 0,
+    };
+    // 并行度：非数字 / 缺失 → 1（串行）；有值则 clamp 到 1..=MAX_CONCURRENCY。
+    // 上限见 `MAX_CONCURRENCY`——写错一个数量级不该变成一次压测。
+    let concurrency = match st.get("concurrency") {
+        Some(Value::Number(n)) => n.as_f64().filter(|f| f.is_finite()).map(clamp_concurrency).unwrap_or(1),
+        Some(Value::String(s)) => s.trim().parse::<f64>().ok().filter(|f| f.is_finite()).map(clamp_concurrency).unwrap_or(1),
+        _ => 1,
     };
     WorkspaceSettings {
         // 只有显式 false 才关闭：键缺失或写错类型都按「校验开启」这一安全侧兜底
         verify_ssl: st.get("verifySsl") != Some(&Value::Bool(false)),
         use_custom_ca: st.get("useCustomCa") == Some(&Value::Bool(true)),
         ca_cert: s(st.get("caCert")).trim().to_string(),
-        timeout_ms,
+        timeout,
         // 同 verifySsl：只有显式 false 才关闭。默认自动收发 cookie（对齐 Postman / Bruno）
         cookies: st.get("cookies") != Some(&Value::Bool(false)),
         // 同样只有显式 true 才启用：默认（阻断）是更安全的一侧——
         // 上游挂了还往下发真实写请求，后果比多跳几个节点严重
         continue_on_assertion_failure: st.get("continueOnAssertionFailure") == Some(&Value::Bool(true)),
+        concurrency,
     }
+}
+
+/// 小数取整后夹进 `1..=MAX_CONCURRENCY`。
+///
+/// 先 clamp 再转 u32：`f64 as u32` 对负数与超大值是饱和转换，
+/// 但 `0` 会原样穿过去变成「信号量容量 0」——那是一次永远拿不到令牌的挂起。
+fn clamp_concurrency(f: f64) -> u32 {
+    f.floor().clamp(1.0, MAX_CONCURRENCY as f64) as u32
 }
 
 /// 可视化设置接管的键。**每加一个设置项都必须列进来**——写回时先清掉这些键再写
 /// `ser_settings` 的产出，而默认值不落盘，漏了的那个键就再也没人去覆盖它：
 /// 表现为「界面上关掉了，文件里仍是 true，重新打开又变回开」。
 /// （`continueOnAssertionFailure` 曾漏在这里，本期一并补上。）
-const MANAGED_SETTING_KEYS: [&str; 6] =
-    ["verifySsl", "useCustomCa", "caCert", "timeoutMs", "cookies", "continueOnAssertionFailure"];
+/// 末位 `timeoutMs` 是 `timeout` 的旧名：仍列在这里，好让老文件写回时把它清掉。
+const MANAGED_SETTING_KEYS: [&str; 8] = [
+    "verifySsl",
+    "useCustomCa",
+    "caCert",
+    "timeout",
+    "cookies",
+    "continueOnAssertionFailure",
+    "concurrency",
+    "timeoutMs",
+];
 
 /// settings → YAML 映射；全为默认时返回 None，调用方据此整键不落盘。
 fn ser_settings(s: &WorkspaceSettings) -> Option<Map<String, Value>> {
@@ -695,14 +774,18 @@ fn ser_settings(s: &WorkspaceSettings) -> Option<Map<String, Value>> {
     if !s.ca_cert.trim().is_empty() {
         o.insert("caCert".into(), json!(s.ca_cert.trim()));
     }
-    if s.timeout_ms > 0 {
-        o.insert("timeoutMs".into(), json!(s.timeout_ms));
+    if s.timeout > 0 {
+        o.insert("timeout".into(), json!(s.timeout));
     }
     if !s.cookies {
         o.insert("cookies".into(), json!(false));
     }
     if s.continue_on_assertion_failure {
         o.insert("continueOnAssertionFailure".into(), json!(true));
+    }
+    // 落盘前再 clamp 一次：这个值也可能来自界面或 IPC，不只是 parse_settings 的产出
+    if s.concurrency > 1 {
+        o.insert("concurrency".into(), json!(s.concurrency.min(MAX_CONCURRENCY)));
     }
     (!o.is_empty()).then_some(o)
 }

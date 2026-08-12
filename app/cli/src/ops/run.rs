@@ -39,7 +39,8 @@ pub struct RunRequest {
     pub steps: Vec<String>,
     /// 追加 / 覆盖环境变量。
     pub vars: Vec<(String, String)>,
-    pub concurrency: u32,
+    /// 用例之间的并发数。`None` = 跟随工作空间设置。
+    pub concurrency: Option<u32>,
     pub stop_on_failure: bool,
     /// `None` = 跟随工作空间设置。
     pub continue_on_assertion_failure: Option<bool>,
@@ -59,7 +60,7 @@ impl Default for RunRequest {
             env: None,
             steps: Vec::new(),
             vars: Vec::new(),
-            concurrency: 1,
+            concurrency: None,
             stop_on_failure: false,
             continue_on_assertion_failure: None,
             timeout_ms: None,
@@ -210,7 +211,10 @@ fn build_opts(ws: &Workspace, req: &RunRequest) -> RunOpts {
     }
 
     let mut o = ws.run_opts(env, req.proxy.clone());
-    o.concurrency = req.concurrency.max(1);
+    // 并行度默认已由 ws.run_opts 装好（工作空间设置）；-j 是这一次的临时覆盖
+    if let Some(n) = req.concurrency {
+        o.concurrency = n.clamp(1, apicase_core::model::MAX_CONCURRENCY);
+    }
     o.stop_on_failure = req.stop_on_failure;
     if let Some(c) = req.continue_on_assertion_failure {
         o.continue_on_assertion_failure = c;

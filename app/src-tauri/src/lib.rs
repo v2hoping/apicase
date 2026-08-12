@@ -13,6 +13,12 @@ mod commands;
 use commands::{ai, app, cookies, exec, fs, terminal, watch};
 
 pub fn run() {
+    // 应用设置从各平台的系统约定目录搬到 `~/.apicase`（老用户升级后设置不丢）。
+    // 放在建 Builder 之前而不是某条命令里：`app_paths` 与 `read_app_settings` 谁先被调
+    // 取决于前端，而两者都必须看到搬完后的结果——否则设置页会显示「尚未创建」。
+    // 已经搬过 / 没有老文件时是两次 `exists`，可以无脑每次启动都调。
+    apicase_core::paths::migrate_legacy_settings();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -25,6 +31,7 @@ pub fn run() {
             exec::dump_case,
             exec::parse_app_config,
             exec::dump_app_config,
+            exec::set_active_env,
             exec::run_step,
             exec::topo_order,
             exec::blocked_steps,

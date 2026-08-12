@@ -43,14 +43,14 @@ fn pick_workspace_arg(args: impl Iterator<Item = String>) -> Option<String> {
         .map(|p| p.canonicalize().unwrap_or(p).to_string_lossy().into_owned())
 }
 
-/// 应用设置文件路径：应用配置目录下的 settings.json。
-/// 该目录只按应用 identifier 定位（与启动方式无关），跨 dev / 打包一致。
-/// macOS: ~/Library/Application Support/com.apicase.app/settings.json
+/// 应用设置文件路径：`~/.apicase/settings.json`，**三平台同一个写法**
+/// （Windows 即 `C:\Users\<用户名>\.apicase\settings.json`）。与启动方式无关，跨 dev / 打包一致。
 ///
-/// **走 core 的实现而不是 Tauri 的 `PathResolver`**：CLI 也要读这个文件里的代理设置
-/// （否则「界面里设了直连、CLI 照样走系统代理」），而 CLI 里没有 Tauri。
-/// 两份路径推导必然漂移，而漂移的表现是「用户的设置凭空丢了」——
-/// 所以只留一份，桌面端跟着用。下方有测试比对两者的结果。
+/// **走 core 的实现而不是 Tauri 的 `PathResolver`**：一来 CLI 也要读这个文件里的代理设置
+/// （否则「界面里设了直连、CLI 照样走系统代理」），而 CLI 里没有 Tauri，两份路径推导必然漂移，
+/// 漂移的表现是「用户的设置凭空丢了」；二来 `PathResolver` 给的是各平台的系统约定目录
+/// （`Library/Application Support` / `%APPDATA%` / XDG），三条路径又长又各不相同——
+/// 而这正是要摆脱的东西。
 fn app_settings_path(_app: &AppHandle) -> Result<std::path::PathBuf, String> {
     apicase_core::paths::app_settings_file().ok_or_else(|| "获取应用配置目录失败".to_string())
 }
@@ -219,33 +219,33 @@ pub fn system_info() -> SystemInfo {
 mod tests {
     use super::*;
 
-    /// **core 的配置目录推导必须与 Tauri 的逐字一致**。
+    /// 设置文件落在**主目录下的 `.apicase`**，而**老位置必须与 Tauri 的 `PathResolver`
+    /// 逐字一致**——桌面端此前用的就是它，迁移要从那儿把老用户的文件搬过来，
+    /// 推导对不上就等于没搬（用户看到「设置凭空丢了」，且不会有任何报错）。
     ///
-    /// 桌面端此前用 `PathResolver::app_config_dir()`，现在改走 `core::paths`——
-    /// 因为 CLI 也要读同一个 `settings.json` 里的代理设置，而 CLI 里没有 Tauri。
-    /// 两份推导一旦漂移，用户看到的是「设置凭空丢了」（其实是读了另一个位置），
-    /// 而且不会有任何报错。这条断言就是为它准备的。
+    /// 顺带挡住「哪天有人图省事把 `app_settings_path` 改回 `PathResolver`」：
+    /// 统一位置的意义正在于三平台一句话说得清，退回去就白改了。
     ///
-    /// 比的是**配置根**（`config_dir()`，不含 identifier）——mock app 的 identifier
-    /// 是空串，用 `app_config_dir()` 比会被那个空串的 join 干扰。
-    /// identifier 那一层是双方共用的常量，不会漂。
+    /// `app_settings_path` 忽略传入的 handle（只转发 core），故这里直接比 core 的结果——
+    /// mock app 的 runtime 与命令签名里的 `AppHandle<Wry>` 也对不上。
     #[test]
-    fn core_config_dir_matches_tauri() {
+    fn settings_live_in_dot_apicase_and_legacy_matches_tauri() {
+        if std::env::var_os(apicase_core::paths::HOME_ENV).is_some() {
+            return; // 外部把目录钉到了别处（CI / 容器），形状断言只在默认路径下成立
+        }
         let app = tauri::test::mock_app();
         let tauri_base = app.path().config_dir().expect("Tauri 应能给出配置根");
-        let from_core = apicase_core::paths::app_config_dir().expect("core 应能给出配置目录");
+        let path = apicase_core::paths::app_settings_file().expect("应能给出设置文件路径");
 
+        assert!(path.ends_with(".apicase/settings.json"), "应是 ~/.apicase/settings.json：{}", path.display());
+        assert!(!path.starts_with(&tauri_base), "不该再落在平台配置根下：{}", path.display());
+
+        // 迁移的来源：平台配置根 / identifier / settings.json
+        let legacy = apicase_core::paths::legacy_app_settings_file().expect("老位置应能推导");
         assert_eq!(
-            Some(tauri_base.as_path()),
-            from_core.parent(),
-            "配置根不一致：Tauri 给 {}，core 给 {}",
-            tauri_base.display(),
-            from_core.display()
-        );
-        assert!(
-            from_core.ends_with(apicase_core::paths::APP_IDENTIFIER),
-            "core 的目录要以 identifier 结尾：{}",
-            from_core.display()
+            legacy,
+            tauri_base.join(apicase_core::paths::APP_IDENTIFIER).join("settings.json"),
+            "老位置要与 Tauri 的推导逐字一致，否则老用户的文件根本搬不过来"
         );
     }
 
